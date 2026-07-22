@@ -136,6 +136,78 @@ def test_excitation_anomaly_warned():
     assert any("excitation" in w for w in d.warnings)
 
 
+def test_channel_anomaly_detected_and_repair_preview():
+    """A gross value on a FOREIGN channel (off-diagonal) must be
+    caught by the channel scan even though the point's own element
+    fits fine — and the repaired preview must recover R^2."""
+    s = _session()
+    p = s.points["Mx_pos"][3]
+    p.volts = list(p.volts)
+    p.volts[2] += 0.003                   # Y1 channel glitch in an Mx run
+    d = diagnose(s, "Linear")
+    hits = [(a.key, a.index, a.channel_name)
+            for a in d.channel_anomalies]
+    assert ("Mx_pos", 3, "Y1") in hits
+    a = next(x for x in d.channel_anomalies
+             if (x.key, x.index) == ("Mx_pos", 3))
+    assert a.measured_v - a.expected_v == pytest.approx(0.003, rel=0.1)
+    assert d.r_squared_repaired is not None
+    # Y1's own slope was dragged by the off-diagonal row; repair frees it
+    assert d.r_squared_repaired[2] >= d.r_squared[2]
+    assert d.r_squared_repaired[2] > 0.99999
+    txt = diagnostics_text(d)
+    assert "Off-diagonal" in txt and "Mx_pos" in txt
+
+
+def test_channel_trend_robust_to_the_anomaly():
+    from balcal_gui.diagnostics import channel_trend
+    s = _session()
+    p = s.points["N1_pos"][3]
+    p.volts = list(p.volts)
+    p.volts[1] += 0.002                   # N2 glitch inside N1 section
+    loads, volts, trend, z = channel_trend(s, "N1_pos", 1)
+    r = 3                                 # active row of the glitch
+    assert abs(z[r]) > 10                 # trend not dragged by it
+    assert volts[r] - trend[r] == pytest.approx(0.002, rel=0.05)
+
+
+def test_crosstalk_burden_note():
+    """A section driving a foreign channel harder than its own cal
+    sections do must be reported as structural cross-talk."""
+    s = _session()
+    for p in s.points["Mx_pos"] + s.points["Mx_neg"]:
+        p.volts = list(p.volts)
+        # Y1 driven at ~75% of its own-section span during Mx runs
+        p.volts[2] += 0.06 * p.load / 30.0
+    d = diagnose(s, "Linear")
+    assert any("drives Y1" in n for n in d.crosstalk_notes)
+
+
+REAL_VOL = Path(__file__).resolve().parents[1] / "50lbCalV6.vol"
+
+
+@pytest.mark.skipif(not REAL_VOL.exists(), reason="50lbCalV6 not present")
+def test_50lbCalV6_regression():
+    """The field case 2026-07-22: linear-looking points, slopes way
+    off on Fwd_Pitch / Fwd_Yaw / Mx. Pin what the diagnostics find."""
+    from balcal_gui.volfile import read_vol_session
+    s = read_vol_session(str(REAL_VOL))
+    d = diagnose(s, "Linear")
+    ch = d.channels
+    # the symptom
+    assert d.r_squared[ch.index("Fwd_Pitch")] < 0.5
+    assert d.r_squared[ch.index("Mx")] < 0.8
+    # the Roll step in Fwd_Yaw_neg is caught as channel anomalies
+    assert any(a.key == "Fwd_Yaw_neg" and a.channel_name == "Roll"
+               for a in d.channel_anomalies)
+    # repairing the flagged values substantially recovers Mx
+    assert d.r_squared_repaired is not None
+    assert d.r_squared_repaired[ch.index("Mx")] > 0.95
+    # and the structural fwd-bridge burden of the Mx sections is named
+    assert any("Mx" in n and ("FwdPitch" in n or "FwdYaw" in n)
+               for n in d.crosstalk_notes)
+
+
 def test_row_indices_count_excluded_points():
     """PointDiag.index must index the FULL point list (incl. excluded)
     so GUI delete/exclude actions hit the right row."""

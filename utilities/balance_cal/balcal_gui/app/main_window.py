@@ -32,7 +32,8 @@ import pyqtgraph as pg
 
 from .. import theme
 from ..daq import BACKENDS, BalanceDaq, list_ni_devices
-from ..diagnostics import OUTLIER_Z, diagnose, diagnostics_text
+from ..diagnostics import (OUTLIER_Z, channel_trend, diagnose,
+                           diagnostics_text)
 from ..report import report_text, summarize
 from ..session import BalanceKind, CalSession, TestPoint
 from ..volfile import read_vol_session, validate_session, write_vol
@@ -40,6 +41,23 @@ from ..volfile import read_vol_session, validate_session, write_vol
 IMAGES_DIR = Path(__file__).resolve().parents[2] / "FB_Cal_GUI"
 
 CAL_TYPES = ("Linear", "Quadratic", "Cubic")
+
+
+from dataclasses import dataclass
+
+
+@dataclass
+class _ChannelSel:
+    """One channel VALUE selected in the off-diagonal inspector."""
+    key: str
+    index: int
+    channel: int
+    channel_name: str
+    load: float
+    measured: float
+    expected: float
+    z: float
+    flagged: bool
 
 
 class _AcquireThread(QThread):
@@ -358,10 +376,18 @@ class BalanceCalWindow(QMainWindow):
         dr.addWidget(self.diag_element_combo)
         self.diag_view_combo = QComboBox()
         self.diag_view_combo.addItems(["Applied vs Predicted",
-                                       "Residuals vs Applied"])
+                                       "Residuals vs Applied",
+                                       "Channel volts (off-diagonal)"])
         self.diag_view_combo.currentIndexChanged.connect(
-            lambda *_a: self._refresh_diag_plot())
+            self._diag_view_changed)
         dr.addWidget(self.diag_view_combo)
+        self.diag_section_combo = QComboBox()
+        self.diag_section_combo.setToolTip(
+            "Section whose channel voltages to inspect")
+        self.diag_section_combo.currentIndexChanged.connect(
+            lambda *_a: self._refresh_diag_plot())
+        self.diag_section_combo.hide()
+        dr.addWidget(self.diag_section_combo)
         dr.addStretch(1)
         dv.addLayout(dr)
 
@@ -386,9 +412,24 @@ class BalanceCalWindow(QMainWindow):
         self.diag_delete_btn.clicked.connect(self._diag_delete)
         self.diag_goto_btn = QPushButton("Show in Table")
         self.diag_goto_btn.clicked.connect(self._diag_goto)
+        # value-level repair (channel view): fix ONE voltage without
+        # losing the row — for off-diagonal glitches
+        self.diag_repair_btn = QPushButton("Repair Value from Trend")
+        self.diag_repair_btn.setObjectName("primary")
+        self.diag_repair_btn.setToolTip(
+            "Replace this single channel voltage with the section's "
+            "robust trend value and refit — keeps the row")
+        self.diag_repair_btn.clicked.connect(self._diag_repair_value)
+        self.diag_edit_btn = QPushButton("Edit Value…")
+        self.diag_edit_btn.setToolTip(
+            "Manually enter a replacement for this channel voltage")
+        self.diag_edit_btn.clicked.connect(self._diag_edit_value)
         for b in (self.diag_exclude_btn, self.diag_delete_btn,
-                  self.diag_goto_btn):
+                  self.diag_goto_btn, self.diag_repair_btn,
+                  self.diag_edit_btn):
             b.setEnabled(False)
+        br.addWidget(self.diag_repair_btn)
+        br.addWidget(self.diag_edit_btn)
         br.addWidget(self.diag_exclude_btn)
         br.addWidget(self.diag_delete_btn)
         br.addWidget(self.diag_goto_btn)
@@ -1029,6 +1070,15 @@ class BalanceCalWindow(QMainWindow):
         self.summary_text.setPlainText(text)
 
         self._diag_sel = None
+        sec = self.diag_section_combo
+        sec.blockSignals(True)
+        current_sec = sec.currentText()
+        sec.clear()
+        sec.addItems([o.key for o in self.session.orientations
+                      if self.session.active_points(o.key)])
+        if current_sec:
+            sec.setCurrentText(current_sec)
+        sec.blockSignals(False)
         combo = self.diag_element_combo
         combo.blockSignals(True)
         combo.clear()
@@ -1049,6 +1099,11 @@ class BalanceCalWindow(QMainWindow):
                 f"or delete, then recompute")
 
     # ── interactive fit diagnostics ──────────────────────────────────────
+    def _diag_view_changed(self, *_a) -> None:
+        channel_view = self.diag_view_combo.currentIndex() == 2
+        self.diag_section_combo.setVisible(channel_view)
+        self._refresh_diag_plot()
+
     def _refresh_diag_plot(self) -> None:
         diag = getattr(self, "_diag", None)
         self.diag_plot.clear()
@@ -1056,6 +1111,9 @@ class BalanceCalWindow(QMainWindow):
             return
         col = self.diag_element_combo.currentIndex()
         if col < 0:
+            return
+        if self.diag_view_combo.currentIndex() == 2:
+            self._refresh_channel_plot(col)
             return
         residual_view = self.diag_view_combo.currentIndex() == 1
         pts = [p for p in diag.points if p.element == col]
@@ -1111,11 +1169,83 @@ class BalanceCalWindow(QMainWindow):
                 pen=pg.mkPen(theme.SUCCESS, width=2), symbol="o")
             self.diag_plot.addItem(ring)
 
+    def _refresh_channel_plot(self, col: int) -> None:
+        """Channel volts vs load within one section — the off-diagonal
+        inspector. Values off the robust trend are the repairable
+        cross-talk corruptions."""
+        key = self.diag_section_combo.currentText()
+        if not key or not self.session.active_points(key):
+            return
+        chan_name = [el.channel for el in self.session.elements][col]
+        loads, volts, trend, z = channel_trend(self.session, key, col)
+        idx_map = [i for i, p in enumerate(self.session.points[key])
+                   if not p.excluded]
+        self.diag_plot.setLabel("bottom", f"Applied load in [{key}]")
+        self.diag_plot.setLabel("left", f"{chan_name} [mV]")
+        span = float(np.ptp(volts)) * 1e3
+        self.diag_plot.setTitle(
+            f"[{key}] {chan_name} volts — span {span:.3f} mV")
+        order = np.argsort(loads)
+        self.diag_plot.addItem(pg.PlotDataItem(
+            loads[order], trend[order] * 1e3,
+            pen=pg.mkPen(theme.TEXT_DIM, width=1,
+                         style=Qt.PenStyle.DashLine)))
+
+        flagged = {(a.index) for a in self._diag.channel_anomalies
+                   if a.key == key and a.channel == col}
+        sels = []
+        for r in range(len(volts)):
+            sels.append(_ChannelSel(
+                key=key, index=idx_map[r], channel=col,
+                channel_name=chan_name, load=float(loads[r]),
+                measured=float(volts[r]), expected=float(trend[r]),
+                z=float(z[r]), flagged=idx_map[r] in flagged))
+
+        def scatter(pred, brush, pen, size, name):
+            data = [s for s in sels if pred(s)]
+            if not data:
+                return
+            item = pg.ScatterPlotItem(
+                x=[s.load for s in data],
+                y=[s.measured * 1e3 for s in data],
+                data=data, size=size, brush=pg.mkBrush(brush),
+                pen=pen, symbol="o", name=name)
+            item.sigClicked.connect(self._diag_point_clicked)
+            self.diag_plot.addItem(item)
+
+        scatter(lambda s: not s.flagged, theme.ACCENT_LIGHT, None, 8,
+                "values")
+        scatter(lambda s: s.flagged, theme.WARNING,
+                pg.mkPen(theme.ERROR, width=2), 11, "anomalies")
+        sel = getattr(self, "_diag_sel", None)
+        if isinstance(sel, _ChannelSel) and sel.key == key \
+                and sel.channel == col:
+            self.diag_plot.addItem(pg.ScatterPlotItem(
+                x=[sel.load], y=[sel.measured * 1e3], size=17,
+                brush=None, pen=pg.mkPen(theme.SUCCESS, width=2),
+                symbol="o"))
+
     def _diag_point_clicked(self, _item, points) -> None:
         if not len(points):
             return
         pd = points[0].data()
         self._diag_sel = pd
+        if isinstance(pd, _ChannelSel):
+            dev = pd.measured - pd.expected
+            self.diag_detail.setText(
+                f"[{pd.key}] row {pd.index + 1} {pd.channel_name}: "
+                f"measured {pd.measured:+.6f} V, trend "
+                f"{pd.expected:+.6f} V (dev {dev:+.2e}, "
+                f"z = {pd.z:+.1f})"
+                + ("   ← ANOMALY" if pd.flagged else ""))
+            for b in (self.diag_exclude_btn, self.diag_delete_btn,
+                      self.diag_goto_btn, self.diag_repair_btn,
+                      self.diag_edit_btn):
+                b.setEnabled(True)
+            self._refresh_diag_plot()
+            return
+        self.diag_repair_btn.setEnabled(False)
+        self.diag_edit_btn.setEnabled(False)
         p = self.session.points[pd.key][pd.index]
         stds = ""
         if p.stds:
@@ -1166,6 +1296,46 @@ class BalanceCalWindow(QMainWindow):
         self._diag_sel = None
         self._after_diag_edit()
 
+    def _diag_repair_value(self) -> None:
+        sel = getattr(self, "_diag_sel", None)
+        if not isinstance(sel, _ChannelSel):
+            return
+        p = self.session.points[sel.key][sel.index]
+        p.volts = list(p.volts)
+        p.volts[sel.channel] = sel.expected
+        self._show_status(
+            f"Repaired [{sel.key}] row {sel.index + 1} "
+            f"{sel.channel_name}: {sel.measured:+.6f} → "
+            f"{sel.expected:+.6f} V (section trend) — refitting")
+        self._after_diag_edit()
+
+    def _diag_edit_value(self) -> None:
+        sel = getattr(self, "_diag_sel", None)
+        if not isinstance(sel, _ChannelSel):
+            return
+        text, ok = QInputDialog.getText(
+            self, "Edit channel value",
+            f"[{sel.key}] row {sel.index + 1} {sel.channel_name} "
+            f"volts\n(measured {sel.measured:+.6f}, trend "
+            f"{sel.expected:+.6f}):",
+            text=f"{sel.measured:.6f}")
+        if not ok:
+            return
+        try:
+            value = float(text)
+        except ValueError:
+            QMessageBox.warning(self, "Edit value",
+                                f"Not a number: {text!r}")
+            return
+        p = self.session.points[sel.key][sel.index]
+        p.volts = list(p.volts)
+        p.volts[sel.channel] = value
+        self._show_status(
+            f"Edited [{sel.key}] row {sel.index + 1} "
+            f"{sel.channel_name}: {sel.measured:+.6f} → {value:+.6f} V "
+            f"— refitting")
+        self._after_diag_edit()
+
     def _diag_goto(self) -> None:
         sel = getattr(self, "_diag_sel", None)
         if sel is None:
@@ -1177,7 +1347,8 @@ class BalanceCalWindow(QMainWindow):
 
     def _after_diag_edit(self) -> None:
         for b in (self.diag_exclude_btn, self.diag_delete_btn,
-                  self.diag_goto_btn):
+                  self.diag_goto_btn, self.diag_repair_btn,
+                  self.diag_edit_btn):
             b.setEnabled(False)
         self._refresh_mtable()
         if self.session.point_count() > 0:

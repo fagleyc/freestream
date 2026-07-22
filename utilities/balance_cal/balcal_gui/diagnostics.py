@@ -53,6 +53,28 @@ class PointDiag:
 
 
 @dataclass
+class ChannelAnomaly:
+    """One suspect voltage VALUE: channel c of point (key, index)
+    deviates from its section's robust volts-vs-load trend. These are
+    the off-diagonal (cross-talk) corruptions: the point's own element
+    can fit perfectly while a foreign channel's bad value bends the
+    cross-talk coefficients — and through them, other elements'
+    slopes. Repairable in place (``expected_v``) without losing the
+    row."""
+    key: str
+    index: int               # row within the orientation
+    channel: int             # bridge channel column 0-5
+    channel_name: str
+    measured_v: float        # raw volts as stored
+    expected_v: float        # robust section-trend prediction
+    z: float
+
+    @property
+    def deviation_v(self) -> float:
+        return self.measured_v - self.expected_v
+
+
+@dataclass
 class SectionDiag:
     key: str
     n_points: int
@@ -72,6 +94,9 @@ class FitDiagnostics:
     points: List[PointDiag] = field(default_factory=list)
     sections: List[SectionDiag] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    channel_anomalies: List[ChannelAnomaly] = field(default_factory=list)
+    crosstalk_notes: List[str] = field(default_factory=list)
+    r_squared_repaired: Optional[np.ndarray] = None
 
     def outliers(self) -> List[PointDiag]:
         return [p for p in self.points if p.is_outlier]
@@ -155,6 +180,125 @@ def _robust_z(x: np.ndarray,
         return ((x - med) / std if std > 1e-15
                 else np.zeros_like(x))
     return 0.6745 * (x - med) / mad
+
+
+def channel_trend(session: CalSession, key: str, channel: int
+                  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
+                             np.ndarray]:
+    """Robust linear trend of one channel's RAW volts vs load within
+    one section. Returns (loads, volts, trend, robust_z) over the
+    section's active points (order = active order). Two rounds of MAD
+    rejection keep the trend from being dragged by the anomaly itself.
+    """
+    pts = session.active_points(key)
+    loads = np.array([p.load for p in pts])
+    volts = np.array([p.volts[channel] for p in pts])
+    n = len(pts)
+    if n < 4 or np.ptp(loads) == 0:
+        z = np.zeros_like(volts)
+        return loads, volts, np.full_like(volts, np.median(volts)), z
+
+    # Theil-Sen line: median of pairwise slopes + median intercept.
+    # A single gross value cannot drag it, even at a high-leverage
+    # load (an ordinary fit passes through an apex outlier and hides
+    # it; LOO fails more subtly — the glitch contaminates every OTHER
+    # point's training set and inflates the scale).
+    slopes = []
+    for i in range(n):
+        dx = loads - loads[i]
+        m = dx != 0
+        slopes.extend(((volts[m] - volts[i]) / dx[m]).tolist())
+    slope = float(np.median(slopes)) if slopes else 0.0
+    intercept = float(np.median(volts - slope * loads))
+    trend = slope * loads + intercept
+    resid = volts - trend
+
+    # jackknifed robust z: score each residual against the scale of
+    # the OTHERS, so a lone gross value on an otherwise exact section
+    # (scale → 0) still scores huge instead of self-masking
+    z = np.zeros(n)
+    for i in range(n):
+        others = np.delete(resid, i)
+        med = float(np.median(others))
+        mad = float(np.median(np.abs(others - med)))
+        scale = max(mad / 0.6745, 1e-12)
+        z[i] = min(max((resid[i] - med) / scale, -1e6), 1e6)
+    return loads, volts, trend, z
+
+
+def _scan_channels(session: CalSession, diag: "FitDiagnostics",
+                   outlier_z: float) -> None:
+    """Off-diagonal value scan + cross-talk burden analysis."""
+    channels = [el.channel for el in session.elements]
+    # per-channel span within each section, and each channel's span in
+    # its OWN calibration sections (the signal the fit must resolve)
+    spans: Dict[Tuple[str, int], float] = {}
+    own_span = np.zeros(len(channels))
+    for orient in session.orientations:
+        pts = session.active_points(orient.key)
+        if len(pts) < 2:
+            continue
+        arr = np.array([p.volts for p in pts])
+        col = next(i for i, el in enumerate(session.elements)
+                   if el.name == orient.element.name)
+        for c in range(len(channels)):
+            spans[(orient.key, c)] = float(np.ptp(arr[:, c]))
+        own_span[col] = max(own_span[col], float(np.ptp(arr[:, col])))
+
+    for orient in session.orientations:
+        pts = session.active_points(orient.key)
+        if len(pts) < 4:
+            continue
+        col = next(i for i, el in enumerate(session.elements)
+                   if el.name == orient.element.name)
+        idx_map = [i for i, p in enumerate(
+            session.points.get(orient.key, [])) if not p.excluded]
+        for c in range(len(channels)):
+            span = spans.get((orient.key, c), 0.0)
+            # discrete value anomalies vs the robust section trend
+            loads, volts, trend, z = channel_trend(session, orient.key,
+                                                  c)
+            for r in range(len(volts)):
+                dev = volts[r] - trend[r]
+                if (abs(z[r]) > outlier_z
+                        and abs(dev) > max(0.15 * span, 2e-5)):
+                    diag.channel_anomalies.append(ChannelAnomaly(
+                        key=orient.key, index=idx_map[r], channel=c,
+                        channel_name=channels[c],
+                        measured_v=float(volts[r]),
+                        expected_v=float(trend[r]), z=float(z[r])))
+            # cross-talk burden: a foreign section driving this channel
+            # harder than its own calibration did dominates its
+            # coefficients — the classic good-points-wrong-slope cause
+            if (c != col and own_span[c] > 0
+                    and span > 0.5 * own_span[c]):
+                diag.crosstalk_notes.append(
+                    f"[{orient.section}] drives {channels[c]} through "
+                    f"{span * 1e3:.2f} mV — "
+                    f"{span / own_span[c]:.1f}x that channel's span in "
+                    f"its own calibration sections; these off-diagonal "
+                    f"rows steer the {channels[c]} coefficients (and "
+                    f"its element's slope)")
+
+
+def _repaired_preview(session: CalSession,
+                      diag: "FitDiagnostics") -> None:
+    """R^2 if every flagged channel VALUE were repaired to its trend."""
+    if not diag.channel_anomalies:
+        return
+    import copy
+    trial = copy.deepcopy(session)
+    for a in diag.channel_anomalies:
+        p = trial.points[a.key][a.index]
+        p.volts = list(p.volts)
+        p.volts[a.channel] = a.expected_v
+    try:
+        force, volts, _rows, _w, _sz = _assemble(trial)
+        X = _poly(volts, _ORDER.get(diag.cal_type, 1))
+        ck, *_r = np.linalg.lstsq(X, force, rcond=None)
+        diag.r_squared_repaired = _r_squared(force, X @ ck)
+    except Exception:                       # noqa: BLE001
+        diag.r_squared_repaired = None
 
 
 def diagnose(session: CalSession, cal_type: str = "Linear",
@@ -265,6 +409,10 @@ def diagnose(session: CalSession, cal_type: str = "Linear",
         Xk, fk = X[keep], force[keep]
         ck, *_r = np.linalg.lstsq(Xk, fk, rcond=None)
         diag.r_squared_clean = _r_squared(fk, Xk @ ck)
+
+    # off-diagonal (cross-talk) value scan + repaired preview
+    _scan_channels(session, diag, outlier_z)
+    _repaired_preview(session, diag)
     return diag
 
 
@@ -302,6 +450,33 @@ def diagnostics_text(diag: FitDiagnostics, max_outliers: int = 15) -> str:
         lines.append(f"  {s.key:<14s}{s.n_points:>4d}{zero:>7s}"
                      f"{s.mean_residual:>+12.4g}"
                      f"{s.std_residual:>10.4g}{flag}")
+    if diag.channel_anomalies:
+        lines.append("")
+        lines.append("Off-diagonal channel-value anomalies (suspect "
+                     "single VOLTAGES, repairable in place):")
+        lines.append(f"  {'section':<14s}{'row':>4s}{'channel':>10s}"
+                     f"{'measured':>12s}{'trend':>12s}{'dev':>10s}"
+                     f"{'z':>7s}")
+        for a in sorted(diag.channel_anomalies,
+                        key=lambda x: -abs(x.z))[:max_outliers]:
+            lines.append(f"  {a.key:<14s}{a.index + 1:>4d}"
+                         f"{a.channel_name:>10s}"
+                         f"{a.measured_v:>12.6f}{a.expected_v:>12.6f}"
+                         f"{a.deviation_v:>+10.2e}{a.z:>7.1f}")
+        if diag.r_squared_repaired is not None:
+            lines.append("")
+            lines.append(f"  {'Element':<10s}{'R^2 (as-is)':>13s}"
+                         f"{'R^2 (values repaired)':>23s}")
+            for i, name in enumerate(diag.channels):
+                lines.append(
+                    f"  {name:<10s}{diag.r_squared[i]:>13.6f}"
+                    f"{diag.r_squared_repaired[i]:>23.6f}")
+    if diag.crosstalk_notes:
+        lines.append("")
+        lines.append("Cross-talk burden (structural, NOT single "
+                     "points):")
+        for w in diag.crosstalk_notes:
+            lines.append(f"  * {w}")
     if diag.warnings:
         lines.append("")
         lines.append("Warnings:")
