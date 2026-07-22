@@ -1,0 +1,5 @@
+numpy>=1.24
+PyQt6>=6.5
+pyqtgraph>=0.13
+nidaqmx>=1.0
+pyserial>=3.5

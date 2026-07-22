@@ -1,0 +1,25 @@
+{
+  "modes": {
+    "mode1": {
+      "positioner": "pos",
+      "balance": "balance",
+      "tunnel_conditions": "daq",
+      "tunnel": "tun"
+    },
+    "mode2": {
+      "positioner": "pos",
+      "balance": "balance",
+      "tunnel_conditions": "daq",
+      "tunnel": "tun"
+    },
+    "mode3": {
+      "positioner": "pos"
+    }
+  },
+  "devices": {
+    "balance": {"adapter": "freestream._fakes.FakeStreamer", "enabled": true},
+    "daq": {"adapter": "freestream._fakes.FakeDaq", "enabled": true},
+    "pos": {"adapter": "freestream._fakes.FakePositioner", "enabled": true},
+    "tun": {"adapter": "freestream._fakes.FakeTunnel", "enabled": true}
+  }
+}

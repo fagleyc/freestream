@@ -1,0 +1,668 @@
+(* ========================================================================= *)
+(* FB_AxisHoming  --  jog-based bump-and-back-off limit-switch homing       *)
+(* for one WAGO 750-673 stepper axis driven through Stepper_03.lib.         *)
+(*                                                                          *)
+(* Target     : CoDeSys 2.3 (WAGO-I/O-PRO), project LVW_V3_2021.pro         *)
+(* Language   : ST, no OOP.  CASE state machine, TON timers, R_TRIG edges.  *)
+(* Author     : generated for Casey Fagley, 3-axis SWT traverse             *)
+(*                                                                          *)
+(* SOURCES cited in comments:                                               *)
+(*   [S1]  extracted Stepper_03.lib / LVW_V3_2021.pro string reference      *)
+(*         (stepper_lib_reference.txt) -- block & pin names, existing SFC   *)
+(*         action bodies (JogAxial / StopAxialJog / DisableAxialJog).       *)
+(*   [S2]  operator-verified constraint list (rig truth):                   *)
+(*         (a) escape from an engaged limit is DIRECTIONAL and JOG-MODE     *)
+(*             ONLY; positioning is refused while a limit is engaged.       *)
+(*         (b) ONE command mailbox per module. MC3_StepperControlBasic      *)
+(*             owns it while enabled; MC3_SetPosition hangs Busy forever    *)
+(*             if issued while the Basic block holds it. Arbitrate via      *)
+(*             BasicMailboxActive + disable/re-enable around the preset.    *)
+(*             All MC3 execute inputs are RISING-EDGE triggered. Never      *)
+(*             abort a mailbox command mid-Busy.                            *)
+(*         (c) limit switches are NC; the module inverts them internally    *)
+(*             (filter linking). The PLC-side I_* variable is the raw NC    *)
+(*             contact: TRUE = healthy (closed), FALSE = engaged (open).    *)
+(*         (d) the module leaves its limit special mode 100 ms after the    *)
+(*             switch releases -> SETTLE waits >= 100 ms (200 ms default).  *)
+(*         (e) the big stage runs ROTARY AXIS mode (period 8,000,000);      *)
+(*             true position is reconstructed PLC-side as                   *)
+(*             wrap_count * period + modulo. Homing must seed the wrap      *)
+(*             counter + retained offset in the SAME SCAN the preset lands. *)
+(*         (f) Reference_Mode is currently 0. The native MC3_HOME /        *)
+(*             Motor.Homing request path exists ([S1] lines 24-26, 233)     *)
+(*             and is the preferred route for the LINEAR axes once          *)
+(*             configured, but it must NOT be used on the rotary axis       *)
+(*             (it conflicts with PLC-side wrap counting), so this          *)
+(*             explicit FB is the required implementation.                  *)
+(*   Lines that would need the (unavailable) 750-673 manual are marked      *)
+(*   "VERIFY ON RIG:".                                                      *)
+(*                                                                          *)
+(* STATE MACHINE (bState, mirrored to HomeStatus low byte):                 *)
+(*   0 IDLE -> 1 SEEK -> 2 BACKOFF -> 3 SETTLE -> 4 PRESET                  *)
+(*          -> 5 MOVE_OFFSET -> 6 DONE.   7 = FAULT.                        *)
+(*                                                                          *)
+(* RETAIN NOTE (CoDeSys 2.3): xHomed and the rotary datum bookkeeping are   *)
+(* NOT declared here. In CoDeSys 2.3 a VAR RETAIN section inside an FB is   *)
+(* legal, but retention then depends on how each instance is allocated; the *)
+(* unambiguous 2.3 pattern is a VAR_GLOBAL RETAIN list (see                 *)
+(* GlobalDecls.st.txt). This FB therefore takes the retain cells as         *)
+(* VAR_IN_OUT references and reads/writes them directly.                    *)
+(* ========================================================================= *)
+
+FUNCTION_BLOCK FB_AxisHoming
+VAR_INPUT
+    xStart          : BOOL;  (* rising edge starts homing (R_TRIG below)    *)
+    xAbort          : BOOL;  (* rising edge aborts from ANY state           *)
+    xHomeToPositiveLimit : BOOL; (* TRUE: seek + dir; FALSE: seek - dir     *)
+    xLimitInput     : BOOL;  (* raw I_*Limit. NC: TRUE=healthy, [S2c]       *)
+                             (* VERIFY ON RIG: confirm TRUE with switch     *)
+                             (* NOT pressed, FALSE when pressed.            *)
+    diHomeValue     : DINT;  (* counter preset at datum (SetPosition)       *)
+    diParkPosition  : DINT;  (* post-home MoveAbsolute target               *)
+    iSeekSpeed      : INT := 300;  (* clamped 50..1000; 0 -> default 300    *)
+    iBackoffSpeed   : INT := 150;  (* clamped 25..500;  0 -> default 150    *)
+    tSeekTimeout    : TIME := T#120s; (* no limit found -> FAULT 1          *)
+    tBackoffTimeout : TIME := T#20s;  (* switch stuck   -> FAULT 2          *)
+    tMoveTimeout    : TIME := T#300s; (* MOVE_OFFSET    -> FAULT 6          *)
+    tSettle         : TIME := T#200ms;(* >=100ms module special-mode exit   *)
+                                      (* dwell, [S2d]; 200 ms default      *)
+    xIsRotaryAxis   : BOOL;  (* TRUE only for the rotary big stage [S2e]    *)
+    diRotaryPeriod  : DINT := 8000000; (* Rotary_Axis_Period [S2e]          *)
+END_VAR
+VAR_IN_OUT
+    (* Axis MC3_StepperVisu instance, e.g. AxialMotor ([S1] lines 192,      *)
+    (* 231-254). All Basic* fields used below exist in [S1].               *)
+    Motor           : MC3_StepperVisu;
+    (* The program-local MC3_SetPosition instance ([S1] lines 127, 212).    *)
+    SetPos          : MC3_SetPosition;
+    (* RETAIN cells from the VAR_GLOBAL RETAIN list (GlobalDecls.st.txt).   *)
+    xHomedRetain    : BOOL;  (* survives power cycle; HomeStatus bit8       *)
+    diWrapCount     : DINT;  (* rotary wrap counter, seeded at datum [S2e]  *)
+    diDatumOffset   : DINT;  (* rotary retained offset, seeded at datum     *)
+END_VAR
+VAR_OUTPUT
+    xHomed      : BOOL;  (* mirror of xHomedRetain                          *)
+    xBusy       : BOOL;  (* homing sequence in progress                     *)
+    xFault      : BOOL;  (* latched until next accepted xStart              *)
+    wFaultCode  : WORD;  (* see FC_* constants                              *)
+    bState      : BYTE;  (* HomeStatus enum 0..7                            *)
+    xDatumPulse : BOOL;  (* TRUE for exactly ONE SCAN when the preset       *)
+                         (* lands. External rotary wrap-reconstruction      *)
+                         (* code MUST re-seed its own last-modulo memory    *)
+                         (* on this pulse ([S2e]).                          *)
+END_VAR
+VAR
+    (* --- edge detection: all host bits are edge-handled here ------------ *)
+    rtStart     : R_TRIG;
+    rtAbort     : R_TRIG;
+
+    (* --- state machine --------------------------------------------------- *)
+    iState      : INT := 0;  (* ST_* constant, mirrored to bState           *)
+    iPhase      : INT := 0;  (* sub-phase; 90..92 = shared stop sequence    *)
+    iNext       : INT := 0;  (* state entered after stop sequence           *)
+    wPend       : WORD;      (* fault code pending through stop sequence    *)
+    xAbortPend  : BOOL;      (* abort latched until honored                 *)
+
+    (* --- latched job parameters (taken at start, immune to host writes    *)
+    (*     mid-sequence) -------------------------------------------------- *)
+    iSeekV      : INT;
+    iBackV      : INT;
+    diHomeV     : DINT;
+    diParkV     : DINT;
+    iDir        : INT;       (* +1 seek toward positive limit, else -1      *)
+
+    (* --- limit sense ----------------------------------------------------- *)
+    xLimitEngaged : BOOL;    (* = NOT xLimitInput (NC), [S2c]               *)
+
+    (* --- SetPosition handshake ------------------------------------------- *)
+    xSetPosStart : BOOL;     (* held FALSE except during PRESET so the      *)
+                             (* xStart pin gets a clean rising edge [S2b]   *)
+
+    (* --- timers. All are called ONCE per scan at the bottom of the body   *)
+    (*     with IN flags asserted only by the active phase; leaving a phase *)
+    (*     drops the flag and resets the timer. Q is therefore evaluated    *)
+    (*     one scan late, which is harmless at these time scales. --------- *)
+    tonStop     : TON;       (* 100 ms stop gate, mirrors TMR1 in           *)
+                             (* StopAxialJog ([S1] line 347)                *)
+    tonDwell    : TON;       (* 250 ms disable dwell, mirrors TMR1 in       *)
+                             (* DisableAxialJog ([S1] line 354)             *)
+    tonSettle   : TON;       (* tSettle after limit release [S2d]           *)
+    tonExtra    : TON;       (* 200 ms extra back-off past switch release   *)
+    tonMbx      : TON;       (* mailbox-quiet dwell / MoveABS uptake gate   *)
+    tonState    : TON;       (* per-state timeout supervision               *)
+    tonGuard    : TON;       (* stop-sequence watchdog (BasicDone lost)     *)
+    xStopTmr    : BOOL;
+    xDwellTmr   : BOOL;
+    xSettleTmr  : BOOL;
+    xExtraTmr   : BOOL;
+    xMbxTmr     : BOOL;
+    xStateTmr   : BOOL;
+    tStateTO    : TIME;      (* PT for tonState, set per state              *)
+END_VAR
+VAR CONSTANT
+    ST_IDLE     : INT := 0;
+    ST_SEEK     : INT := 1;
+    ST_BACKOFF  : INT := 2;
+    ST_SETTLE   : INT := 3;
+    ST_PRESET   : INT := 4;
+    ST_MOVE     : INT := 5;
+    ST_DONE     : INT := 6;
+    ST_FAULT    : INT := 7;
+
+    FC_NONE             : WORD := 0;
+    FC_SEEK_TIMEOUT     : WORD := 1; (* no limit found                      *)
+    FC_BACKOFF_TIMEOUT  : WORD := 2; (* switch stuck engaged                *)
+    FC_BOTH_LIMITS      : WORD := 3; (* both limit bits in module status    *)
+    FC_WRONG_LIMIT      : WORD := 4; (* limit already engaged at start      *)
+    FC_PRESET_FAIL      : WORD := 5;
+    FC_MOVE_FAIL        : WORD := 6;
+    FC_ABORTED          : WORD := 7;
+    FC_MODULE_ERROR     : WORD := 8;
+
+    (* Both-limit detection mask applied to the module status byte          *)
+    (* (MotorIn[11] = Status1, [S1] line 8). The 750-673 does NOT report    *)
+    (* limit DIRECTION in the MC3 status bits ("only 750-670, 750-671",     *)
+    (* [S1] lines 164-165), and the exact Status1 bit layout is a manual    *)
+    (* fact we cannot cite. Mask = 0 DISABLES the check so it can never     *)
+    (* false-trip.                                                          *)
+    (* VERIFY ON RIG: identify the two limit bits in Status1 while pressing *)
+    (* each switch, then set this mask (e.g. 16#0C) to arm FAULT 3.         *)
+    BOTH_LIMIT_MASK : BYTE := 0;
+END_VAR
+
+(* ========================================================================= *)
+(* BODY                                                                      *)
+(* ========================================================================= *)
+
+(* ---- scan-top housekeeping --------------------------------------------- *)
+rtStart(CLK := xStart);              (* host START bit, edge only           *)
+rtAbort(CLK := xAbort);              (* host ABORT bit, edge only           *)
+
+(* NC contact: input HIGH = circuit closed = NOT on the switch. [S2c]       *)
+xLimitEngaged := NOT xLimitInput;
+
+(* xDatumPulse is a strict one-scan pulse.                                  *)
+xDatumPulse := FALSE;
+
+(* timer-enable flags default OFF; the active phase re-asserts its own.     *)
+xStopTmr   := FALSE;
+xDwellTmr  := FALSE;
+xSettleTmr := FALSE;
+xExtraTmr  := FALSE;
+xMbxTmr    := FALSE;
+xStateTmr  := FALSE;
+
+(* Latch abort so it survives until a phase boundary can honor it safely    *)
+(* ("never abort mid-Busy", [S2b]).                                         *)
+IF rtAbort.Q AND (iState <> ST_FAULT) THEN
+    xAbortPend := TRUE;
+END_IF
+
+(* ---- main state machine ------------------------------------------------- *)
+CASE iState OF
+
+(* --------------------------------------------------------------------- *)
+ST_IDLE, ST_DONE, ST_FAULT:
+    (* Homing NEVER auto-starts: only an explicit rising edge on xStart    *)
+    (* (host START bit) leaves this branch. Restart is allowed from DONE   *)
+    (* and FAULT with the same validation as IDLE.                         *)
+    IF rtStart.Q THEN
+        (* latch + clamp job parameters. Host writes params BEFORE START;  *)
+        (* clamping here protects the rig regardless of what was written.  *)
+        iSeekV := iSeekSpeed;
+        IF iSeekV <= 0 THEN
+            iSeekV := 300;           (* default seek speed                 *)
+        END_IF
+        iSeekV := LIMIT(50, iSeekV, 1000);  (* well below SetupSpeed 3000  *)
+        iBackV := iBackoffSpeed;
+        IF iBackV <= 0 THEN
+            iBackV := 150;           (* default backoff speed              *)
+        END_IF
+        iBackV := LIMIT(25, iBackV, 500);
+        diHomeV := diHomeValue;
+        diParkV := diParkPosition;
+        IF xHomeToPositiveLimit THEN
+            iDir := 1;               (* SEEK jogs +, BACKOFF jogs -        *)
+        ELSE
+            iDir := -1;              (* SEEK jogs -, BACKOFF jogs +        *)
+        END_IF
+
+        xFault     := FALSE;
+        wFaultCode := FC_NONE;
+        wPend      := FC_NONE;       (* no stale pending code from last run *)
+        iNext      := ST_IDLE;
+        xAbortPend := FALSE;
+        (* Safe to clear here: a new home is only started after any hung    *)
+        (* SetPosition was cleared by reset/power cycle (see PRESET         *)
+        (* timeout branch); if it is somehow STILL busy, phase 0 of         *)
+        (* PRESET refuses to re-edge and faults instead.                    *)
+        xSetPosStart := FALSE;
+
+        IF Motor.BasicError THEN
+            (* Module error pin of MC3_StepperControlBasic ([S1] l.250).   *)
+            (* Do not start on a faulted module.                           *)
+            iState     := ST_FAULT;
+            wFaultCode := FC_MODULE_ERROR;
+            xFault     := TRUE;
+        ELSIF xLimitEngaged THEN
+            (* A limit is engaged at start. The 673 gives NO direction     *)
+            (* info in the MC3 status bits ([S1] lines 164-165), so we     *)
+            (* cannot prove it is the TARGET switch -> refuse and demand   *)
+            (* a manual jog off the switch first (jog escape is the only   *)
+            (* legal move while engaged anyway, [S2a]).                    *)
+            iState     := ST_FAULT;
+            wFaultCode := FC_WRONG_LIMIT;
+            xFault     := TRUE;
+        ELSIF (diHomeV < -8388607) OR (diHomeV > 8388607)
+           OR (xIsRotaryAxis AND ((diHomeV <= -diRotaryPeriod)
+                                  OR (diHomeV >= diRotaryPeriod))) THEN
+            (* preset value outside the module position range               *)
+            (* -8388607..+8388607 ([S1] l.46) or outside one rotary         *)
+            (* period ([S2e]) -> the SetPosition would fail or the wrap     *)
+            (* seed (wrap=0) would be wrong. Refuse before any motion.      *)
+            iState     := ST_FAULT;
+            wFaultCode := FC_PRESET_FAIL;
+            xFault     := TRUE;
+        ELSIF (diParkV < -8388607) OR (diParkV > 8388607) THEN
+            (* park target outside MoveAbsolute range ([S1] l.46)           *)
+            iState     := ST_FAULT;
+            wFaultCode := FC_MOVE_FAIL;
+            xFault     := TRUE;
+        ELSE
+            xHomedRetain := FALSE;   (* datum invalid until PRESET lands   *)
+            xBusy  := TRUE;
+            iState := ST_SEEK;
+            iPhase := 0;
+        END_IF
+    END_IF
+
+    (* Abort in a motionless state: force command fields safe and latch    *)
+    (* FAULT(ABORTED) per spec ("xAbort from EVERY state").                *)
+    IF xAbortPend THEN
+        xAbortPend := FALSE;
+        Motor.BasicStop   := FALSE;  (* leave nothing asserted...          *)
+        Motor.Velocity    := FALSE;  (* ...pattern of DisableAxialJog      *)
+        Motor.MoveABS     := FALSE;  (* ([S1] lines 351-353)               *)
+        Motor.BasicStart  := FALSE;
+        Motor.BasicEnable := FALSE;
+        iState     := ST_FAULT;
+        wFaultCode := FC_ABORTED;
+        xFault     := TRUE;
+        xBusy      := FALSE;
+    END_IF
+
+(* --------------------------------------------------------------------- *)
+ST_SEEK:
+    (* Jog toward the target limit at low speed until the switch engages.  *)
+    (* SEEK runs the jog/velocity command pattern because that is the      *)
+    (* only mode that may touch an engaged limit ([S2a]) and it is the     *)
+    (* exact pattern the rig already runs (Action JogAxial, [S1]           *)
+    (* lines 326-342).                                                     *)
+    CASE iPhase OF
+    0:  (* command the jog -- field-for-field replica of Action JogAxial   *)
+        Motor.BasicStop  := FALSE;   (* [S1] l.327                         *)
+        Motor.MoveABS    := FALSE;   (* [S1] l.328                         *)
+        Motor.MoveRel    := FALSE;   (* [S1] l.329                         *)
+        Motor.Jog        := FALSE;   (* velocity mode, not module JogMode  *)
+        Motor.Homing     := FALSE;   (* [S1] l.332 -- native homing OFF    *)
+        Motor.BasicEnable := TRUE;   (* [S1] l.330                         *)
+        Motor.Velocity   := TRUE;    (* [S1] l.331                         *)
+        Motor.BasicAcceleration := 500; (* [S1] l.333                      *)
+        Motor.BasicDeceleration := 500; (* [S1] l.334                      *)
+        Motor.BasicSpeed := iDir * iSeekV;  (* signed speed, [S1] l.336/338 *)
+        Motor.BasicPos   := FALSE;   (* [S1] l.341                         *)
+        Motor.BasicStart := TRUE;    (* [S1] l.342; was cleared in the     *)
+                                     (* stop sequence so this is a fresh   *)
+                                     (* rising edge for the module [S2b]   *)
+        iPhase := 1;
+    1:  (* jogging; supervise                                              *)
+        xStateTmr := TRUE;
+        tStateTO  := tSeekTimeout;
+        IF xAbortPend THEN
+            wPend := FC_ABORTED;   iNext := ST_FAULT;   iPhase := 90;
+        ELSIF Motor.BasicError THEN          (* [S1] l.250                 *)
+            wPend := FC_MODULE_ERROR; iNext := ST_FAULT; iPhase := 90;
+        ELSIF (BOTH_LIMIT_MASK <> 0)
+          AND ((Motor.BasicStatus AND BYTE_TO_WORD(BOTH_LIMIT_MASK))
+               = BYTE_TO_WORD(BOTH_LIMIT_MASK)) THEN
+            (* both limit bits set in module status -> wiring fault.       *)
+            (* Disabled until BOTH_LIMIT_MASK verified on rig (see const). *)
+            wPend := FC_BOTH_LIMITS; iNext := ST_FAULT; iPhase := 90;
+        ELSIF xLimitEngaged THEN
+            (* bump! stop with the rig's proven pattern, then back off     *)
+            iNext  := ST_BACKOFF;
+            iPhase := 90;
+        ELSIF tonState.Q THEN
+            wPend := FC_SEEK_TIMEOUT; iNext := ST_FAULT; iPhase := 90;
+        END_IF
+    END_CASE
+
+(* --------------------------------------------------------------------- *)
+ST_BACKOFF:
+    (* Jog OFF the switch, opposite direction, jog mode only -- the        *)
+    (* directional escape is the only move the module accepts while the    *)
+    (* limit is engaged ([S2a]).                                           *)
+    CASE iPhase OF
+    0:  (* command reverse jog -- same JogAxial pattern, [S1] l.326-342    *)
+        Motor.BasicStop  := FALSE;
+        Motor.MoveABS    := FALSE;
+        Motor.MoveRel    := FALSE;
+        Motor.Jog        := FALSE;
+        Motor.Homing     := FALSE;
+        Motor.BasicEnable := TRUE;
+        Motor.Velocity   := TRUE;
+        Motor.BasicAcceleration := 500;
+        Motor.BasicDeceleration := 500;
+        Motor.BasicSpeed := -iDir * iBackV;  (* escape = opposite of seek  *)
+        Motor.BasicPos   := FALSE;
+        Motor.BasicStart := TRUE;    (* fresh rising edge [S2b]            *)
+        iPhase := 1;
+    1:  (* jogging away; wait for the NC contact to re-close               *)
+        xStateTmr := TRUE;
+        tStateTO  := tBackoffTimeout;
+        IF xAbortPend THEN
+            wPend := FC_ABORTED;      iNext := ST_FAULT; iPhase := 90;
+        ELSIF Motor.BasicError THEN
+            wPend := FC_MODULE_ERROR; iNext := ST_FAULT; iPhase := 90;
+        ELSIF NOT xLimitEngaged THEN
+            iPhase := 2;             (* switch released                    *)
+        ELSIF tonState.Q THEN
+            (* still engaged after full timeout: switch stuck / no motion  *)
+            wPend := FC_BACKOFF_TIMEOUT; iNext := ST_FAULT; iPhase := 90;
+        END_IF
+    2:  (* keep jogging 200 ms past release so the trip dog is             *)
+        (* mechanically clear before we stop (margin choice, not a cited   *)
+        (* module fact).                                                   *)
+        xStateTmr := TRUE;           (* backoff timeout still supervises   *)
+        tStateTO  := tBackoffTimeout;
+        xExtraTmr := TRUE;
+        IF xAbortPend THEN
+            wPend := FC_ABORTED;      iNext := ST_FAULT; iPhase := 90;
+        ELSIF Motor.BasicError THEN
+            wPend := FC_MODULE_ERROR; iNext := ST_FAULT; iPhase := 90;
+        ELSIF tonState.Q THEN
+            wPend := FC_BACKOFF_TIMEOUT; iNext := ST_FAULT; iPhase := 90;
+        ELSIF tonExtra.Q THEN
+            iNext  := ST_SETTLE;
+            iPhase := 90;            (* stop + disable, then settle        *)
+        END_IF
+    END_CASE
+
+(* --------------------------------------------------------------------- *)
+ST_SETTLE:
+    (* Drive is now stopped AND disabled (stop sequence dropped Velocity + *)
+    (* BasicEnable, [S1] l.351-353). Wait out the module's limit           *)
+    (* special-mode exit: it ends 100 ms after leaving the switch ([S2d]), *)
+    (* we wait tSettle = 200 ms default. Then require the command mailbox  *)
+    (* verifiably free before PRESET ([S2b]).                              *)
+    CASE iPhase OF
+    0:  xSettleTmr := TRUE;
+        xStateTmr  := TRUE;
+        tStateTO   := T#10s;         (* mailbox must free up promptly once *)
+                                     (* the Basic block is disabled        *)
+        IF xAbortPend THEN
+            (* no motion, drive already safe -> fault directly             *)
+            xAbortPend := FALSE;
+            iState := ST_FAULT; wFaultCode := FC_ABORTED;
+            xFault := TRUE;     xBusy := FALSE;
+        ELSIF tonSettle.Q AND NOT Motor.BasicMailboxActive THEN
+            (* BasicMailboxActive pin, [S1] l.249 / l.66                   *)
+            iPhase := 1;
+        ELSIF tonState.Q THEN
+            (* mailbox never released although Basic block disabled        *)
+            iState := ST_FAULT; wFaultCode := FC_PRESET_FAIL;
+            xFault := TRUE;     xBusy := FALSE;
+        END_IF
+    1:  (* extra 100 ms with the mailbox continuously idle before we       *)
+        (* claim it -- belt-and-braces on [S2b].                           *)
+        xMbxTmr := TRUE;
+        IF Motor.BasicMailboxActive THEN
+            iPhase := 0;             (* it twitched -- start over          *)
+        ELSIF tonMbx.Q THEN
+            iState := ST_PRESET;
+            iPhase := 0;
+        END_IF
+    END_CASE
+
+(* --------------------------------------------------------------------- *)
+ST_PRESET:
+    (* Preset the module position counter to diHomeV via MC3_SetPosition   *)
+    (* ([S1] l.77 "Position set", instance pattern SetActPos [S1] l.212).  *)
+    (* Legal now: the Basic block is disabled and the mailbox is idle, so  *)
+    (* SetPosition cannot hang on a held mailbox ([S2b]). No motion in     *)
+    (* this state.                                                         *)
+    CASE iPhase OF
+    0:  IF SetPos.xBusy THEN
+            (* a previous SetPosition is STILL busy (hung mailbox from an  *)
+            (* earlier run that was never reset). Re-edging now would      *)
+            (* stack commands -- refuse ([S2b], never abort mid-Busy).     *)
+            iState := ST_FAULT; wFaultCode := FC_PRESET_FAIL;
+            xFault := TRUE;     xBusy := FALSE;
+        ELSE
+            xSetPosStart := TRUE;    (* clean FALSE->TRUE rising edge on   *)
+                                     (* the xStart pin [S2b]; the call     *)
+                                     (* itself is at the bottom of body    *)
+            iPhase := 1;
+        END_IF
+    1:  xStateTmr := TRUE;
+        tStateTO  := T#30s;          (* generous: mailbox cmds are ~ms     *)
+        IF SetPos.xDone THEN
+            (* VERIFY ON RIG: output pin name (program uses SetPos_Done,   *)
+            (* [S1] l.128/215 -- confirm formal name in library manager).  *)
+            (* ---- DATUM LANDS THIS SCAN ---------------------------------*)
+            IF xIsRotaryAxis THEN
+                (* Seed wrap bookkeeping in the SAME SCAN the counter      *)
+                (* preset takes effect ([S2e]). With the modulo counter    *)
+                (* preset to diHomeV (|diHomeV| < diRotaryPeriod), the     *)
+                (* reconstruction wrap*period + modulo + offset equals     *)
+                (* diHomeV with wrap=0, offset=0.                          *)
+                diWrapCount   := 0;
+                diDatumOffset := 0;
+            END_IF
+            xDatumPulse  := TRUE;    (* external wrap logic re-seeds its   *)
+                                     (* last-modulo memory on this pulse   *)
+            xHomedRetain := TRUE;    (* datum now valid (RETAIN)           *)
+            xSetPosStart := FALSE;   (* release for next rising edge       *)
+            IF xAbortPend THEN
+                (* abort arrived during preset: honored only now, after    *)
+                (* the mailbox command completed ("never abort mid-Busy",  *)
+                (* [S2b]). Datum stays valid; offset move is skipped.      *)
+                xAbortPend := FALSE;
+                iState := ST_FAULT; wFaultCode := FC_ABORTED;
+                xFault := TRUE;     xBusy := FALSE;
+            ELSIF diParkV = diHomeV THEN
+                iState := ST_DONE;   (* nothing to move; drive stays       *)
+                xBusy  := FALSE;     (* stopped + disabled                 *)
+            ELSE
+                iState := ST_MOVE;
+                iPhase := 0;
+            END_IF
+        ELSIF SetPos.xError THEN
+            (* VERIFY ON RIG: pin name (SetPos_Err, [S1] l.217).           *)
+            xSetPosStart := FALSE;   (* command over (error) -> safe drop  *)
+            iState := ST_FAULT; wFaultCode := FC_PRESET_FAIL;
+            xFault := TRUE;     xBusy := FALSE;
+        ELSIF tonState.Q THEN
+            IF NOT SetPos.xBusy THEN
+                (* never went busy -> module refused / not wired           *)
+                xSetPosStart := FALSE;
+                iState := ST_FAULT; wFaultCode := FC_PRESET_FAIL;
+                xFault := TRUE;     xBusy := FALSE;
+            ELSE
+                (* STILL Busy after 30 s = the held-mailbox hang [S2b].    *)
+                (* Deliberately do NOT drop xStart mid-Busy; latch fault   *)
+                (* and leave the command standing for a manual reset.      *)
+                (* VERIFY ON RIG: recovery = MC3_RESET / power cycle.      *)
+                iState := ST_FAULT; wFaultCode := FC_PRESET_FAIL;
+                xFault := TRUE;     xBusy := FALSE;
+            END_IF
+        END_IF
+    END_CASE
+
+(* --------------------------------------------------------------------- *)
+ST_MOVE:
+    (* Optional offset move to diParkV. Positioning is legal now: we are   *)
+    (* off the limit ([S2a]). We use the Basic block's MoveABS request     *)
+    (* (Motor.MoveABS + BasicRefPosition + BasicStart, [S1] l.328/243/244) *)
+    (* and NOT a standalone MC3_MoveAbsolute instance, because re-enabling *)
+    (* MC3_StepperControlBasic re-claims the single command mailbox and a  *)
+    (* parallel mailbox block would collide with it ([S2b]). This is also  *)
+    (* the structure the existing program already exercises (MoveABS is a  *)
+    (* first-class MC3_StepperVisu request flag cleared by every jog       *)
+    (* action, [S1] l.328).                                                *)
+    CASE iPhase OF
+    0:  Motor.BasicStop  := FALSE;
+        Motor.Velocity   := FALSE;   (* velocity mode OFF                  *)
+        Motor.MoveRel    := FALSE;
+        Motor.Jog        := FALSE;
+        Motor.Homing     := FALSE;
+        Motor.MoveABS    := TRUE;    (* absolute positioning request       *)
+        Motor.BasicEnable := TRUE;   (* re-enable: Basic block re-owns the *)
+                                     (* mailbox from here on [S2b]         *)
+        Motor.BasicAcceleration := 500;  (* same ramps as jog actions      *)
+        Motor.BasicDeceleration := 500;
+        Motor.BasicSpeed := iSeekV;  (* travel speed magnitude.            *)
+                                     (* VERIFY ON RIG: sign semantics of   *)
+                                     (* BasicSpeed in MoveABS mode (jog    *)
+                                     (* uses signed, [S1] l.336/338).      *)
+        Motor.BasicRefPosition := diParkV;
+                                     (* VERIFY ON RIG: BasicRefPosition    *)
+                                     (* ([S1] l.243) as MoveABS target --  *)
+                                     (* consistent with MC3_MODESELECT     *)
+                                     (* xMoveAbsoluteRequest ([S1] l.32)   *)
+                                     (* + MC3_MOVEABSOLUTE diPosition      *)
+                                     (* range +/-8388607 ([S1] l.46).      *)
+        Motor.BasicPos   := FALSE;
+        Motor.BasicStart := TRUE;    (* fresh rising edge (cleared in the  *)
+                                     (* stop sequence) [S2b]               *)
+        iPhase := 1;
+    1:  (* wait for command uptake: BasicBusy rises ([S1] l.246). If the   *)
+        (* axis is already at target, Busy may never rise -- accept        *)
+        (* BasicDone after a 500 ms uptake window instead.                 *)
+        xStateTmr := TRUE;
+        tStateTO  := tMoveTimeout;
+        xMbxTmr   := TRUE;           (* tonMbx reused as uptake gate; PT   *)
+                                     (* is T#100ms (bottom), so the        *)
+                                     (* uptake window is 100 ms            *)
+        IF xAbortPend THEN
+            wPend := FC_ABORTED;      iNext := ST_FAULT; iPhase := 90;
+        ELSIF Motor.BasicError THEN
+            wPend := FC_MOVE_FAIL;    iNext := ST_FAULT; iPhase := 90;
+        ELSIF Motor.BasicBusy THEN
+            iPhase := 2;
+        ELSIF tonMbx.Q AND Motor.BasicDone THEN
+            (* no Busy observed but Done asserted -- treat as already at   *)
+            (* target. VERIFY ON RIG: BasicDone behavior on zero-length    *)
+            (* MoveABS.                                                    *)
+            iNext  := ST_DONE;
+            iPhase := 90;
+        ELSIF tonState.Q THEN
+            wPend := FC_MOVE_FAIL;    iNext := ST_FAULT; iPhase := 90;
+        END_IF
+    2:  (* moving; wait done                                               *)
+        xStateTmr := TRUE;
+        tStateTO  := tMoveTimeout;
+        IF xAbortPend THEN
+            (* BasicStop on a positioning move is a COMMANDED stop, not a  *)
+            (* mailbox mid-Busy abort -- allowed (the jog actions do the   *)
+            (* same, [S1] l.346).                                          *)
+            wPend := FC_ABORTED;      iNext := ST_FAULT; iPhase := 90;
+        ELSIF Motor.BasicError THEN
+            wPend := FC_MOVE_FAIL;    iNext := ST_FAULT; iPhase := 90;
+        ELSIF Motor.BasicDone THEN   (* [S1] l.254                        *)
+            iNext  := ST_DONE;
+            iPhase := 90;            (* stop+disable -> park safe          *)
+        ELSIF tonState.Q THEN
+            wPend := FC_MOVE_FAIL;    iNext := ST_FAULT; iPhase := 90;
+        END_IF
+    END_CASE
+
+END_CASE
+
+(* ---- shared stop sequence (phases 90..92) ------------------------------- *)
+(* Field-for-field replica of the rig's proven stop path:                    *)
+(*   StopAxialJog   : BasicStop:=TRUE; TMR1 100 ms   ([S1] l.346-347)        *)
+(*   gate           : BasicDone AND TMR1.Q           ([S1] l.348)            *)
+(*   DisableAxialJog: Stop/Velocity/Enable FALSE; 250 ms dwell               *)
+(*                                                   ([S1] l.351-354)        *)
+(* plus BasicStart/MoveABS cleared so every later command presents a fresh   *)
+(* rising edge ([S2b]).                                                      *)
+IF iPhase >= 90 THEN
+    CASE iPhase OF
+    90: Motor.BasicStop  := TRUE;    (* StopAxialJog, [S1] l.346           *)
+        Motor.BasicStart := FALSE;   (* edge prep for next command [S2b]   *)
+        iPhase := 91;
+    91: xStopTmr := TRUE;            (* TMR1 100 ms, [S1] l.347            *)
+        IF Motor.BasicDone AND tonStop.Q THEN   (* gate, [S1] l.348        *)
+            Motor.BasicStop   := FALSE;  (* DisableAxialJog, [S1] l.351    *)
+            Motor.Velocity    := FALSE;  (* [S1] l.352                     *)
+            Motor.MoveABS     := FALSE;  (* clear positioning request too  *)
+            Motor.BasicEnable := FALSE;  (* [S1] l.353 -- releases the     *)
+                                         (* mailbox for PRESET [S2b]       *)
+            iPhase := 92;
+        END_IF
+    92: xDwellTmr := TRUE;           (* TMR1 250 ms dwell, [S1] l.354      *)
+        IF tonDwell.Q THEN
+            IF iNext = ST_FAULT THEN
+                iState     := ST_FAULT;
+                wFaultCode := wPend;
+                xFault     := TRUE;
+                xBusy      := FALSE;
+                xAbortPend := FALSE; (* abort honored                      *)
+            ELSIF iNext = ST_DONE THEN
+                iState := ST_DONE;
+                xBusy  := FALSE;
+            ELSE
+                iState := iNext;
+            END_IF
+            iPhase := 0;
+        END_IF
+    END_CASE
+
+    (* Watchdog: if BasicDone never comes (module dead mid-stop), force    *)
+    (* everything off after 10 s rather than hang the sequence.            *)
+    IF tonGuard.Q THEN
+        Motor.BasicStop   := FALSE;
+        Motor.Velocity    := FALSE;
+        Motor.MoveABS     := FALSE;
+        Motor.BasicStart  := FALSE;
+        Motor.BasicEnable := FALSE;
+        iState     := ST_FAULT;
+        IF wPend <> FC_NONE THEN
+            wFaultCode := wPend;
+        ELSE
+            wFaultCode := FC_MODULE_ERROR;
+        END_IF
+        xFault := TRUE;
+        xBusy  := FALSE;
+        iPhase := 0;
+    END_IF
+END_IF
+
+(* ---- MC3_SetPosition call (every scan; instance is program-local and     *)
+(*      passed VAR_IN_OUT). Wired to the axis stepper data via              *)
+(*      Motor.BasicStepper -- the MC3_typData the Basic block itself uses   *)
+(*      ([S1] l.231 AxialMotor.BasicStepper, l.9 MC3_typData, l.12/13).     *)
+(* VERIFY ON RIG: exact formal pin names of MC3_SetPosition (open           *)
+(* Stepper_03.lib in the library manager). The strings give xStart ([S1]    *)
+(* l.62), diPosition ([S1] l.45) and Done/Busy/Error outputs (program       *)
+(* locals SetPos_Done/SetPos_Busy/SetPos_Err, [S1] l.215-217). Adjust the   *)
+(* three marked lines if the formals differ.                                *)
+SetPos(xStart     := xSetPosStart,       (* VERIFY ON RIG: pin name        *)
+       diPosition := diHomeV,            (* VERIFY ON RIG: pin name        *)
+       Stepper    := Motor.BasicStepper);(* VERIFY ON RIG: pin name        *)
+
+(* ---- timer pool: each TON called exactly once per scan ----------------- *)
+tonStop  (IN := xStopTmr,        PT := T#100ms);  (* stop gate [S1] l.347  *)
+tonDwell (IN := xDwellTmr,       PT := T#250ms);  (* disable dwell l.354   *)
+tonSettle(IN := xSettleTmr,      PT := tSettle);  (* >=100ms rule [S2d]    *)
+tonExtra (IN := xExtraTmr,       PT := T#200ms);  (* backoff clearance     *)
+tonMbx   (IN := xMbxTmr,         PT := T#100ms);  (* mailbox-quiet/uptake  *)
+tonState (IN := xStateTmr,       PT := tStateTO); (* per-state timeout     *)
+tonGuard (IN := (iPhase >= 90),  PT := T#10s);    (* stop watchdog         *)
+
+(* ---- outputs ------------------------------------------------------------ *)
+xHomed := xHomedRetain;
+bState := INT_TO_BYTE(iState);
+
+END_FUNCTION_BLOCK

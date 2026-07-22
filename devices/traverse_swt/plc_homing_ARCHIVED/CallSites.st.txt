@@ -1,0 +1,231 @@
+(* ========================================================================= *)
+(* CallSites.st.txt -- per-axis integration code for LVW_V3_2021.pro        *)
+(*                                                                          *)
+(* Three paste targets:                                                     *)
+(*   A) the POU that maps ControlWord bits to the jog flags (the code at    *)
+(*      [S1] lines 304-323 -- ControlWord.0 -> AxialJogFwd etc., usually    *)
+(*      the main PLC_PRG section that also calls the three stepper          *)
+(*      programs). REPLACE the six jog-mapping lines with block A below.    *)
+(*   B) local VAR additions + call block for AxialStepperProgram (X).       *)
+(*      Analogous blocks for Lateral (Y) and Vertical (Z) follow.           *)
+(*      Paste each call block at the END of the respective program body,    *)
+(*      AFTER the existing SFC/jog logic, so the FB's writes to Motor.*     *)
+(*      fields win the scan while homing is active.                         *)
+(*                                                                          *)
+(* ARBITRATION (chosen and enforced here):                                  *)
+(*   - HOMING WINS. While Homing?.xBusy is TRUE the ControlWord jog bits    *)
+(*     are MASKED (block A), so the jog SFC can never issue a conflicting   *)
+(*     command mid-home. Jogs are simply ignored until homing ends.         *)
+(*   - HOMING NEVER STARTS OVER A JOG. The START bit is accepted only       *)
+(*     after ALL jog bits of that axis have been clear for >= 1 s           *)
+(*     (tonQuiet). 1 s > the SFC's full Stop(100ms)+Disable(250ms) path     *)
+(*     ([S1] l.347/354), so the jog SFC is guaranteed parked in its idle    *)
+(*     step and the Basic block is released before the FB touches it.       *)
+(*     VERIFY ON RIG: confirm the SFC initial step has no action that       *)
+(*     writes Motor.* fields (inspect the SFC in the editor).               *)
+(*   - While START is refused (jog active / FB busy) the bit STAYS SET:     *)
+(*     homing begins automatically once the jogs are released, or the host  *)
+(*     may clear bit0 itself to withdraw the request. The PLC clears bit0   *)
+(*     in the same scan the FB call accepts it.                             *)
+(*   - ABORT (bit1) is passed to the FB and cleared every scan it is seen;  *)
+(*     the FB edge-latches it internally, so a single-scan TRUE suffices.   *)
+(* ========================================================================= *)
+
+
+(* ======================================================================== *)
+(* BLOCK A -- jog/homing interlock. REPLACES [S1] lines 304-311 in the      *)
+(* POU that maps ControlWord to the jog flags.                              *)
+(* ======================================================================== *)
+
+(* jog bits masked while the axis is homing: homing wins, jogs ignored.     *)
+AxialJogFwd    := ControlWord.0 AND NOT HomingX.xBusy;
+AxialJogRev    := ControlWord.1 AND NOT HomingX.xBusy;
+
+LateralJogFwd  := ControlWord.2 AND NOT HomingY.xBusy;
+LateralJogRev  := ControlWord.3 AND NOT HomingY.xBusy;
+
+VerticalJogFwd := ControlWord.4 AND NOT HomingZ.xBusy;
+VerticalJogRev := ControlWord.5 AND NOT HomingZ.xBusy;
+
+(* the BasicReset mappings ([S1] l.313-315) and the position / StatusWord   *)
+(* mirrors ([S1] l.317-323) stay EXACTLY as they are.                       *)
+
+
+(* ======================================================================== *)
+(* BLOCK B1 -- X axis. Add to the VAR section of AxialStepperProgram        *)
+(* (which already owns  SetActPos: MC3_SetPosition;  [S1] l.212):           *)
+(* ======================================================================== *)
+(*
+VAR
+    ...existing locals ([S1] l.207-226) stay...
+    tonQuietX   : TON;     (* jog-quiet acceptance gate, PT 1 s *)
+    xStartReqX  : BOOL;    (* gated START handed to the FB      *)
+    wStatX      : WORD;    (* HomeStatus composition scratch    *)
+END_VAR
+*)
+
+(* --- paste at the END of the AxialStepperProgram body ------------------- *)
+
+(* IMPORTANT: the legacy manual SetPosition test rig in this program        *)
+(* (Do_SetPos -> SetActPos, [S1] l.213) must NOT fire concurrently:         *)
+(* leave Do_SetPos FALSE / remove its old call line. SetActPos is now       *)
+(* driven exclusively from inside HomingX (VAR_IN_OUT).                     *)
+Do_SetPos := FALSE;
+
+(* jog-quiet gate: both jog flags clear for >= 1 s (see ARBITRATION note)   *)
+tonQuietX(IN := NOT AxialJogFwd AND NOT AxialJogRev, PT := T#1s);
+
+(* START accepted only when: host set bit0, jogs quiet >= 1 s, FB idle.     *)
+xStartReqX := AxialHomeCmd.0 AND tonQuietX.Q AND NOT HomingX.xBusy;
+
+(* the homing FB. Motor/SetPos wiring per [S1] l.192/212; params from the  *)
+(* Modbus block (host writes them BEFORE setting START; FB latches at      *)
+(* acceptance and clamps speeds regardless).                               *)
+HomingX(
+    xStart               := xStartReqX,
+    xAbort               := AxialHomeCmd.1,
+    xHomeToPositiveLimit := AxialHomeCmd.2,
+    xLimitInput          := I_AxialLimit,     (* [S1] l.160/321, NC [S2c]  *)
+    diHomeValue          := AxialHomeValue,
+    diParkPosition       := AxialParkPosition,
+    iSeekSpeed           := AxialSeekSpeed,   (* 0 -> FB default 300       *)
+    iBackoffSpeed        := AxialBackoffSpeed,(* 0 -> FB default 150       *)
+    xIsRotaryAxis        := FALSE,            (* X is linear               *)
+    Motor                := AxialMotor,       (* MC3_StepperVisu instance  *)
+    SetPos               := SetActPos,        (* program-local instance    *)
+    xHomedRetain         := xAxialHomedR,     (* VAR_GLOBAL RETAIN         *)
+    diWrapCount          := diAxialWrapR,     (* dummy (linear axis)       *)
+    diDatumOffset        := diAxialOffsetR);  (* dummy (linear axis)       *)
+
+(* clear START on acceptance (this very scan the FB saw the rising edge)    *)
+IF xStartReqX THEN
+    AxialHomeCmd.0 := FALSE;
+END_IF
+(* ABORT is one-shot: clear as soon as seen (FB has latched it)             *)
+IF AxialHomeCmd.1 THEN
+    AxialHomeCmd.1 := FALSE;
+END_IF
+
+(* compose HomeStatus: low byte = state enum, bit8 homed, bit9 busy,        *)
+(* bit10 fault                                                              *)
+wStatX := BYTE_TO_WORD(HomingX.bState);
+IF HomingX.xHomed THEN wStatX := wStatX OR 16#0100; END_IF
+IF HomingX.xBusy  THEN wStatX := wStatX OR 16#0200; END_IF
+IF HomingX.xFault THEN wStatX := wStatX OR 16#0400; END_IF
+AxialHomeStatus    := wStatX;
+AxialHomeFaultCode := HomingX.wFaultCode;
+
+
+(* ======================================================================== *)
+(* BLOCK B2 -- Y axis. VAR additions for LateralStepperProgram              *)
+(* (owns SetActPos: MC3_SetPosition, [S1] l.263):                           *)
+(* ======================================================================== *)
+(*
+VAR
+    tonQuietY   : TON;
+    xStartReqY  : BOOL;
+    wStatY      : WORD;
+END_VAR
+*)
+
+(* --- paste at the END of the LateralStepperProgram body ----------------- *)
+
+Do_SetPos := FALSE;                       (* retire legacy test rig        *)
+
+tonQuietY(IN := NOT LateralJogFwd AND NOT LateralJogRev, PT := T#1s);
+
+xStartReqY := LateralHomeCmd.0 AND tonQuietY.Q AND NOT HomingY.xBusy;
+
+HomingY(
+    xStart               := xStartReqY,
+    xAbort               := LateralHomeCmd.1,
+    xHomeToPositiveLimit := LateralHomeCmd.2,
+    xLimitInput          := I_TraverseLimit,  (* [S1] l.171/322, NC [S2c]  *)
+    diHomeValue          := LateralHomeValue,
+    diParkPosition       := LateralParkPosition,
+    iSeekSpeed           := LateralSeekSpeed,
+    iBackoffSpeed        := LateralBackoffSpeed,
+    xIsRotaryAxis        := FALSE,            (* Y is linear               *)
+    Motor                := LateralMotor,     (* [S1] l.196                *)
+    SetPos               := SetActPos,        (* program-local instance    *)
+    xHomedRetain         := xLateralHomedR,
+    diWrapCount          := diLateralWrapR,   (* dummy (linear axis)       *)
+    diDatumOffset        := diLateralOffsetR);(* dummy (linear axis)       *)
+
+IF xStartReqY THEN
+    LateralHomeCmd.0 := FALSE;
+END_IF
+IF LateralHomeCmd.1 THEN
+    LateralHomeCmd.1 := FALSE;
+END_IF
+
+wStatY := BYTE_TO_WORD(HomingY.bState);
+IF HomingY.xHomed THEN wStatY := wStatY OR 16#0100; END_IF
+IF HomingY.xBusy  THEN wStatY := wStatY OR 16#0200; END_IF
+IF HomingY.xFault THEN wStatY := wStatY OR 16#0400; END_IF
+LateralHomeStatus    := wStatY;
+LateralHomeFaultCode := HomingY.wFaultCode;
+
+
+(* ======================================================================== *)
+(* BLOCK B3 -- Z axis (ROTARY big stage). VAR additions for                 *)
+(* VerticalStepperProgram (owns SetActPos: MC3_SetPosition, [S1] l.480):    *)
+(* ======================================================================== *)
+(*
+VAR
+    tonQuietZ   : TON;
+    xStartReqZ  : BOOL;
+    wStatZ      : WORD;
+END_VAR
+*)
+
+(* --- paste at the END of the VerticalStepperProgram body ---------------- *)
+
+Do_SetPos := FALSE;                       (* retire legacy test rig        *)
+
+tonQuietZ(IN := NOT VerticalJogFwd AND NOT VerticalJogRev, PT := T#1s);
+
+xStartReqZ := VerticalHomeCmd.0 AND tonQuietZ.Q AND NOT HomingZ.xBusy;
+
+HomingZ(
+    xStart               := xStartReqZ,
+    xAbort               := VerticalHomeCmd.1,
+    xHomeToPositiveLimit := VerticalHomeCmd.2,
+    xLimitInput          := I_VerticalLimit,  (* [S1] l.172/323, NC [S2c]  *)
+    diHomeValue          := VerticalHomeValue,
+    diParkPosition       := VerticalParkPosition,
+    iSeekSpeed           := VerticalSeekSpeed,
+    iBackoffSpeed        := VerticalBackoffSpeed,
+    xIsRotaryAxis        := TRUE,             (* rotary big stage [S2e]    *)
+    diRotaryPeriod       := 8000000,          (* Rotary_Axis_Period [S2e]  *)
+    Motor                := VerticalMotor,    (* [S1] l.200                *)
+    SetPos               := SetActPos,        (* program-local instance    *)
+    xHomedRetain         := xVerticalHomedR,
+    diWrapCount          := diVerticalWrapR,  (* RETAIN wrap counter       *)
+    diDatumOffset        := diVerticalOffsetR);
+
+(* ROTARY: the FB pulses xDatumPulse for exactly one scan when the preset  *)
+(* lands. The existing PLC-side wrap-reconstruction code MUST re-seed its  *)
+(* own last-modulo memory on that pulse, in the same scan, or the next     *)
+(* wrap detection will fire spuriously ([S2e]). Wire it like:              *)
+(*                                                                          *)
+(*   IF HomingZ.xDatumPulse THEN                                            *)
+(*       diVertLastModulo := VerticalMotor.BasicActualPosition;             *)
+(*   END_IF                                                                 *)
+(*                                                                          *)
+(* VERIFY ON RIG: locate the actual wrap-detector variable names in the    *)
+(* project (they are not in the extracted reference) and substitute.       *)
+
+IF xStartReqZ THEN
+    VerticalHomeCmd.0 := FALSE;
+END_IF
+IF VerticalHomeCmd.1 THEN
+    VerticalHomeCmd.1 := FALSE;
+END_IF
+
+wStatZ := BYTE_TO_WORD(HomingZ.bState);
+IF HomingZ.xHomed THEN wStatZ := wStatZ OR 16#0100; END_IF
+IF HomingZ.xBusy  THEN wStatZ := wStatZ OR 16#0200; END_IF
+IF HomingZ.xFault THEN wStatZ := wStatZ OR 16#0400; END_IF
+VerticalHomeStatus    := wStatZ;
+VerticalHomeFaultCode := HomingZ.wFaultCode;

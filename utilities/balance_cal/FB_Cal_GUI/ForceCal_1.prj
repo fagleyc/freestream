@@ -1,0 +1,160 @@
+<deployment-project plugin="plugin.ezdeploy" plugin-version="1.0">
+  <configuration file="C:\Users\casey.fagley.Ctr\Nextcloud\Software\matlab\Devices\ForceBalance\FB_Cal_GUI\ForceCal_1.prj" location="C:\Users\casey.fagley.Ctr\Nextcloud\Software\matlab\Devices\ForceBalance\FB_Cal_GUI" name="ForceCal_1" target="target.ezdeploy.standalone" target-name="Application Compiler">
+    <param.appname>ForceCal</param.appname>
+    <param.icon>${PROJECT_ROOT}\ForceCal_1_resources\icon.ico</param.icon>
+    <param.icons>
+      <file>${PROJECT_ROOT}\ForceCal_1_resources\icon_48.png</file>
+      <file>${PROJECT_ROOT}\ForceCal_1_resources\icon_32.png</file>
+      <file>${PROJECT_ROOT}\ForceCal_1_resources\icon_24.png</file>
+      <file>${PROJECT_ROOT}\ForceCal_1_resources\icon_16.png</file>
+    </param.icons>
+    <param.version>1.0</param.version>
+    <param.authnamewatermark>C. Fagley</param.authnamewatermark>
+    <param.email>casey.fagley@afacademy.af.edu</param.email>
+    <param.company />
+    <param.summary />
+    <param.description />
+    <param.screenshot>C:\Users\casey.fagley.Ctr\Desktop\114img8ch.jpg</param.screenshot>
+    <param.guid />
+    <param.installpath.string>\ForceCal\</param.installpath.string>
+    <param.installpath.combo>option.installpath.programfiles</param.installpath.combo>
+    <param.logo />
+    <param.install.notes />
+    <param.target.install.notes />
+    <param.intermediate>${PROJECT_ROOT}\ForceCal_1\for_testing</param.intermediate>
+    <param.files.only>${PROJECT_ROOT}\ForceCal_1\for_redistribution_files_only</param.files.only>
+    <param.output>${PROJECT_ROOT}\ForceCal_1\for_redistribution</param.output>
+    <param.logdir>${PROJECT_ROOT}\ForceCal_1</param.logdir>
+    <param.enable.clean.build>false</param.enable.clean.build>
+    <param.user.defined.mcr.options />
+    <param.target.type>subtarget.standalone</param.target.type>
+    <param.support.packages />
+    <param.web.mcr>true</param.web.mcr>
+    <param.package.mcr>false</param.package.mcr>
+    <param.no.mcr>false</param.no.mcr>
+    <param.web.mcr.name>MyAppInstaller_web</param.web.mcr.name>
+    <param.package.mcr.name>MyAppInstaller_mcr</param.package.mcr.name>
+    <param.no.mcr.name>MyAppInstaller_app</param.no.mcr.name>
+    <param.windows.command.prompt>true</param.windows.command.prompt>
+    <param.create.log>false</param.create.log>
+    <param.log.file />
+    <param.native.matlab>false</param.native.matlab>
+    <param.checkbox>false</param.checkbox>
+    <param.example />
+    <param.help.text>Syntax 
+	  -? 
+	 
+ Input Arguments 
+	 -?  print help on how to use the application 
+	 input arguments</param.help.text>
+    <unset>
+      <param.version />
+      <param.company />
+      <param.summary />
+      <param.description />
+      <param.guid />
+      <param.installpath.string />
+      <param.installpath.combo />
+      <param.logo />
+      <param.install.notes />
+      <param.target.install.notes />
+      <param.intermediate />
+      <param.files.only />
+      <param.output />
+      <param.logdir />
+      <param.enable.clean.build />
+      <param.user.defined.mcr.options />
+      <param.target.type />
+      <param.support.packages />
+      <param.web.mcr />
+      <param.package.mcr />
+      <param.no.mcr />
+      <param.web.mcr.name />
+      <param.package.mcr.name />
+      <param.no.mcr.name />
+      <param.windows.command.prompt />
+      <param.create.log />
+      <param.log.file />
+      <param.native.matlab />
+      <param.checkbox />
+      <param.example />
+    </unset>
+    <fileset.main>
+      <file>${PROJECT_ROOT}\ForceCal.mlapp</file>
+    </fileset.main>
+    <fileset.resources>
+      <file>${PROJECT_ROOT}\FB_Axial_neg.png</file>
+      <file>${PROJECT_ROOT}\FB_Axial_pos.png</file>
+      <file>${PROJECT_ROOT}\FB_N1_neg.png</file>
+      <file>${PROJECT_ROOT}\FB_N1_pos.png</file>
+      <file>${PROJECT_ROOT}\FB_N2_neg.png</file>
+      <file>${PROJECT_ROOT}\FB_N2_pos.png</file>
+      <file>${PROJECT_ROOT}\FB_Roll_neg.png</file>
+      <file>${PROJECT_ROOT}\FB_Roll_pos.png</file>
+      <file>${PROJECT_ROOT}\FB_Y1_neg.png</file>
+      <file>${PROJECT_ROOT}\FB_Y1_pos.png</file>
+      <file>${PROJECT_ROOT}\FB_Y2_neg.png</file>
+      <file>${PROJECT_ROOT}\FB_Y2_pos.png</file>
+      <file>${PROJECT_ROOT}\MB_Aft_Pitch_neg.png</file>
+      <file>${PROJECT_ROOT}\MB_Aft_Pitch_pos.png</file>
+      <file>${PROJECT_ROOT}\MB_Aft_Yaw_neg.png</file>
+      <file>${PROJECT_ROOT}\MB_Aft_Yaw_pos.png</file>
+      <file>${PROJECT_ROOT}\MB_Axial_neg.png</file>
+      <file>${PROJECT_ROOT}\MB_Axial_pos.png</file>
+      <file>${PROJECT_ROOT}\MB_Fwd_Pitch_neg.png</file>
+      <file>${PROJECT_ROOT}\MB_Fwd_Pitch_pos.png</file>
+      <file>${PROJECT_ROOT}\MB_Fwd_Yaw_neg.png</file>
+      <file>${PROJECT_ROOT}\MB_Fwd_Yaw_pos.png</file>
+      <file>${PROJECT_ROOT}\MB_Roll_neg.png</file>
+      <file>${PROJECT_ROOT}\MB_Roll_pos.png</file>
+    </fileset.resources>
+    <fileset.package />
+    <fileset.depfun>
+      <file>C:\Users\casey.fagley.Ctr\Nextcloud\Software\matlab\FileIO\write_vol_from_app.m</file>
+    </fileset.depfun>
+    <build-deliverables>
+      <file location="${PROJECT_ROOT}\ForceCal_1\for_testing" name="readme.txt" optional="true">C:\Users\casey.fagley.Ctr\Nextcloud\Software\matlab\Devices\ForceBalance\FB_Cal_GUI\ForceCal_1\for_testing\readme.txt</file>
+      <file location="${PROJECT_ROOT}\ForceCal_1\for_testing" name="splash.png" optional="false">C:\Users\casey.fagley.Ctr\Nextcloud\Software\matlab\Devices\ForceBalance\FB_Cal_GUI\ForceCal_1\for_testing\splash.png</file>
+      <file location="${PROJECT_ROOT}\ForceCal_1\for_testing" name="ForceCal.exe" optional="false">C:\Users\casey.fagley.Ctr\Nextcloud\Software\matlab\Devices\ForceBalance\FB_Cal_GUI\ForceCal_1\for_testing\ForceCal.exe</file>
+    </build-deliverables>
+    <workflow />
+    <matlab>
+      <root>C:\Program Files\MATLAB\R2022b</root>
+      <toolboxes>
+        <toolbox name="matlabcoder" />
+        <toolbox name="fixedpoint" />
+        <toolbox name="neuralnetwork" />
+      </toolboxes>
+      <toolbox>
+        <matlabcoder>
+          <enabled>true</enabled>
+        </matlabcoder>
+      </toolbox>
+      <toolbox>
+        <fixedpoint>
+          <enabled>true</enabled>
+        </fixedpoint>
+      </toolbox>
+      <toolbox>
+        <neuralnetwork>
+          <enabled>true</enabled>
+        </neuralnetwork>
+      </toolbox>
+    </matlab>
+    <platform>
+      <unix>false</unix>
+      <mac>false</mac>
+      <windows>true</windows>
+      <win2k>false</win2k>
+      <winxp>false</winxp>
+      <vista>false</vista>
+      <linux>false</linux>
+      <solaris>false</solaris>
+      <osver>10.0</osver>
+      <os32>false</os32>
+      <os64>true</os64>
+      <arch>win64</arch>
+      <matlab>true</matlab>
+    </platform>
+  </configuration>
+</deployment-project>

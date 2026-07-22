@@ -1,0 +1,29 @@
+Voltage Calibration File Matlab GUI (C. Fagley) V1
+Date-->27-Feb-2023
+Calibration performed by-->Tim S
+ 
+[Balance Description]
+Balance Type-->1-Force / 5-Moment
+Balance Serial Number-->94017
+Balance outer Diameter-->0.75
+ 
+[Maximal Balance Loads]
+Aft_Pitch-->75
+Aft_Yaw-->50
+Fwd_Pitch-->75
+Fwd_Yaw-->50
+Axial-->25
+Roll-->25
+ 
+[Distances]
+Distance from Aft_Pitch to center of Balance x1 in inches--> 1.287
+Distance from Aft_Yaw to center of Balance x2 in inches--> 1.2645
+Distance from Fwd_Pitch to center of Balance y1 in inches--> 1.287
+Distance from Fwd_Yaw to center of Balance y2 in inches--> 1.2646
+
+[Aft_Pitch pos]
+Number of Loads --> 2
+Load[in-lb]	Aft_Pitch[Volt]	Aft_Yaw[Volt]	Fwd_Pitch[Volt]	Fwd_Yaw[Volt]	Axial[Volt]	Roll[Volt]	Excitation[Volt]	
+0.000000	-0.000098	0.000029	0.000082	0.000022	-0.000079	-0.000232	5.001757
+6.410000	-0.000098	0.000027	0.000082	0.000022	-0.000078	-0.000232	5.001785
+

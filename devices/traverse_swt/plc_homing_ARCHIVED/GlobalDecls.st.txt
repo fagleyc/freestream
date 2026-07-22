@@ -1,0 +1,110 @@
+(* ========================================================================= *)
+(* GlobalDecls.st.txt -- global variable ADDITIONS for the homing feature.  *)
+(* Paste into LVW_V3_2021.pro: Resources tab -> Global Variables.           *)
+(*                                                                          *)
+(* Two sections:                                                            *)
+(*   1) plain VAR_GLOBAL   -> append to the EXISTING Global_Variables list  *)
+(*      (the one that already holds ControlWord AT %MW0, AxialPosition AT   *)
+(*      %MW10 : DINT, etc. -- [S1] lines 177-203).                          *)
+(*   2) VAR_GLOBAL RETAIN  -> a NEW global list (suggested name             *)
+(*      "Global_Retain"). CoDeSys 2.3: right-click "Global Variables" ->    *)
+(*      Add Object, then wrap the block in VAR_GLOBAL RETAIN ... END_VAR.   *)
+(*      Retention requires the target's retain memory (NOVRAM) --           *)
+(*      VERIFY ON RIG: confirm the 750 coupler target settings actually     *)
+(*      provide retain memory, and test by power-cycling after a home.      *)
+(*                                                                          *)
+(* Addressing rules used below (matches the existing project style):        *)
+(*   - "DINT AT %MWn" occupies %MWn AND %MWn+1, LOW word first -- the same  *)
+(*     convention as the existing  AxialPosition AT %MW10 : DINT  ([S1]     *)
+(*     l.184), which the host already decodes low-word-first.               *)
+(*   - %MW0..%MW21 are TAKEN (0/1 control/status, 10-15 positions, 16-21    *)
+(*     speed/accel). The homing map starts at %MW22.                        *)
+(*   - WAGO Modbus: %MW0 = register 12288 (0x3000), so                      *)
+(*     %MW22 = 12310 (X), %MW32 = 12320 (Y), %MW42 = 12330 (Z).             *)
+(* ========================================================================= *)
+
+
+(* ------------------------------------------------------------------------ *)
+(* SECTION 1: append to the existing Global_Variables list                  *)
+(* ------------------------------------------------------------------------ *)
+VAR_GLOBAL
+    (* ==================== X / AXIAL homing block ======================== *)
+    (* %MW22..%MW31  =  Modbus 12310..12319                                 *)
+    AxialHomeCmd        AT %MW22 : WORD; (* bit0 START (host sets, PLC      *)
+                                         (* clears on acceptance), bit1     *)
+                                         (* ABORT, bit2 HOME_TO_POS_LIMIT   *)
+    AxialHomeStatus     AT %MW23 : WORD; (* low byte state enum 0..7;       *)
+                                         (* bit8 xHomed (RETAIN-backed),    *)
+                                         (* bit9 xBusy, bit10 xFault        *)
+    AxialHomeFaultCode  AT %MW24 : WORD; (* fault codes 1..8                *)
+    AxialHomeValue      AT %MW25 : DINT; (* occupies %MW25+%MW26, low word  *)
+                                         (* first; counter preset at datum  *)
+    AxialParkPosition   AT %MW27 : DINT; (* occupies %MW27+%MW28; post-home *)
+                                         (* MoveAbsolute target             *)
+    AxialSeekSpeed      AT %MW29 : INT;  (* default 300, PLC clamps 50..1000*)
+    AxialBackoffSpeed   AT %MW30 : INT;  (* default 150, PLC clamps 25..500 *)
+    AxialHomeReserved   AT %MW31 : WORD; (* reserved                        *)
+
+    (* ==================== Y / LATERAL homing block ====================== *)
+    (* %MW32..%MW41  =  Modbus 12320..12329                                 *)
+    LateralHomeCmd       AT %MW32 : WORD;
+    LateralHomeStatus    AT %MW33 : WORD;
+    LateralHomeFaultCode AT %MW34 : WORD;
+    LateralHomeValue     AT %MW35 : DINT; (* %MW35+%MW36, low word first    *)
+    LateralParkPosition  AT %MW37 : DINT; (* %MW37+%MW38                    *)
+    LateralSeekSpeed     AT %MW39 : INT;
+    LateralBackoffSpeed  AT %MW40 : INT;
+    LateralHomeReserved  AT %MW41 : WORD;
+
+    (* ==================== Z / VERTICAL homing block ===================== *)
+    (* %MW42..%MW51  =  Modbus 12330..12339                                 *)
+    VerticalHomeCmd       AT %MW42 : WORD;
+    VerticalHomeStatus    AT %MW43 : WORD;
+    VerticalHomeFaultCode AT %MW44 : WORD;
+    VerticalHomeValue     AT %MW45 : DINT; (* %MW45+%MW46, low word first   *)
+    VerticalParkPosition  AT %MW47 : DINT; (* %MW47+%MW48                   *)
+    VerticalSeekSpeed     AT %MW49 : INT;
+    VerticalBackoffSpeed  AT %MW50 : INT;
+    VerticalHomeReserved  AT %MW51 : WORD;
+
+    (* ==================== homing FB instances =========================== *)
+    (* Global (not program-local) so they are easy to add to a watch list.  *)
+    HomingX : FB_AxisHoming;   (* Axial,    uses AxialMotor    [S1] l.192   *)
+    HomingY : FB_AxisHoming;   (* Lateral,  uses LateralMotor  [S1] l.196   *)
+    HomingZ : FB_AxisHoming;   (* Vertical, uses VerticalMotor [S1] l.200,  *)
+                               (* ROTARY axis -- see CallSites.st.txt       *)
+END_VAR
+
+
+(* ------------------------------------------------------------------------ *)
+(* SECTION 2: NEW global list "Global_Retain"                               *)
+(* CoDeSys 2.3 specifics: RETAIN variables survive warm restart / power     *)
+(* cycle via the target's retain segment. A VAR RETAIN section inside the   *)
+(* FB would also be legal 2.3 syntax, but instance retention is allocation- *)
+(* dependent; a VAR_GLOBAL RETAIN list is the unambiguous pattern, so the   *)
+(* FB takes these cells as VAR_IN_OUT instead.                              *)
+(* ------------------------------------------------------------------------ *)
+VAR_GLOBAL RETAIN
+    (* per-axis "datum valid" flags -- HomeStatus bit8                      *)
+    xAxialHomedR      : BOOL;
+    xLateralHomedR    : BOOL;
+    xVerticalHomedR   : BOOL;
+
+    (* Rotary bookkeeping for the big stage (operator-verified: rotary     *)
+    (* axis mode, Rotary_Axis_Period = 8,000,000; true position =          *)
+    (* wrap_count * period + modulo, reconstructed PLC-side [S2e]).        *)
+    (* Homing seeds these in the same scan the SetPosition preset lands.   *)
+    (* VERIFY ON RIG: if the project ALREADY has a retained wrap counter   *)
+    (* for this axis, wire THAT variable into HomingZ instead of these and *)
+    (* delete the duplicates -- there must be exactly one wrap counter.    *)
+    diVerticalWrapR   : DINT;  (* wrap counter, set to 0 at datum          *)
+    diVerticalOffsetR : DINT;  (* retained datum offset, set to 0 at datum *)
+
+    (* Dummy cells so the linear axes can use the same FB signature        *)
+    (* (VAR_IN_OUT must be wired). Never meaningfully written because      *)
+    (* xIsRotaryAxis = FALSE for X and Y.                                  *)
+    diAxialWrapR      : DINT;
+    diAxialOffsetR    : DINT;
+    diLateralWrapR    : DINT;
+    diLateralOffsetR  : DINT;
+END_VAR

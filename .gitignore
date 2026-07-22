@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Experiment run data (HDF5/mat/xlsx outputs) — not source
+runs/
+
+# Editor/OS noise
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Local-only markers
+_MOVED_README.txt
+
+# Vendor manuals too large for the repo (kept local only)
+devices/ac_delta/info/delta-c2000-manual.pdf

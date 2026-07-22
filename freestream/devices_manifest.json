@@ -1,0 +1,54 @@
+{
+  "modes": {
+    "mode1": {
+      "positioner": "crescent",
+      "balance": "strainbook",
+      "tunnel_conditions": "daqbook",
+      "tunnel": "tunnel"
+    },
+    "mode2": {
+      "positioner": "ate",
+      "balance": "ate",
+      "tunnel_conditions": "daqbook",
+      "tunnel": "tunnel"
+    },
+    "mode3": {
+      "positioner": "traverse",
+      "tunnel_conditions": "daqbook"
+    }
+  },
+  "devices": {
+    "crescent": {
+      "adapter": "freestream.adapters.crescent.CrescentAdapter",
+      "enabled": true
+    },
+    "strainbook": {
+      "adapter": "freestream.adapters.strainbook.StrainbookAdapter",
+      "enabled": true
+    },
+    "daqbook": {
+      "adapter": "freestream.adapters.daqbook.DaqbookAdapter",
+      "enabled": true
+    },
+    "ate": {
+      "adapter": "freestream.adapters.ate.AteBalanceAdapter",
+      "enabled": true
+    },
+    "tunnel": {
+      "adapter": "freestream.adapters.tunnel.TunnelAdapter",
+      "enabled": true
+    },
+    "traverse": {
+      "adapter": "freestream.adapters.traverse.TraverseAdapter",
+      "enabled": true
+    },
+    "lswt_sting": {
+      "adapter": "freestream.adapters.lswt_sting.LswtStingAdapter",
+      "enabled": true
+    },
+    "ni_daq": {
+      "adapter": "freestream.adapters.ni_daq.NiDaqAdapter",
+      "enabled": true
+    }
+  }
+}
