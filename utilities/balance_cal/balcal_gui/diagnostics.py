@@ -486,9 +486,81 @@ def _influence_scan(diag: FitDiagnostics, force, volts, X, rows) -> None:
                 f"cannot fix this)")
 
 
+def plain_summary(diag: FitDiagnostics) -> str:
+    """The whole assessment in plain language: per element, what's
+    wrong, why, and what to do about it."""
+    lines = ["WHAT THE FIT SAYS (plain language)", "=" * 60]
+    good, bad = [], []
+    for i, name in enumerate(diag.channels):
+        (good if diag.r_squared[i] >= 0.999 else bad).append((i, name))
+    if good:
+        lines.append("Good: " + ", ".join(n for _i, n in good)
+                     + "  (R2 >= 0.999 - nothing to do)")
+    if not bad:
+        lines.append("All elements fit cleanly.")
+        lines.append("")
+        return "\n".join(lines)
+
+    for i, name in bad:
+        lines.append("")
+        slope = (diag.own_slopes[i]
+                 if diag.own_slopes is not None
+                 and np.isfinite(diag.own_slopes[i]) else None)
+        head = f"{name}: R² = {diag.r_squared[i]:.3f}"
+        if slope is not None and abs(slope - 1) > 0.05:
+            head += (f" — predictions reach only {slope * 100:.0f}% of "
+                     f"the applied load")
+        lines.append(head)
+        # cause, in priority order
+        infl = next((w for w in diag.influence_notes
+                     if w.startswith(name + ":")), None)
+        rep = (diag.r_squared_repaired[i]
+               if diag.r_squared_repaired is not None else None)
+        if rep is not None and rep > 0.95 and rep - diag.r_squared[i] > 0.05:
+            lines.append(
+                f"  WHY: a few individual bad voltages (see the "
+                f"anomaly table) are bending this element's "
+                f"coefficients.")
+            lines.append(
+                f"  FIX: repair the flagged values in the Channel "
+                f"inspector — preview says R² becomes {rep:.3f}.")
+        elif infl:
+            sec = infl.split("[")[1].split("]")[0]
+            lines.append(
+                f"  WHY: during the [{sec}] runs this element's "
+                f"bridges saw a big real signal while the file records "
+                f"zero load for them. The fit averages the "
+                f"contradiction, flattening the slope.")
+            lines.append(
+                f"  FIX: re-rig the [{sec}] loading so it doesn't bend "
+                f"this element (pure couple / centered), re-acquire "
+                f"those sections, rewrite the .vol. Deleting or "
+                f"repairing points will NOT fix this.")
+        elif rep is not None and rep - diag.r_squared[i] > 0.05:
+            lines.append(
+                f"  WHY: a few individual bad voltages (see the "
+                f"anomaly table) are bending this element's "
+                f"coefficients.")
+            lines.append(
+                f"  FIX: repair the flagged values in the Channel "
+                f"inspector — preview says R² becomes {rep:.3f}.")
+        elif any(not s.has_zero for s in diag.sections):
+            lines.append(
+                "  WHY/FIX: some sections lack 0-load rows (see "
+                "per-section health) — re-acquire them bracketed "
+                "with zero-load points.")
+        else:
+            lines.append(
+                "  WHY: no single cause identified — check the "
+                "detailed tables below.")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def diagnostics_text(diag: FitDiagnostics, max_outliers: int = 15) -> str:
     """Plain-text diagnostics block appended to the cal report."""
-    lines = ["Fit diagnostics", "-" * 60]
+    lines = [plain_summary(diag),
+             "Details", "-" * 60]
     out = sorted(diag.outliers(), key=lambda p: -abs(p.zscore))
     if out:
         lines.append(f"{len(out)} outlier(s), |robust z| > "

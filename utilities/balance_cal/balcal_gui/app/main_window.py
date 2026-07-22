@@ -167,6 +167,24 @@ class BalanceCalWindow(QMainWindow):
         self.balance_type_combo.currentTextChanged.connect(
             self._on_balance_type_changed)
         form.addRow("Balance type", self.balance_type_combo)
+
+        # excitation source: measured from the Excitation channel, or a
+        # constant supply voltage (when no readback wire is connected —
+        # otherwise an open channel's noise gets recorded in the .vol)
+        exc_row = QHBoxLayout()
+        self.exc_mode_combo = QComboBox()
+        self.exc_mode_combo.addItems(["Measured (channel)", "Constant"])
+        self.exc_mode_combo.currentIndexChanged.connect(
+            lambda i: self.exc_const_spin.setEnabled(i == 1))
+        exc_row.addWidget(self.exc_mode_combo)
+        self.exc_const_spin = QDoubleSpinBox()
+        self.exc_const_spin.setRange(0.1, 30.0)
+        self.exc_const_spin.setDecimals(4)
+        self.exc_const_spin.setValue(5.0)
+        self.exc_const_spin.setSuffix(" V")
+        self.exc_const_spin.setEnabled(False)
+        exc_row.addWidget(self.exc_const_spin)
+        form.addRow("Excitation", exc_row)
         self.backend_combo.currentIndexChanged.connect(
             lambda *_a: self._preview_channels())
 
@@ -352,7 +370,7 @@ class BalanceCalWindow(QMainWindow):
         row.addWidget(self.cal_type_combo)
         compute = QPushButton("Compute Calibration")
         compute.setObjectName("primary")
-        compute.clicked.connect(self._compute_summary)
+        compute.clicked.connect(lambda: self._compute_summary())
         row.addWidget(compute)
         save = QPushButton("Save Report…")
         save.clicked.connect(self._save_report)
@@ -456,6 +474,12 @@ class BalanceCalWindow(QMainWindow):
         file_menu.addAction(act)
         act = QAction("&Summarize existing .vol…", self)
         act.triggered.connect(self._summarize_existing)
+        file_menu.addAction(act)
+        act = QAction("Set constant &excitation for session…", self)
+        act.setToolTip("Overwrite every point's excitation with a "
+                       "constant supply voltage (for runs where the "
+                       "excitation channel was not actually wired)")
+        act.triggered.connect(self._set_session_excitation)
         file_menu.addAction(act)
         file_menu.addSeparator()
         act = QAction("Open &device panel…", self)
@@ -835,15 +859,19 @@ class BalanceCalWindow(QMainWindow):
         key = self._pending_key or self._current_key()
         s = self.session
         bridges = [el.channel for el in s.elements]
+        constant_exc = self.exc_mode_combo.currentIndex() == 1
         point = TestPoint(
             load=self._pending_load,
             volts=[acq.means[b] for b in bridges],
-            excitation=acq.means["Excitation"],
+            excitation=(self.exc_const_spin.value() if constant_exc
+                        else acq.means["Excitation"]),
             stds=[acq.stds.get(b, 0.0) for b in bridges])
         s.add_point(key, point)
-        if abs(point.excitation) < 0.5:
+        if not constant_exc and abs(point.excitation) < 0.5:
             self._show_status("WARNING: excitation reads "
-                              f"{point.excitation:.3f} V — check supply")
+                              f"{point.excitation:.3f} V — check the "
+                              f"supply, or switch to Constant "
+                              f"excitation on the Setup tab")
         self._refresh_mtable()
         self._plot_acquisition(acq)
         self._show_status(f"Acquired [{key}] load {point.load:g} "
@@ -981,6 +1009,36 @@ class BalanceCalWindow(QMainWindow):
         self._preview_channels()
         self._on_orientation_changed()
 
+    def _set_session_excitation(self) -> None:
+        """Overwrite every point's excitation with a constant — the
+        recovery path for runs whose excitation channel was unwired."""
+        if self.session.point_count() == 0:
+            QMessageBox.information(self, "No data",
+                                    "No test points in the session.")
+            return
+        import numpy as _np
+        cur = _np.array([p.excitation
+                         for pts in self.session.points.values()
+                         for p in pts])
+        value, ok = QInputDialog.getDouble(
+            self, "Constant excitation",
+            f"Session excitation now reads {cur.mean():.4f} V "
+            f"(±{cur.std():.4f}).\nReplace ALL {len(cur)} points' "
+            f"excitation with [V]:",
+            self.exc_const_spin.value(), 0.1, 30.0, 4)
+        if not ok:
+            return
+        for pts in self.session.points.values():
+            for p in pts:
+                p.excitation = value
+        self.exc_mode_combo.setCurrentIndex(1)
+        self.exc_const_spin.setValue(value)
+        self._show_status(f"Excitation set to {value:g} V on "
+                          f"{len(cur)} points — refitting")
+        self._refresh_mtable()
+        if self.session.point_count() > 0:
+            self._compute_summary(auto_jump=False)
+
     def _open_device_panel(self) -> None:
         """Open the driver's own app panel, sharing the live device so
         only one DAQ session ever exists."""
@@ -1052,7 +1110,10 @@ class BalanceCalWindow(QMainWindow):
         self._last_vol_path = path
         self._show_status(f"Wrote {path}")
 
-    def _compute_summary(self) -> None:
+    def _compute_summary(self, auto_jump: bool = True) -> None:
+        """Fit + diagnostics. ``auto_jump=False`` (refits triggered by
+        repair/exclude/delete) keeps the current element/section/view
+        instead of jumping the plot to the worst element."""
         self._sync_session_meta()
         if self.session.point_count() == 0:
             QMessageBox.warning(self, "No data",
@@ -1080,15 +1141,19 @@ class BalanceCalWindow(QMainWindow):
             sec.setCurrentText(current_sec)
         sec.blockSignals(False)
         combo = self.diag_element_combo
+        prev = combo.currentIndex()
         combo.blockSignals(True)
         combo.clear()
         combo.addItems(self._diag.channels)
-        # jump to the element with the most outliers (if any)
-        counts = [sum(1 for p in self._diag.outliers()
-                      if p.element == i)
-                  for i in range(len(self._diag.channels))]
-        if any(counts):
-            combo.setCurrentIndex(int(np.argmax(counts)))
+        if not auto_jump and 0 <= prev < combo.count():
+            combo.setCurrentIndex(prev)     # stay where the user was
+        else:
+            # fresh compute: jump to the element with the most outliers
+            counts = [sum(1 for p in self._diag.outliers()
+                          if p.element == i)
+                      for i in range(len(self._diag.channels))]
+            if any(counts):
+                combo.setCurrentIndex(int(np.argmax(counts)))
         combo.blockSignals(False)
         self._refresh_diag_plot()
         n_out = len(self._diag.outliers())
@@ -1352,7 +1417,7 @@ class BalanceCalWindow(QMainWindow):
             b.setEnabled(False)
         self._refresh_mtable()
         if self.session.point_count() > 0:
-            self._compute_summary()
+            self._compute_summary(auto_jump=False)
 
     def _summarize_existing(self) -> None:
         path, _f = QFileDialog.getOpenFileName(

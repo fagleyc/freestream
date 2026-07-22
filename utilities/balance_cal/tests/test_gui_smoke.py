@@ -251,7 +251,7 @@ def test_compute_summary_with_diagnostics(win, qapp):
     _fill_linear_session(win, bad_point=True)
     win._compute_summary()
     text = win.summary_text.toPlainText()
-    assert "Fit diagnostics" in text
+    assert "WHAT THE FIT SAYS" in text
     assert "outlier" in text.lower()
     assert win.diag_element_combo.count() == 6
     # auto-jumped to the element with the outlier (N1 = index 0)
@@ -301,6 +301,52 @@ def test_diag_goto_selects_row(win, qapp):
     assert win.tabs.currentIndex() == 1
     assert win.orient_combo.currentText() == out.key
     assert win.mtable.currentRow() == out.index
+
+
+def test_plot_view_preserved_after_mitigation(win, qapp):
+    """Repair/exclude refits must NOT jump the plot back to the
+    auto-selected element/view."""
+    _fill_linear_session(win, bad_point=True)
+    win._compute_summary()                       # auto-jumps to N1 (0)
+    win.diag_element_combo.setCurrentIndex(3)    # user looks at Y2
+    win.diag_view_combo.setCurrentIndex(1)       # residual view
+    out = win._diag.outliers()[0]
+    win._diag_sel = out
+    win._diag_exclude()                          # refit (auto_jump off)
+    assert win.diag_element_combo.currentIndex() == 3
+    assert win.diag_view_combo.currentIndex() == 1
+
+
+def test_constant_excitation_used_on_acquire(win, qapp):
+    win.sim_check.setChecked(True)
+    win._connect()
+    win.exc_mode_combo.setCurrentIndex(1)        # Constant
+    win.exc_const_spin.setValue(5.0)
+    acq = win.daq.acquire(0.2, win.session.kind)
+    win._pending_key = "N1_pos"
+    win._pending_load = 10.0
+    win._acquire_done(acq)
+    assert win.session.points["N1_pos"][0].excitation == 5.0
+
+
+def test_set_session_excitation(win, qapp, monkeypatch):
+    from PyQt6.QtWidgets import QInputDialog
+    _fill_linear_session(win)
+    monkeypatch.setattr(QInputDialog, "getDouble",
+                        staticmethod(lambda *a, **k: (5.0, True)))
+    win._set_session_excitation()
+    exc = {p.excitation for pts in win.session.points.values()
+           for p in pts}
+    assert exc == {5.0}
+    assert win.exc_mode_combo.currentIndex() == 1
+
+
+def test_summary_starts_plain_language(win, qapp):
+    _fill_linear_session(win, bad_point=True)
+    win._compute_summary()
+    text = win.summary_text.toPlainText()
+    assert "WHAT THE FIT SAYS" in text
+    assert text.index("WHAT THE FIT SAYS") < text.index("Details")
 
 
 def test_multi_row_delete_maps_indices(win, monkeypatch):
