@@ -45,9 +45,9 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from .config import FreestreamConfig
-from .derived import tunnel_state
+from .derived import TUNNEL_CONDITION_CHANNELS, tunnel_state
 from .hal import Positioner, SetpointDevice, Streaming, Zeroable
-from .machloop import MachLoop, find_tunnel_daq, make_tunnel_measure
+from .machloop import MachLoop, make_tunnel_measure
 from .manager import DeviceManager
 from .recorder import Hdf5Recorder
 from .runsheet import SweepPoint
@@ -78,9 +78,10 @@ class OperatorWaitRequest:
     ``target_mach`` is set for mach points; ``target_rpm`` for run-sheet
     ``rpm`` overrides (exactly one is non-None). ``measure()`` returns
     the live ``(measured_mach, rpm_meas)`` — isentropic Mach from the
-    DaqBook stream (NaN when unavailable) + setpoint RPM readback; reads
-    only, never a command. ``tolerance`` is the ± band on the target
-    quantity (Mach band for mach points, RPM band for rpm overrides)."""
+    registry's tunnel-condition streams (NaN when unavailable) +
+    setpoint RPM readback; reads only, never a command. ``tolerance`` is
+    the ± band on the target quantity (Mach band for mach points, RPM
+    band for rpm overrides)."""
     target_mach: Optional[float]
     tolerance: float
     measure: Callable[[], Tuple[float, float]]
@@ -330,8 +331,7 @@ class SweepEngine:
                        f"tunnel never reached {rpm:g} RPM")
             self._tunnel_cmd["rpm_cmd"] = rpm
             return
-        loop = MachLoop(dev, self.config,
-                        daq=find_tunnel_daq(self.manager.streaming),
+        loop = MachLoop(dev, self.config, manager=self.manager,
                         event=self._event)
         result = loop.run(float(point.mach), self._wait)
         self._tunnel_cmd = {"rpm_cmd": result.rpm_cmd,
@@ -352,8 +352,7 @@ class SweepEngine:
             tol = float(self.config.mach_tolerance)
         req = OperatorWaitRequest(
             target_mach=target_mach, tolerance=tol, target_rpm=target_rpm,
-            measure=make_tunnel_measure(
-                find_tunnel_daq(self.manager.streaming), dev))
+            measure=make_tunnel_measure(self.manager, dev))
         if self._abort.is_set():
             raise SweepAborted()
         if self.cb.on_operator_wait is None:
@@ -467,13 +466,32 @@ class SweepEngine:
                     pos_samples.setdefault(name.capitalize(),
                                            []).append(value)
             if setpoint is not None:
-                rb = setpoint.readback()
+                try:
+                    rb = setpoint.readback()
+                except Exception:                      # noqa: BLE001
+                    rb = {}
                 rpm_cmd = self._tunnel_cmd.get("rpm_cmd")
-                tun_samples.setdefault("RPM_meas", []).append(
-                    rb.get("rpm", 0.0))
-                tun_samples.setdefault("RPM_cmd", []).append(
-                    rpm_cmd if rpm_cmd is not None
-                    else rb.get("rpm_set", 0.0))
+                if "rpm" in rb:
+                    # classic RPM tunnel (SWT PLC): the historical
+                    # RPM_meas/RPM_cmd channel pair, unchanged
+                    tun_samples.setdefault("RPM_meas", []).append(
+                        rb.get("rpm", 0.0))
+                    tun_samples.setdefault("RPM_cmd", []).append(
+                        rpm_cmd if rpm_cmd is not None
+                        else rb.get("rpm_set", 0.0))
+                else:
+                    # generic SetpointDevice (e.g. the LSWT fan drive):
+                    # record EVERY numeric readback key honestly —
+                    # "<key>_meas", with a trailing "_set" mapped to
+                    # "<key>_cmd" (the commanded value)
+                    for key, val in rb.items():
+                        try:
+                            fval = float(val)
+                        except (TypeError, ValueError):
+                            continue
+                        name = (f"{key[:-4]}_cmd" if key.endswith("_set")
+                                else f"{key}_meas")
+                        tun_samples.setdefault(name, []).append(fval)
             time.sleep(0.1)
 
         blocks: Dict[str, Dict[str, np.ndarray]] = {}
@@ -532,7 +550,8 @@ class SweepEngine:
         if tun_samples:
             blocks["Tunnel"] = {k: np.asarray(v) for k, v in
                                 tun_samples.items()}
-            units["Tunnel"] = {k: "RPM" for k in tun_samples}
+            units["Tunnel"] = {k: ("RPM" if k.startswith("RPM") else "-")
+                               for k in tun_samples}
             mach_cmd = self._tunnel_cmd.get("mach_cmd")
             if mach_cmd is not None:                 # constant Mach_cmd
                 n = len(next(iter(blocks["Tunnel"].values())))
@@ -638,14 +657,23 @@ class SweepEngine:
 
         Uses the ONE isentropic chain in :mod:`freestream.derived` (the
         Streamlined SSWT formulas), so Mach_meas/q_meas here agree with
-        the live monitors and the MachLoop number-for-number."""
-        daq = blocks.get("DaqBook2005", {})
-        need = ("Pdiff", "Ptot", "Temp")
-        if not all(k in daq and len(daq[k]) for k in need):
+        the live monitors and the MachLoop number-for-number. The
+        Pdiff/Ptot/Temp channels are found BY NAME across the recorded
+        raw groups — all three in the SWT DaqBook group, or split across
+        devices (LSWT: Pdiff with the NI DAQ, Ptot/Temp with the Heise).
+        Missing any of the three → no derived channels, as before."""
+        means: Dict[str, float] = {}
+        for name in TUNNEL_CONDITION_CHANNELS:
+            for group, chans in blocks.items():
+                if group == "Tunnel":                # engine-written group
+                    continue
+                arr = chans.get(name)
+                if arr is not None and len(arr):
+                    means[name] = float(np.mean(arr))
+                    break
+        if any(k not in means for k in TUNNEL_CONDITION_CHANNELS):
             return
-        st = tunnel_state(float(np.mean(daq["Pdiff"])),
-                          float(np.mean(daq["Ptot"])),
-                          float(np.mean(daq["Temp"])))
+        st = tunnel_state(means["Pdiff"], means["Ptot"], means["Temp"])
         if st.valid:
             n = len(next(iter(blocks["Tunnel"].values())))
             blocks["Tunnel"]["Mach_meas"] = np.full(n, st.mach)

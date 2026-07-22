@@ -1,11 +1,15 @@
 """Derived tunnel quantities — the ONE isentropic Mach/q module.
 
 This is the composition layer: the device drivers stay raw/standalone by
-project rule, and Freestream derives Mach/q from the DaqBook channels
-(Pdiff [psid], Ptot [psia], Temp [degC] — the adapter's ``latest()``
-engineering units). Every consumer (live monitors, Tunnel dashboard,
-sweep /Tunnel derived channels, the MachLoop targeting strategy) calls
-:func:`tunnel_state` here — one source of truth.
+project rule, and Freestream derives Mach/q from the tunnel-condition
+channels (Pdiff [psid], Ptot [psia], Temp [degC] — the adapters'
+``latest()`` engineering units). The channels are found BY NAME across
+the registry's streaming devices (:func:`tunnel_condition_sources`) —
+all three on the SWT DaqBook, or split across devices as in the LSWT
+mode (Pdiff on the NI DAQ, Ptot/Temp on the Heise). Every consumer
+(live monitors, Tunnel dashboard, sweep /Tunnel derived channels, the
+MachLoop targeting strategy) calls :func:`tunnel_state` here — one
+source of truth.
 
 The formulas mirror Streamlined's SSWT isentropic chain EXACTLY
 (``utils/windtunnel/coefficients.py``, facility='SWT') so both apps agree
@@ -34,6 +38,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Dict, Optional
 
 # constants mirrored verbatim from Streamlined coefficients.py
 PSI_TO_PA = 6894.75729
@@ -41,6 +46,80 @@ C_TO_K = 273.15
 R_AIR = 287.058                  # J/(kg*K) - specific gas constant for air
 GAMMA = 1.4                      # ratio of specific heats
 G_RATIO = (GAMMA - 1.0) / GAMMA  # (gamma-1)/gamma = 2/7
+
+#: the three engineering channels the isentropic chain needs, found BY
+#: NAME across the registry's streaming devices (they historically all
+#: lived on the DaqBook; in the LSWT mode Pdiff streams from the NI DAQ
+#: while Ptot/Temp come from the Heise).
+TUNNEL_CONDITION_CHANNELS = ("Pdiff", "Ptot", "Temp")
+
+
+def tunnel_condition_sources(manager) -> Dict[str, object]:
+    """``{channel: streaming adapter}`` for Pdiff/Ptot/Temp, found BY
+    CHANNEL NAME across every streaming device in the registry.
+
+    First device to declare a channel wins (registry/manifest order).
+    The mapping is cached ON the manager — a DeviceManager's device set
+    is fixed after construction, so one scan per registry suffices.
+    Channels nobody declares are simply absent from the result; callers
+    degrade exactly as before (q = None)."""
+    cached = getattr(manager, "_tunnel_condition_sources", None)
+    if cached is not None:
+        return cached
+    sources: Dict[str, object] = {}
+    for dev in getattr(manager, "streaming", []):
+        try:
+            names = {ch.name for ch in dev.channels()}
+        except Exception:                              # noqa: BLE001
+            continue
+        for name in TUNNEL_CONDITION_CHANNELS:
+            if name in names:
+                sources.setdefault(name, dev)
+    try:
+        manager._tunnel_condition_sources = sources
+    except Exception:                                  # noqa: BLE001
+        pass                                           # uncacheable manager
+    return sources
+
+
+def read_tunnel_conditions(manager) -> Dict[str, float]:
+    """Latest ENGINEERING values (Pdiff psid / Ptot psia / Temp degC)
+    gathered across the registry via :func:`tunnel_condition_sources`.
+
+    Same-device fast path preserved: each source device's ``latest()``
+    is called AT MOST ONCE per read (the SWT modes' single DaqBook stays
+    one call). Returns whatever subset is actually available — channels
+    with no source, no data yet, or a read error are simply missing."""
+    sources = tunnel_condition_sources(manager)
+    latest_by_dev: Dict[int, Dict[str, float]] = {}
+    out: Dict[str, float] = {}
+    for name, dev in sources.items():
+        vals = latest_by_dev.get(id(dev))
+        if vals is None:
+            try:
+                vals = dev.latest() or {}
+            except Exception:                          # noqa: BLE001
+                vals = {}
+            latest_by_dev[id(dev)] = vals
+        if name in vals:
+            try:
+                out[name] = float(vals[name])
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def live_tunnel_state(manager) -> Optional["TunnelState"]:
+    """One-call derived flow condition from the live registry: find the
+    Pdiff/Ptot/Temp sources, read them, run :func:`tunnel_state`.
+    None when any of the three channels is unavailable (missing device,
+    stream not started, read error) — the caller shows q = None exactly
+    as the old DaqBook-only path did. When a state IS returned, check
+    ``.valid`` as usual."""
+    vals = read_tunnel_conditions(manager)
+    if any(k not in vals for k in TUNNEL_CONDITION_CHANNELS):
+        return None
+    return tunnel_state(vals["Pdiff"], vals["Ptot"], vals["Temp"])
 
 
 @dataclass

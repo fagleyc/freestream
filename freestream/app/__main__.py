@@ -25,8 +25,12 @@ def main(argv=None) -> int:
                         help="simulated adapters (default for now)")
     parser.add_argument("--live", action="store_true",
                         help="use real hardware (overrides --sim)")
-    parser.add_argument("--mode", choices=("mode1", "mode2"), default=None,
-                        help="device mode (default: config file / mode1)")
+    parser.add_argument(
+        "--mode", default=None,
+        help="device mode from the manifest (SWT-AC-Internal, "
+             "SWT-External, SWT-Traverse, LSWT-LSWTSting-NI; legacy "
+             "mode1/mode2/mode3 still accepted). Default: config file / "
+             "SWT-AC-Internal")
     parser.add_argument("--config", type=Path, default=None,
                         help="FreestreamConfig JSON to load")
     args = parser.parse_args(argv)

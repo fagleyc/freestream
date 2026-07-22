@@ -18,7 +18,9 @@ from typing import Dict, Optional
 class FreestreamConfig:
     """All user-tunable Freestream settings (JSON save/load)."""
 
-    mode: str = "mode1"              # mode1 crescent+strainbook | mode2 ate
+    #: manifest mode name. Legacy configs carrying "mode1"/"mode2"/
+    #: "mode3" are normalized to the current names in :meth:`from_dict`.
+    mode: str = "SWT-AC-Internal"
     #: Custom-mode device pick (list of manifest device ids). Only used
     #: when ``mode == "custom"``; empty for the manifest modes. Persisted
     #: so Save/Load round-trips the exact chosen subset.
@@ -127,7 +129,12 @@ class FreestreamConfig:
     @classmethod
     def from_dict(cls, d: dict) -> "FreestreamConfig":
         known = {f for f in cls.__dataclass_fields__}      # noqa: E1101
-        return cls(**{k: v for k, v in d.items() if k in known})
+        cfg = cls(**{k: v for k, v in d.items() if k in known})
+        # migrate legacy mode names (saved configs / defaults bundles
+        # predating the intuitive names) to the current manifest names
+        from .manager import LEGACY_MODE_ALIASES       # lazy: keep light
+        cfg.mode = LEGACY_MODE_ALIASES.get(cfg.mode, cfg.mode)
+        return cfg
 
     def save(self, path) -> None:
         Path(path).write_text(json.dumps(self.to_dict(), indent=2),

@@ -15,10 +15,22 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .derived import TUNNEL_CONDITION_CHANNELS
 from .hal import (DeviceBase, Positioner, SetpointDevice, Streaming,
                   Zeroable, capabilities)
 
 log = logging.getLogger(__name__)
+
+#: Legacy mode names → the current manifest names. Saved configs /
+#: defaults bundles (and old command lines) carry "mode1"/"mode2"/
+#: "mode3"; DeviceManager resolves them ONLY when the requested name is
+#: absent from the manifest's modes — a test fixture manifest that
+#: defines its own "mode1" keeps meaning exactly that.
+LEGACY_MODE_ALIASES = {
+    "mode1": "SWT-AC-Internal",
+    "mode2": "SWT-External",
+    "mode3": "SWT-Traverse",
+}
 
 # make the existing driver packages importable (they live side by side
 # under projects/devices/)
@@ -36,7 +48,7 @@ class DeviceManager:
     #: (Custom mode): roles are inferred from capabilities, not the manifest.
     CUSTOM = "custom"
 
-    def __init__(self, mode: str = "mode1", sim: bool = True,
+    def __init__(self, mode: str = "SWT-AC-Internal", sim: bool = True,
                  manifest_path: Optional[Path] = None,
                  custom_devices: Optional[List[str]] = None):
         self.mode = mode
@@ -45,7 +57,7 @@ class DeviceManager:
         self.manifest = json.loads(self.manifest_path.read_text(
             encoding="utf-8"))
         #: explicit id list when the operator picked devices one-by-one;
-        #: None for a normal manifest mode (mode1/mode2/mode3).
+        #: None for a normal manifest mode.
         self.custom_devices: Optional[List[str]] = (
             list(custom_devices) if custom_devices is not None else None)
         self.devices: Dict[str, DeviceBase] = {}
@@ -60,11 +72,27 @@ class DeviceManager:
             # not read from manifest["modes"] (there is no custom mode).
             self.roles: Dict[str, str] = self._derive_roles()
         else:
+            mode = self.resolve_mode(mode, self.manifest)
+            self.mode = mode
             if mode not in self.manifest["modes"]:
                 raise ValueError(f"unknown mode {mode!r}; manifest has "
                                  f"{list(self.manifest['modes'])}")
             self.roles = dict(self.manifest["modes"][mode])
             self._build()
+
+    @staticmethod
+    def resolve_mode(mode: str, manifest: dict) -> str:
+        """Map a LEGACY mode name to its current manifest name.
+
+        The alias applies only when *mode* is missing from the manifest's
+        modes AND the aliased name exists there — manifests that define
+        the legacy name themselves (test fixtures) are untouched."""
+        modes = manifest.get("modes", {})
+        if mode not in modes:
+            alias = LEGACY_MODE_ALIASES.get(mode)
+            if alias and alias in modes:
+                return alias
+        return mode
 
     @classmethod
     def custom(cls, device_ids: List[str], sim: bool = True,
@@ -113,7 +141,9 @@ class DeviceManager:
 
         first Positioner → ``positioner``; first SetpointDevice →
         ``tunnel``; first Zeroable (else first Streaming) → ``balance``;
-        the DaqBook-group streamer (else any other streamer) →
+        the streamer carrying the tunnel-condition channels BY NAME
+        (Pdiff/Ptot/Temp — at least two of them, so a balance DAQ that
+        happens to also carry Pdiff does not claim the role) →
         ``tunnel_conditions``. Whatever isn't present is simply absent —
         the rail/monitors/dashboard all guard on ``None``."""
         roles: Dict[str, str] = {}
@@ -130,7 +160,8 @@ class DeviceManager:
                 continue
             roles.setdefault("balance", dev_id)     # fallback: no Zeroable
             try:
-                if any(ch.group == "DaqBook2005" for ch in dev.channels()):
+                names = {ch.name for ch in dev.channels()}
+                if len(names & set(TUNNEL_CONDITION_CHANNELS)) >= 2:
                     roles.setdefault("tunnel_conditions", dev_id)
             except Exception:                          # noqa: BLE001
                 pass

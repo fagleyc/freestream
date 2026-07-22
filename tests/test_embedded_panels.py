@@ -141,7 +141,7 @@ def traverse(tmp_path):
     # mode1 via a temp manifest so the embedded panel can be exercised
     # in a mode1 context.
     src["devices"]["traverse"]["enabled"] = True
-    src["modes"]["mode1"]["traverse"] = "traverse"
+    src["modes"]["SWT-AC-Internal"]["traverse"] = "traverse"
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(src), encoding="utf-8")
     mgr = DeviceManager("mode1", sim=True, manifest_path=path)

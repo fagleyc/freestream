@@ -1,18 +1,18 @@
 {
   "modes": {
-    "mode1": {
+    "SWT-AC-Internal": {
       "positioner": "pos",
       "balance": "balance",
       "tunnel_conditions": "daq",
       "tunnel": "tun"
     },
-    "mode2": {
+    "SWT-External": {
       "positioner": "pos",
       "balance": "balance",
       "tunnel_conditions": "daq",
       "tunnel": "tun"
     },
-    "mode3": {
+    "SWT-Traverse": {
       "positioner": "pos"
     }
   },

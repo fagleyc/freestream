@@ -30,8 +30,9 @@ from PyQt6.QtWidgets import (QFrame, QGridLayout, QGroupBox, QHBoxLayout,
                              QLabel, QSizePolicy, QVBoxLayout, QWidget)
 
 from .. import theme
-from ..derived import tunnel_state
-from ..hal import SetpointDevice, Streaming
+from ..derived import (TUNNEL_CONDITION_CHANNELS, read_tunnel_conditions,
+                       tunnel_state)
+from ..hal import SetpointDevice
 
 SAMPLE_MS = 200                       # 5 Hz UI sampling
 HISTORY_N = 600                       # ≈120 s of history
@@ -335,7 +336,6 @@ class TunnelDashboard(QWidget):
         self._t0 = time.monotonic()
         self._hist: Dict[str, deque] = {}
         self._tunnel: Optional[SetpointDevice] = None
-        self._daq: Optional[Streaming] = None
         self._positioner = None
         self._targets: Dict[str, Optional[float]] = {"alpha": None,
                                                      "beta": None}
@@ -559,17 +559,9 @@ class TunnelDashboard(QWidget):
     def _discover(self) -> None:
         dev = self.manager.by_role("tunnel")
         self._tunnel = dev if hasattr(dev, "snapshot") else None
-        # positioner (crescent in mode1, ate in mode2) feeds the α/β pad;
-        # positions() reports alpha/beta in deg for both modes
+        # positioner (crescent, ate, lswt_sting…) feeds the α/β pad;
+        # positions() reports alpha/beta in deg for all attitude rigs
         self._positioner = getattr(self.manager, "positioner", None)
-        self._daq = None
-        for s in self.manager.streaming:
-            try:
-                if any(ch.group == "DaqBook2005" for ch in s.channels()):
-                    self._daq = s
-                    break
-            except Exception:                          # noqa: BLE001
-                continue
 
     # ── sampling ─────────────────────────────────────────────────────────
     def _push(self, key: str, t: float, v: float) -> None:
@@ -580,20 +572,23 @@ class TunnelDashboard(QWidget):
             return
         t = time.monotonic() - self._t0
 
+        # tunnel conditions found BY CHANNEL NAME across the registry's
+        # streaming devices (SWT: one DaqBook; LSWT: Pdiff from the NI
+        # DAQ, Ptot/Temp from the Heise). Partial availability still
+        # shows the raw Ptot/Temp tiles; Mach/q need all three.
         mach = q = ptot = temp = vel = None
-        if self._daq is not None:
-            try:
-                vals = self._daq.latest()
-                ptot = float(vals.get("Ptot", 0.0))
-                temp = float(vals.get("Temp", 0.0))
-                st = tunnel_state(float(vals.get("Pdiff", 0.0)),
-                                  ptot, temp)
+        try:
+            vals = read_tunnel_conditions(self.manager)
+            ptot = vals.get("Ptot")
+            temp = vals.get("Temp")
+            if all(k in vals for k in TUNNEL_CONDITION_CHANNELS):
+                st = tunnel_state(vals["Pdiff"], ptot, temp)
                 if st.valid:
                     mach, q, vel = st.mach, st.q_psi, st.velocity_ms
                     self._push("mach", t, mach)
                     self._push("q", t, q)
-            except Exception:                          # noqa: BLE001
-                ptot = temp = None
+        except Exception:                              # noqa: BLE001
+            ptot = temp = None
         self.tiles["mach"].set_value(mach)
         self.tiles["q"].set_value(q)
         self.tiles["ptot"].set_value(ptot)
@@ -636,7 +631,7 @@ class TunnelDashboard(QWidget):
                                        if snap.stale else "")
 
         # live α/β attitude pad — positions() gives alpha/beta in deg for
-        # both mode1 (crescent) and mode2 (ate)
+        # every attitude rig (crescent, ate, lswt_sting)
         if self._positioner is not None:
             try:
                 pp = self._positioner.positions()

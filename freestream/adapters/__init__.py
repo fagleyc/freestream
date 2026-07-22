@@ -14,6 +14,12 @@ ate            ate_balance                 Streaming + Positioner +
 tunnel         tunnel_plc                  SetpointDevice (fan RPM)
 traverse       traverse_swt.TraverseDrive  Positioner (x/y/z, inches)
 lswt_sting     lswt_sting.StingDrive       Positioner (alpha/beta, deg)
+lswt           lswt.LswtDrive              SetpointDevice (North LSWT
+                                           fan Hz/velocity; rpm = Hz*60)
+heise          heise.HeiseGauge            Streaming (Ptot/Temp tunnel
+                                           conditions)
+ni_daq         ni_usb_6351.NiUsb6351       Streaming + Zeroable
+                                           (bridges + Excitation + Pdiff)
 =============  ==========================  ============================
 
 Every adapter is constructed by the DeviceManager as
@@ -25,4 +31,4 @@ The recorder owns time — adapters never emit a "Time" channel.
 from __future__ import annotations
 
 __all__ = ["crescent", "strainbook", "daqbook", "ate", "tunnel",
-           "traverse", "lswt_sting"]
+           "traverse", "lswt_sting", "lswt", "heise", "ni_daq"]

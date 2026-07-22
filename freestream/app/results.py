@@ -112,18 +112,14 @@ class ResultsPanel(QWidget):
         self._redraw()
 
     def _q_live_psi(self) -> Optional[float]:
-        from ..derived import tunnel_state
-        for s in self.manager.streaming:
-            try:
-                if any(ch.group == "DaqBook2005" for ch in s.channels()):
-                    v = s.latest()
-                    st = tunnel_state(float(v.get("Pdiff", 0.0)),
-                                      float(v.get("Ptot", 0.0)),
-                                      float(v.get("Temp", 0.0)))
-                    return st.q_psi if st.valid else None
-            except Exception:                          # noqa: BLE001
-                continue
-        return None
+        """Live q from the registry's Pdiff/Ptot/Temp sources (found by
+        channel name across devices); None when unavailable."""
+        from ..derived import live_tunnel_state
+        try:
+            st = live_tunnel_state(self.manager)
+        except Exception:                              # noqa: BLE001
+            return None
+        return st.q_psi if st is not None and st.valid else None
 
     def _ensure_cal(self):
         if self.config.vol_path and self._cal_path != self.config.vol_path:

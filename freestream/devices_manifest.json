@@ -1,20 +1,26 @@
 {
   "modes": {
-    "mode1": {
+    "SWT-AC-Internal": {
       "positioner": "crescent",
       "balance": "strainbook",
       "tunnel_conditions": "daqbook",
       "tunnel": "tunnel"
     },
-    "mode2": {
+    "SWT-External": {
       "positioner": "ate",
       "balance": "ate",
       "tunnel_conditions": "daqbook",
       "tunnel": "tunnel"
     },
-    "mode3": {
+    "SWT-Traverse": {
       "positioner": "traverse",
       "tunnel_conditions": "daqbook"
+    },
+    "LSWT-LSWTSting-NI": {
+      "positioner": "lswt_sting",
+      "balance": "ni_daq",
+      "tunnel_conditions": "heise",
+      "tunnel": "lswt"
     }
   },
   "devices": {
@@ -48,6 +54,14 @@
     },
     "ni_daq": {
       "adapter": "freestream.adapters.ni_daq.NiDaqAdapter",
+      "enabled": true
+    },
+    "heise": {
+      "adapter": "freestream.adapters.heise.HeiseAdapter",
+      "enabled": true
+    },
+    "lswt": {
+      "adapter": "freestream.adapters.lswt.LswtTunnelAdapter",
       "enabled": true
     }
   }

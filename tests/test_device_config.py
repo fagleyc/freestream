@@ -40,7 +40,7 @@ def all_manifest(tmp_path_factory):
     src = json.loads((Path(__file__).resolve().parents[1] / "freestream" /
                       "devices_manifest.json").read_text(encoding="utf-8"))
     src["devices"]["traverse"]["enabled"] = True
-    src["modes"]["mode1"]["traverse"] = "traverse"
+    src["modes"]["SWT-AC-Internal"]["traverse"] = "traverse"
     path = tmp_path_factory.mktemp("manifest") / "all.json"
     path.write_text(json.dumps(src), encoding="utf-8")
     return path

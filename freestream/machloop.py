@@ -9,10 +9,12 @@ HERE, in the Freestream composition layer, never in the driver:
 * the RPM command goes through the ordinary HAL
   :class:`~freestream.hal.SetpointDevice` (``set_target(rpm=...)``);
 * *at target* is decided from the MEASURED Mach — the isentropic chain in
-  :mod:`freestream.derived` over the DaqBook-group streaming device's
-  ``latest()`` (Pdiff/Ptot/Temp engineering units) — within
+  :mod:`freestream.derived` over the tunnel-condition channels
+  (Pdiff/Ptot/Temp engineering units via ``latest()``), found BY NAME
+  across the registry's streaming devices (all three on the SWT DaqBook,
+  or split across devices as in the LSWT mode) — within
   ``config.mach_tolerance``, AND the RPM readback settled;
-* in SIM the sim DaqBook pressures do not respond to fan RPM, so the loop
+* in SIM the sim DAQ pressures do not respond to fan RPM, so the loop
   falls back to the RPM-proxy ``at_target`` with a clear log line
   ("sim: Mach loop proxied by RPM").
 
@@ -31,13 +33,11 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
 from .config import FreestreamConfig
-from .derived import tunnel_state
+from .derived import (TUNNEL_CONDITION_CHANNELS, live_tunnel_state,
+                      tunnel_condition_sources, tunnel_state)
 from .hal import SetpointDevice, Streaming
 
 log = logging.getLogger(__name__)
-
-#: group name of the tunnel-conditions DAQ (see adapters.daqbook.GROUP)
-DAQ_GROUP = "DaqBook2005"
 
 #: WaitFn(condition, timeout_s, fail_msg) — the sweep engine's abortable
 #: _wait; tests may pass a simple polling loop.
@@ -45,10 +45,14 @@ WaitFn = Callable[[Callable[[], bool], float, str], None]
 
 
 def find_tunnel_daq(streams) -> Optional[Streaming]:
-    """The DaqBook-group streaming device (Pdiff/Ptot/Temp), if present."""
+    """The single streaming device carrying ALL of Pdiff/Ptot/Temp (the
+    classic one-DAQ fast path: the SWT DaqBook), if present. Cross-device
+    splits (LSWT: NI + Heise) have no such device — use the registry
+    helpers (:func:`registry_mach`, ``derived.live_tunnel_state``)."""
+    need = set(TUNNEL_CONDITION_CHANNELS)
     for s in streams:
         try:
-            if any(ch.group == DAQ_GROUP for ch in s.channels()):
+            if need <= {ch.name for ch in s.channels()}:
                 return s
         except Exception:                              # noqa: BLE001
             continue
@@ -56,31 +60,41 @@ def find_tunnel_daq(streams) -> Optional[Streaming]:
 
 
 def daq_mach(daq: Optional[Streaming]) -> Optional[float]:
-    """Isentropic Mach from a DaqBook stream's ``latest()`` — the ONE
-    measurement shared by MachLoop closure and the sweep engine's
-    monitor-only operator wait. None when unavailable/invalid."""
+    """Isentropic Mach from ONE stream's ``latest()`` (all three tunnel
+    channels on the same device). None when unavailable/invalid."""
     if daq is None:
         return None
     try:
         vals = daq.latest()
     except Exception:                                  # noqa: BLE001
         return None
-    if not all(k in vals for k in ("Pdiff", "Ptot", "Temp")):
+    if not all(k in vals for k in TUNNEL_CONDITION_CHANNELS):
         return None
     st = tunnel_state(float(vals["Pdiff"]), float(vals["Ptot"]),
                       float(vals["Temp"]))
     return st.mach if st.valid else None
 
 
-def make_tunnel_measure(daq: Optional[Streaming],
+def registry_mach(manager) -> Optional[float]:
+    """Isentropic Mach from the REGISTRY: Pdiff/Ptot/Temp found by
+    channel name across all streaming devices (cross-device in the LSWT
+    mode; the SWT DaqBook keeps its one-``latest()`` fast path). The ONE
+    measurement shared by MachLoop closure and the sweep engine's
+    monitor-only operator wait. None when unavailable/invalid."""
+    st = live_tunnel_state(manager)
+    return st.mach if st is not None and st.valid else None
+
+
+def make_tunnel_measure(manager,
                         setpoint: Optional[SetpointDevice]
                         ) -> Callable[[], Tuple[float, float]]:
     """Build the ``() -> (measured_mach, rpm_meas)`` probe used by the
     monitor-only operator wait (sweep.OperatorWaitRequest.measure):
-    isentropic Mach from the DAQ (NaN when unavailable) + fan RPM from
-    the setpoint readback — reads only, never a command."""
+    isentropic Mach from the registry's tunnel-condition channels (NaN
+    when unavailable) + fan RPM from the setpoint readback — reads only,
+    never a command."""
     def measure() -> Tuple[float, float]:
-        mach = daq_mach(daq)
+        mach = registry_mach(manager)
         rpm = 0.0
         if setpoint is not None:
             try:
@@ -105,11 +119,16 @@ class MachLoop:
     """Owns the Mach→RPM conversion and the at-target decision."""
 
     def __init__(self, setpoint: SetpointDevice, config: FreestreamConfig,
-                 daq: Optional[Streaming] = None,
+                 daq: Optional[Streaming] = None, manager=None,
                  event: Optional[Callable[[str], None]] = None):
+        """``daq``: a single stream carrying all three tunnel channels
+        (classic path, still honored). ``manager``: the DeviceManager —
+        preferred; measurement finds Pdiff/Ptot/Temp by channel name
+        across the registry (cross-device in the LSWT mode)."""
         self.setpoint = setpoint
         self.config = config
         self.daq = daq
+        self.manager = manager
         self._event = event or (lambda msg: log.info(msg))
 
     # ── conversions / measurements ───────────────────────────────────────
@@ -134,13 +153,30 @@ class MachLoop:
         return rpm
 
     def measured_mach(self) -> Optional[float]:
-        """Isentropic Mach from the DAQ's latest() (None if unavailable)."""
-        return daq_mach(self.daq)
+        """Isentropic Mach from the tunnel-condition channels (None if
+        unavailable): the explicit single ``daq`` when given, else the
+        registry-wide by-name lookup."""
+        if self.daq is not None:
+            return daq_mach(self.daq)
+        if self.manager is not None:
+            return registry_mach(self.manager)
+        return None
+
+    def _measure_devices(self):
+        """The devices the measured Mach actually comes from."""
+        if self.daq is not None:
+            return [self.daq]
+        if self.manager is not None:
+            sources = tunnel_condition_sources(self.manager)
+            if all(k in sources for k in TUNNEL_CONDITION_CHANNELS):
+                return list({id(d): d for d in sources.values()}.values())
+        return []
 
     @property
     def live(self) -> bool:
-        """True when measured-Mach closure is possible (hardware DAQ)."""
-        if self.daq is None or getattr(self.daq, "sim", True):
+        """True when measured-Mach closure is possible (hardware DAQ(s))."""
+        devs = self._measure_devices()
+        if not devs or any(getattr(d, "sim", True) for d in devs):
             return False
         return not getattr(self.setpoint, "sim", True)
 
@@ -159,7 +195,7 @@ class MachLoop:
         rpm = self.rpm_for(mach)
 
         if not self.live:
-            # sim plant: DaqBook pressures don't respond to fan RPM
+            # sim plant: the sim DAQ pressures don't respond to fan RPM
             self._event(f"sim: Mach loop proxied by RPM "
                         f"(Mach {mach:g} → {rpm:g} RPM)")
             self.setpoint.set_target(rpm=rpm)
@@ -182,7 +218,8 @@ class MachLoop:
             if meas is None:
                 raise RuntimeError(
                     "mach loop: no measured Mach available from the "
-                    "DaqBook stream — cannot confirm tunnel condition")
+                    "tunnel-condition streams — cannot confirm tunnel "
+                    "condition")
             if abs(meas - mach) <= tol:
                 self._event(f"mach loop: at target — measured Mach "
                             f"{meas:.3f} (target {mach:g} ± {tol:g})")

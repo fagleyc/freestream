@@ -80,7 +80,7 @@ def build_manager(mode: str, sim: bool, on_log=None,
         except Exception:                              # noqa: BLE001
             # the saved custom ids don't exist in the fakes manifest —
             # last-resort default so the window still opens.
-            return DeviceManager("mode1", sim=True,
+            return DeviceManager("SWT-AC-Internal", sim=True,
                                  manifest_path=FAKE_MANIFEST)
 
 
@@ -269,9 +269,15 @@ class FreestreamMainWindow(QMainWindow):
         self.mode_combo.addItems(list(self.manager.manifest["modes"]))
         self.mode_combo.addItem(DeviceManager.CUSTOM)   # pick devices by hand
         self.mode_combo.setToolTip(
-            "mode1/2 are the sting-rig presets; mode3 = traverse X/Y/Z "
-            "matrix + DaqBook. 'custom' opens a picker to choose any "
-            "device subset.\nSwitchable only while disconnected.")
+            "SWT-AC-Internal — crescent sting + StrainBook internal "
+            "balance + DaqBook + tunnel PLC.\n"
+            "SWT-External — ATE external balance rig + DaqBook + tunnel "
+            "PLC.\n"
+            "SWT-Traverse — traverse X/Y/Z matrix + DaqBook.\n"
+            "LSWT-LSWTSting-NI — LSWT sting + NI USB-6351 balance DAQ + "
+            "Heise (Ptot/Temp) + LSWT fan drive (North tunnel).\n"
+            "'custom' opens a picker to choose any device subset.\n"
+            "Switchable only while disconnected.")
         self.mode_combo.setCurrentText(self.manager.mode)
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         bar.addWidget(self.mode_combo)

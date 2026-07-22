@@ -13,6 +13,18 @@ increasing ``frame_count()`` (the ring's own ``count`` saturates at
 capacity), clamped to what the ring still holds. ``zero()`` is the
 driver's software ``tare(seconds)``. The recorder owns time — no Time
 channel is exposed.
+
+Channel layout (driver config defaults, ``ni_usb_6351.config``): the six
+balance bridges on ai0..ai5 (N1/N2/Y1/Y2/Axial/Roll — Force layout), the
+supplied-excitation readback on ai6, and the DIFFERENTIAL PRESSURE
+transducer next (ai7). The adapter guarantees **Excitation** and
+**Pdiff** are present-by-default (:func:`_ensure_default_channels`
+repurposes the stock disabled ai7 "Spare" as Pdiff, re-asserted after
+every config load) so the recorder always captures the excitation volts
+and the derived Mach/q chain can find Pdiff by name. Balance channels
+stream/record raw volts (unit "V"); non-balance extras report their
+config unit (Pdiff psid) — ``latest()`` serves that engineering value
+via the channel's scale/offset while ``drain_block`` stays raw volts.
 """
 
 from __future__ import annotations
@@ -28,7 +40,7 @@ _DEVICES_DIR = Path(__file__).resolve().parents[2] / "devices"
 if str(_DEVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_DEVICES_DIR))
 
-from ni_usb_6351.config import NiDaqConfig                    # noqa: E402
+from ni_usb_6351.config import ChannelConfig, NiDaqConfig     # noqa: E402
 from ni_usb_6351.device import NiUsb6351                      # noqa: E402
 
 from ..hal import ChannelSpec, DeviceStatus, OFFLINE, OK      # noqa: E402
@@ -37,22 +49,81 @@ from ._configurable import ConfigurableAdapter                 # noqa: E402
 GROUP = "NI_USB_6351"
 
 
+def _ensure_default_channels(cfg: NiDaqConfig) -> None:
+    """Guarantee Excitation + Pdiff are present AND enabled.
+
+    The new North-LSWT mode records the supplied excitation and the
+    differential-pressure transducer alongside the six bridges. Driver
+    defaults already put Excitation on ai6; Pdiff takes the next AI
+    (the stock disabled ai7 "Spare" is repurposed, else the next free
+    ai). Re-asserted after every config load so a saved bundle can
+    never silently drop the channels the recorder/derived chain need.
+    """
+    by_name = {c.name: c for c in cfg.channels}
+
+    exc = by_name.get("Excitation")
+    if exc is None:
+        cfg.channels.append(ChannelConfig(
+            channel=_next_free_ai(cfg), name="Excitation",
+            v_min=-10.0, v_max=10.0))
+    else:
+        exc.enabled = True
+
+    pdiff = by_name.get("Pdiff")
+    if pdiff is None:
+        spare = next((c for c in cfg.channels
+                      if c.name == "Spare" and not c.balance), None)
+        if spare is not None:               # stock ai7 spare → Pdiff
+            pdiff = spare
+            pdiff.name = "Pdiff"
+        else:
+            pdiff = ChannelConfig(channel=_next_free_ai(cfg),
+                                  name="Pdiff",
+                                  v_min=-10.0, v_max=10.0)
+            cfg.channels.append(pdiff)
+        # transducer engineering-unit declaration; scale/offset stay the
+        # operator's to calibrate (defaults record honest raw volts)
+        pdiff.unit = "psid"
+    pdiff.enabled = True
+    pdiff.balance = False
+
+
+def _next_free_ai(cfg: NiDaqConfig) -> int:
+    used = {c.channel for c in cfg.channels}
+    return next(i for i in range(64) if i not in used)
+
+
 class NiDaqAdapter(ConfigurableAdapter):
     """Streaming + Zeroable adapter for the NI USB-6351 balance DAQ."""
 
     id = "ni_daq"
     label = "NI USB-6351 (DAQ)"
     settings_dialog_path = "ni_usb_6351.app.settings_dialog:SettingsDialog"
+    #: hardware classification, inherited into the recorded file markers
+    #: (root attr ``balance_type``) by the sweep engine: bridge VOLTS
+    #: needing a .vol reduction. NOTE: distinct from the CONFIG's
+    #: ``balance_type`` (.vol balance-model metadata).
+    balance_type = "internal"
 
     def __init__(self, sim: bool = False,
                  config_path: Optional[str] = None):
         cfg = (NiDaqConfig.load(config_path) if config_path
                else NiDaqConfig())
         cfg.force_sim = bool(sim)
+        _ensure_default_channels(cfg)
         self._cfg = cfg
         self._dev = NiUsb6351(cfg)
         self._sim = bool(sim)
         self._cursor = 0            # frame_count() at the last drain
+        self._zero_count = 0        # bumps on every tare (peak-hold reset)
+
+    # ── ConfigurableAdapter ──────────────────────────────────────────────
+    def apply_config_dict(self, data) -> None:
+        """Generic apply (force_sim preserved by the mixin), then
+        re-assert the Excitation/Pdiff presence invariant — a saved
+        bundle must never drop them from the channel list."""
+        super().apply_config_dict(data)
+        _ensure_default_channels(self._cfg)
 
     # ── DeviceBase ───────────────────────────────────────────────────────
     def connect(self) -> None:
@@ -84,6 +155,18 @@ class NiDaqAdapter(ConfigurableAdapter):
     def balance_config(self, value: str) -> None:
         self._dev.set_balance_config(value)
 
+    # ── balance calibration pointers — DEVICE-OWNED ──────────────────────
+    # The .vol path and fit type live on the driver config (edited in the
+    # NI device panel); Freestream's live Forces readout INHERITS them
+    # through these read-only views each tick (mirrors strainbook).
+    @property
+    def vol_path(self) -> str:
+        return self._cfg.vol_path
+
+    @property
+    def cal_type(self) -> str:
+        return self._cfg.cal_type
+
     def status(self) -> DeviceStatus:
         if not self._dev.connected:
             return DeviceStatus(state=OFFLINE, message="not connected",
@@ -113,10 +196,14 @@ class NiDaqAdapter(ConfigurableAdapter):
         self._cfg.scan_hz = float(hz)
 
     def channels(self) -> List[ChannelSpec]:
-        # Recorded values are the raw ADC volts (``_V`` ring fields);
-        # any per-channel engineering scaling is display-only.
-        return [ChannelSpec(name=c.name, unit="V", group=GROUP,
-                            kind="raw", device_id=self.id)
+        # Recorded values are the raw ADC volts (``_V`` ring fields).
+        # Balance bridges declare "V" (scale forced to 1.0 anyway);
+        # non-balance extras (Pdiff, Excitation) declare their config
+        # unit — the unit latest() serves via the channel's scale/offset
+        # (the derived q chain reads Pdiff [psid] from latest()).
+        return [ChannelSpec(name=c.name,
+                            unit="V" if c.balance else c.unit,
+                            group=GROUP, kind="raw", device_id=self.id)
                 for c in self._cfg.enabled_channels()]
 
     def latest(self) -> Dict[str, float]:
@@ -166,4 +253,12 @@ class NiDaqAdapter(ConfigurableAdapter):
     # ── Zeroable ─────────────────────────────────────────────────────────
     def zero(self, seconds: float = 0.5) -> Dict[str, float]:
         """Software tare on the current per-channel mean (volts)."""
-        return self._dev.tare(seconds)
+        tares = self._dev.tare(seconds)
+        self._zero_count += 1
+        return tares
+
+    @property
+    def zero_count(self) -> int:
+        """Bumps on every adapter-path tare — peak-hold displays reset
+        when it changes (mirrors strainbook)."""
+        return self._zero_count

@@ -18,3 +18,7 @@ _MOVED_README.txt
 
 # Vendor manuals too large for the repo (kept local only)
 devices/ac_delta/info/delta-c2000-manual.pdf
+
+# Runtime/test state (regenerated every session)
+devices/lswt_sting/sting_state.json
+devices/tests/_state_scratch.json

@@ -4,7 +4,9 @@ DISPLAY ONLY (team directive: coefficients/forces are never persisted; the
 recorder stores raw volts). Each UI tick this pulls a non-consuming window
 of raw balance bridge-volts (:meth:`StrainbookAdapter.raw_tail` — it must
 NOT steal samples from the recorder), the current alpha/beta from the
-positioner and q from the DaqBook, and reduces them through
+positioner and q from the registry's tunnel-condition channels (Pdiff/
+Ptot/Temp found by name across the streaming devices — one DaqBook in
+the SWT modes, NI + Heise in the LSWT mode), and reduces them through
 :mod:`freestream.aero` into wind-axis Lift/Drag/Side + moments.
 
 Per-element loads are compared against the balance's rated maxima (from the
@@ -37,7 +39,7 @@ from PyQt6.QtWidgets import (QFrame, QGridLayout, QGroupBox, QHBoxLayout,
 
 from .. import theme
 from ..aero import Geometry, balance_summary, compute_aero, load_balance_cal
-from ..derived import tunnel_state
+from ..derived import live_tunnel_state
 from ..hal import Streaming
 
 SAMPLE_MS = 200
@@ -166,7 +168,6 @@ class ForcesPanel(QWidget):
         self.cal = None
         self.overstress = False
         self._balance: Optional[Streaming] = None
-        self._daq: Optional[Streaming] = None
         # inherited state (device-owned; mirrored into the shared config
         # so the recorder metadata and session persistence stay correct)
         self._layout = config.balance_config or "Force"
@@ -370,14 +371,6 @@ class ForcesPanel(QWidget):
     def _discover(self) -> None:
         bal = self.manager.by_role("balance")
         self._balance = bal if isinstance(bal, Streaming) else None
-        self._daq = None
-        for s in self.manager.streaming:
-            try:
-                if any(ch.group == "DaqBook2005" for ch in s.channels()):
-                    self._daq = s
-                    break
-            except Exception:                          # noqa: BLE001
-                continue
 
     # ── record interlock hook ────────────────────────────────────────────
     def record_blocker(self) -> Optional[str]:
@@ -387,16 +380,13 @@ class ForcesPanel(QWidget):
 
     # ── live sampling ────────────────────────────────────────────────────
     def _q_psi(self) -> Optional[float]:
-        if self._daq is None:
-            return None
+        """Live q from the registry's Pdiff/Ptot/Temp sources (found by
+        channel name across devices); None when unavailable."""
         try:
-            v = self._daq.latest()
-            st = tunnel_state(float(v.get("Pdiff", 0.0)),
-                              float(v.get("Ptot", 0.0)),
-                              float(v.get("Temp", 0.0)))
-            return st.q_psi if st.valid else None
+            st = live_tunnel_state(self.manager)
         except Exception:                              # noqa: BLE001
             return None
+        return st.q_psi if st is not None and st.valid else None
 
     def _alpha_beta(self):
         pos = self.manager.positioner
