@@ -97,6 +97,11 @@ class FitDiagnostics:
     channel_anomalies: List[ChannelAnomaly] = field(default_factory=list)
     crosstalk_notes: List[str] = field(default_factory=list)
     r_squared_repaired: Optional[np.ndarray] = None
+    #: slope of predicted-vs-applied within each element's OWN sections
+    #: (1.0 = perfect; "points look linear but slope way off" shows here)
+    own_slopes: Optional[np.ndarray] = None
+    #: leave-section-out influence findings + collinearity notes
+    influence_notes: List[str] = field(default_factory=list)
 
     def outliers(self) -> List[PointDiag]:
         return [p for p in self.points if p.is_outlier]
@@ -413,7 +418,72 @@ def diagnose(session: CalSession, cal_type: str = "Linear",
     # off-diagonal (cross-talk) value scan + repaired preview
     _scan_channels(session, diag, outlier_z)
     _repaired_preview(session, diag)
+    _influence_scan(diag, force, volts, X, rows)
     return diag
+
+
+def _influence_scan(diag: FitDiagnostics, force, volts, X, rows) -> None:
+    """Own-section slopes, bridge collinearity, and leave-section-out
+    influence — the diagnosis for 'points look linear but the slope is
+    way off with no outliers': collinear bridge columns carrying
+    contradictory targets between section groups (seen 2026-07-22 in
+    50lbCalV6: the Mx runs bent the fwd section for real, forcing the
+    fwd coefficients into a giant canceling pair)."""
+    n_el = force.shape[1]
+    keys = np.array([r[0] for r in rows])
+    coeffs, *_r = np.linalg.lstsq(X, force, rcond=None)
+    est = X @ coeffs
+
+    # own-section slope of predicted vs applied
+    slopes = np.full(n_el, np.nan)
+    own_masks = []
+    for j, name in enumerate(diag.channels):
+        own = np.array([k.rsplit("_", 1)[0] == name for k in keys])
+        own_masks.append(own)
+        if own.sum() >= 3 and np.ptp(force[own, j]) > 0:
+            slopes[j] = float(np.polyfit(force[own, j],
+                                         est[own, j], 1)[0])
+    diag.own_slopes = slopes
+
+    # near-collinear bridge columns (the enabler)
+    for a in range(n_el):
+        for b in range(a + 1, n_el):
+            if np.ptp(volts[:, a]) < 1e-9 or np.ptp(volts[:, b]) < 1e-9:
+                continue
+            c = float(np.corrcoef(volts[:, a], volts[:, b])[0, 1])
+            if abs(c) > 0.95:
+                diag.influence_notes.append(
+                    f"bridge columns {diag.channels[a]} and "
+                    f"{diag.channels[b]} are near-collinear over the "
+                    f"whole dataset (corr {c:+.3f}) — the fit cannot "
+                    f"separate them, so contradictory targets between "
+                    f"section groups corrupt both coefficients")
+
+    # leave-section-group-out: which group's rows break which element
+    groups = sorted({k.rsplit("_", 1)[0] for k in keys})
+    for j, name in enumerate(diag.channels):
+        if not np.isfinite(slopes[j]) or abs(slopes[j] - 1.0) < 0.05:
+            continue
+        own = own_masks[j]
+        best = None
+        for g in groups:
+            if g == name:
+                continue
+            m = ~np.array([k.rsplit("_", 1)[0] == g for k in keys])
+            cg, *_x = np.linalg.lstsq(X[m], force[m], rcond=None)
+            e = (X @ cg)[own, j]
+            a = force[own, j]
+            sl = float(np.polyfit(a, e, 1)[0])
+            if best is None or abs(sl - 1.0) < abs(best[1] - 1.0):
+                best = (g, sl)
+        if best and abs(best[1] - 1.0) < 0.5 * abs(slopes[j] - 1.0):
+            diag.influence_notes.append(
+                f"{name}: own-section slope {slopes[j]:.3f} recovers "
+                f"to {best[1]:.3f} when the [{best[0]}] section rows "
+                f"are left out of the fit — those runs applied a REAL "
+                f"unrecorded load on this element's bridges "
+                f"(re-rig and re-acquire that section; value repairs "
+                f"cannot fix this)")
 
 
 def diagnostics_text(diag: FitDiagnostics, max_outliers: int = 15) -> str:
@@ -440,6 +510,20 @@ def diagnostics_text(diag: FitDiagnostics, max_outliers: int = 15) -> str:
     else:
         lines.append("No outliers flagged "
                      f"(|robust z| <= {OUTLIER_Z:g}).")
+    if diag.own_slopes is not None:
+        lines.append("")
+        lines.append("Own-section slope (predicted vs applied; 1.0 = "
+                     "perfect):")
+        lines.append("  " + "  ".join(
+            f"{n} {s:.3f}" for n, s in zip(diag.channels,
+                                           diag.own_slopes)
+            if np.isfinite(s)))
+    if diag.influence_notes:
+        lines.append("")
+        lines.append("Fit-structure findings (collinearity / section "
+                     "influence):")
+        for w in diag.influence_notes:
+            lines.append(f"  * {w}")
     lines.append("")
     lines.append("Per-section health:")
     lines.append(f"  {'section':<14s}{'pts':>4s}{'0-load':>7s}"

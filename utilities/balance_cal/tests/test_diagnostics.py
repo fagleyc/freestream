@@ -206,6 +206,15 @@ def test_50lbCalV6_regression():
     # and the structural fwd-bridge burden of the Mx sections is named
     assert any("Mx" in n and ("FwdPitch" in n or "FwdYaw" in n)
                for n in d.crosstalk_notes)
+    # the slope deficit is measured and attributed to the Mx rows
+    fp = ch.index("Fwd_Pitch")
+    assert d.own_slopes is not None
+    assert d.own_slopes[fp] == pytest.approx(0.371, abs=0.02)
+    assert any(n.startswith("Fwd_Pitch") and "[Mx]" in n
+               for n in d.influence_notes), d.influence_notes
+    # the enabling collinearity of the fwd bridges is called out
+    assert any("Fwd_Pitch" in n and "Fwd_Yaw" in n and "collinear" in n
+               for n in d.influence_notes)
 
 
 def test_row_indices_count_excluded_points():
