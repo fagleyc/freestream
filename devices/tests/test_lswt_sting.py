@@ -483,8 +483,9 @@ def test_serial_watchdog_trips():
 # ── 6. command byte-accuracy vs the legacy tool ──────────────────────────
 def test_init_sequence_bytes_match_legacy():
     """The full InitHw command stream, byte-for-byte, in legacy order
-    (init_reset=True so the Z reset is included)."""
-    cfg = StingConfig(force_sim=True, poll_ms=50,     # init_reset default
+    (init_reset=True explicitly — default is now OFF — so the Z reset
+    is included)."""
+    cfg = StingConfig(force_sim=True, poll_ms=50, init_reset=True,
                       park_on_disconnect=False, restore_position=False,
                       state_path=str(Path(tempfile.gettempdir())
                                      / "sting_state_test.json"))

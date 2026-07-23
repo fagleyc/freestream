@@ -121,6 +121,24 @@ def test_brake_output_disabled_sends_nothing(tmp_path, monkeypatch):
         dev.disconnect()
 
 
+def test_init_reset_off_by_default(tmp_path, monkeypatch):
+    """Z (drive reset) at connect is opt-in now: it wipes the step
+    counter (fighting position restore) and the legacy manual warns it
+    can cause uncontrolled movement."""
+    assert StingConfig().init_reset is False
+    created = _WireRecorder.install(monkeypatch)
+    cfg = StingConfig(force_sim=True, poll_ms=50,
+                      park_on_disconnect=False, restore_position=False,
+                      state_path=str(tmp_path / "state.json"))
+    dev = StingDrive(cfg)
+    try:
+        dev.connect()
+        assert not any(s in ("1Z", "2Z") for s in created[0].sent), \
+            created[0].sent
+    finally:
+        dev.disconnect()
+
+
 def test_brake_output_config_round_trip(tmp_path):
     cfg = _cfg(tmp_path)
     assert cfg.alpha.brake_output == 3      # default: alpha brake on O3
