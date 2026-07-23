@@ -33,9 +33,25 @@ motor cannot follow the commanded profile.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional
+
+
+def defaults_path() -> Path:
+    """Where the startup defaults persist (house pattern).
+
+    Same convention as traverse_swt/lswt: overridable via the
+    ``LSWT_STING_DEFAULTS`` env var (tests); default
+    ``~/.lswt_sting/defaults.json``. Loaded by
+    :func:`load_startup_config` — hosts (Freestream) use it so an
+    embedded session starts from the same config the operator proved
+    out on the rig, instead of factory placeholders.
+    """
+    env = os.environ.get("LSWT_STING_DEFAULTS")
+    return Path(env) if env else (Path.home() / ".lswt_sting" /
+                                  "defaults.json")
 
 # steps-per-degree constants hard-coded in the deployed C# tool
 ALPHA_STEPS_PER_DEG = 2741.052490234375
@@ -213,3 +229,23 @@ class StingConfig:
     def load(cls, path) -> "StingConfig":
         return cls.from_dict(json.loads(Path(path).read_text(
             encoding="utf-8")))
+
+
+def load_startup_config() -> "StingConfig":
+    """Startup auto-load: ``defaults_path()`` if present.
+
+    Guarded — an unreadable/corrupt defaults file logs a warning and
+    falls back to factory defaults.
+    """
+    import logging
+    p = defaults_path()
+    if p.exists():
+        try:
+            cfg = StingConfig.load(p)
+            logging.getLogger(__name__).info("defaults loaded from %s", p)
+            return cfg
+        except Exception as exc:                       # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "defaults file %s unreadable (%s) — factory defaults",
+                p, exc)
+    return StingConfig()

@@ -36,7 +36,8 @@ _DEVICES_DIR = Path(__file__).resolve().parents[2] / "devices"
 if str(_DEVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_DEVICES_DIR))
 
-from heise.config import HeiseConfig                          # noqa: E402
+from heise.config import (HeiseConfig, defaults_path,         # noqa: E402
+                          load_startup_config)
 from heise.device import HeiseGauge                           # noqa: E402
 
 from ..hal import ChannelSpec, DeviceStatus, OFFLINE, OK      # noqa: E402
@@ -71,13 +72,26 @@ class HeiseAdapter(ConfigurableAdapter):
     id = "heise"
     label = "Heise PM (total pressure / temperature)"
     settings_dialog_path = ""      # device app has no standalone dialog
+    comscan_module = "heise.comscan"
+    comscan_hit_attr = "is_heise"
 
     def __init__(self, sim: bool = False,
                  config_path: Optional[str] = None):
-        cfg = (HeiseConfig.load(config_path) if config_path
-               else HeiseConfig())
+        # Config provenance mirrors the standalone app: an explicit path
+        # wins; otherwise a LIVE session starts from the device's own
+        # startup defaults (defaults_path()) — the rig-proven COM port
+        # in particular — while SIM stays on hermetic factory defaults.
+        factory = True
+        if config_path:
+            cfg = HeiseConfig.load(config_path)
+            factory = False
+        elif sim:
+            cfg = HeiseConfig()
+        else:
+            cfg = load_startup_config()
+            factory = not defaults_path().exists()
         cfg.force_sim = bool(sim)
-        if config_path is None:
+        if factory:
             # factory defaults: declare the units the derived chain
             # expects (psia total pressure; RTD set to Celsius on the
             # instrument — the config unit is the display label). Assign
@@ -106,7 +120,17 @@ class HeiseAdapter(ConfigurableAdapter):
 
     # ── DeviceBase ───────────────────────────────────────────────────────
     def connect(self) -> None:
-        self._dev.connect()
+        """Connect like the standalone flow: resolve the COM port first
+        (blank port → one comscan), and if the configured port does not
+        answer, one rescue scan before giving up — the embedded
+        equivalent of the operator's Search button."""
+        self.resolve_com_port()
+        try:
+            self._dev.connect()
+        except Exception:
+            if not self.rescue_com_port():
+                raise
+            self._dev.connect()
         self._cursor = self._dev.frame_count()
 
     def disconnect(self) -> None:

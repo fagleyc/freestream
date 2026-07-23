@@ -532,9 +532,37 @@ def test_init_sequence_bytes_match_legacy():
         sting_device.SimSerial = orig
 
 
+# ── startup defaults (house defaults_path pattern) ───────────────────────
+def test_defaults_path_env_override_and_startup_roundtrip(
+        tmp_path, monkeypatch):
+    from lswt_sting.config import defaults_path, load_startup_config
+    p = tmp_path / "defaults.json"
+    monkeypatch.setenv("LSWT_STING_DEFAULTS", str(p))
+    assert defaults_path() == p
+    # absent file → factory defaults
+    assert load_startup_config().com_port == StingConfig().com_port
+    cfg = StingConfig()
+    cfg.com_port = "COM7"
+    cfg.poll_ms = 123
+    cfg.save(p)
+    back = load_startup_config()
+    assert back.com_port == "COM7"
+    assert back.poll_ms == 123
+
+
+def test_load_startup_config_corrupt_falls_back(tmp_path, monkeypatch):
+    from lswt_sting.config import load_startup_config
+    p = tmp_path / "defaults.json"
+    monkeypatch.setenv("LSWT_STING_DEFAULTS", str(p))
+    p.write_text("{not json", encoding="utf-8")
+    assert load_startup_config().com_port == StingConfig().com_port
+
+
 def _run_all():
+    import inspect
     fns = [v for k, v in sorted(globals().items())
-           if k.startswith("test_") and callable(v)]
+           if k.startswith("test_") and callable(v)
+           and not inspect.signature(v).parameters]   # fixture tests: pytest
     for fn in fns:
         fn()
         print(f"  PASS {fn.__name__}")

@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import Qt, QTimer
@@ -76,8 +77,18 @@ from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog,
                              QTabWidget, QVBoxLayout, QWidget)
 
 from .. import theme
-from ..hal import capabilities
+from ..hal import FAULT, OK, Streaming, capabilities
 from .config_form import ConfigForm
+
+# status-lamp pill styles (mirrors the device rail's traffic light)
+_PILL_CSS = ("border-radius: 8px; padding: 2px 10px; font-weight: bold; "
+             "font-size: 9pt;")
+_LAMP_STYLE = {
+    OK: f"background: {theme.SUCCESS}; color: white; {_PILL_CSS}",
+    FAULT: f"background: {theme.ERROR}; color: white; {_PILL_CSS}",
+    "OFFLINE": (f"background: {theme.SURFACE}; color: {theme.TEXT_DIM}; "
+                f"{_PILL_CSS}"),
+}
 
 
 # ── per-device assembly specs ────────────────────────────────────────────
@@ -324,16 +335,27 @@ def _import_obj(dotted: str):
 class DeviceConfigDialog(QDialog):
     """Complete configuration GUI for one registered device adapter."""
 
-    def __init__(self, adapter, parent=None):
+    def __init__(self, adapter, parent=None, on_connect=None,
+                 on_disconnect=None, on_save_defaults=None):
         super().__init__(parent)
         self.adapter = adapter
         self.spec = DEVICE_SPECS.get(getattr(adapter, "id", ""), _spec())
         self._snapshot = adapter.config_dict()        # Cancel restores this
         self.applied = False                          # any Apply/OK happened
+        #: main-window hooks (console log + rail poll + _connected
+        #: bookkeeping stay consistent when the dialog opens from
+        #: Freestream); None → direct adapter calls (standalone/tests)
+        self._on_connect = on_connect
+        self._on_disconnect = on_disconnect
+        self._on_save_defaults = on_save_defaults
 
         self.setWindowTitle(f"{getattr(adapter, 'label', adapter.id)} — "
                             "Device Configuration")
         self.setMinimumSize(860, 620)
+        # settings-style dialog with LARGE content → real min/max buttons
+        # so the operator can maximize it onto any monitor
+        self.setWindowFlags(self.windowFlags()
+                            | Qt.WindowType.WindowMinMaxButtonsHint)
 
         root = QVBoxLayout(self)
         root.setSpacing(8)
@@ -366,17 +388,58 @@ class DeviceConfigDialog(QDialog):
         tags.setStyleSheet(f"color: {theme.TEXT_DIM};")
         head.addWidget(tags)
         head.addStretch(1)
-        self.state_lbl = QLabel()
-        head.addWidget(self.state_lbl)
+        # status lamp (OFFLINE/OK/FAULT + SIM) polled by the 400 ms pump,
+        # exactly like the device rail's traffic light
+        self.lamp = QLabel("OFFLINE")
+        head.addWidget(self.lamp)
+        self.conn_btn = QPushButton("Connect")
+        self.conn_btn.setToolTip(
+            "Connect / disconnect THIS device without leaving the dialog "
+            "(streams start on connect and stop before disconnect).")
+        self.conn_btn.clicked.connect(self._toggle_connect)
+        head.addWidget(self.conn_btn)
         self._refresh_state()
         return head
 
     def _refresh_state(self) -> None:
         connected = bool(getattr(self.adapter, "connected", False))
-        color = theme.SUCCESS if connected else theme.TEXT_DIM
-        self.state_lbl.setText("● connected" if connected
-                               else "○ disconnected")
-        self.state_lbl.setStyleSheet(f"color: {color}; font-weight: bold;")
+        try:
+            st = self.adapter.status()
+            state, sim = st.state, bool(st.sim)
+        except Exception:                              # noqa: BLE001
+            state = OK if connected else "OFFLINE"
+            sim = bool(getattr(self.adapter, "sim", False))
+        self.lamp.setText(state + (" · SIM" if sim else ""))
+        self.lamp.setStyleSheet(_LAMP_STYLE.get(state,
+                                                _LAMP_STYLE["OFFLINE"]))
+        self.conn_btn.setText("Disconnect" if connected else "Connect")
+
+    def _toggle_connect(self) -> None:
+        """Connect/disconnect THIS device from inside the dialog.
+
+        Routed through the main window's per-device connect/disconnect
+        callbacks when opened from Freestream (console logging, rail
+        poll and connect-state bookkeeping stay consistent); falls back
+        to direct adapter calls (+ stream start/stop) standalone."""
+        connected = bool(getattr(self.adapter, "connected", False))
+        try:
+            if connected:
+                if callable(self._on_disconnect):
+                    self._on_disconnect()
+                else:
+                    if isinstance(self.adapter, Streaming):
+                        self.adapter.stop()
+                    self.adapter.disconnect()
+            else:
+                if callable(self._on_connect):
+                    self._on_connect()
+                else:
+                    self.adapter.connect()
+                    if isinstance(self.adapter, Streaming):
+                        self.adapter.start()
+        except Exception as exc:                       # noqa: BLE001
+            QMessageBox.warning(self, "Device connect", str(exc))
+        self._refresh_state()
 
     # ── tabs ─────────────────────────────────────────────────────────────
     def _build_tabs(self) -> None:
@@ -475,6 +538,17 @@ class DeviceConfigDialog(QDialog):
         load_btn = QPushButton("Load from file…")
         load_btn.clicked.connect(self._load_file)
         row.addWidget(load_btn)
+        self.defaults_btn = QPushButton("Set as Defaults")
+        self.defaults_btn.setToolTip(
+            "Apply, then store these settings in BOTH places:\n"
+            "• the device's OWN startup-defaults file (when the device "
+            "package has one — traverse, LSWT), used by its standalone "
+            "app;\n"
+            "• Freestream's startup-defaults bundle (this device's config "
+            "is snapshotted into the suite defaults, auto-loaded on the "
+            "next launch).")
+        self.defaults_btn.clicked.connect(self._set_defaults)
+        row.addWidget(self.defaults_btn)
         row.addStretch(1)
 
         buttons = QDialogButtonBox(
@@ -544,6 +618,40 @@ class DeviceConfigDialog(QDialog):
         except Exception:                              # noqa: BLE001
             pass
         super().reject()
+
+    # ── set as defaults (device-local file + freestream bundle) ─────────
+    def _set_defaults(self) -> None:
+        """Persist what's shown as BOTH the device package's own startup
+        defaults (when it has a defaults_path()) and — via the main
+        window's callback — Freestream's startup-defaults bundle."""
+        self._apply()                                  # persist what's shown
+        self._save_device_defaults()
+        if callable(self._on_save_defaults):
+            try:
+                self._on_save_defaults()
+            except Exception as exc:                   # noqa: BLE001
+                QMessageBox.warning(self, "Set as Defaults", str(exc))
+
+    def _save_device_defaults(self) -> Optional[Path]:
+        """Save the device package's OWN startup-defaults file when its
+        config module exposes a ``defaults_path()`` (traverse_swt, lswt
+        — the lswt path is per-tunnel); silently skipped otherwise."""
+        cfg = self.adapter.config
+        try:
+            mod = importlib.import_module(type(cfg).__module__)
+            fn = getattr(mod, "defaults_path", None)
+            if not callable(fn):
+                return None
+            tunnel = getattr(cfg, "tunnel", None)
+            try:
+                path = Path(fn(tunnel) if tunnel else fn())
+            except TypeError:                          # fn takes no args
+                path = Path(fn())
+            path.parent.mkdir(parents=True, exist_ok=True)
+            cfg.save(path)
+            return path
+        except Exception:                              # noqa: BLE001
+            return None
 
     # ── config file I/O ──────────────────────────────────────────────────
     def _save_file(self) -> None:

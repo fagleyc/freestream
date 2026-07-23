@@ -431,3 +431,29 @@ def test_search_finds_indicator(monkeypatch):
 
     hits = [r for r in search(_serial_factory=factory) if r.is_heise]
     assert [r.port.device for r in hits] == ["COM5"]
+
+
+# -- startup defaults (house defaults_path pattern) ----------------------
+def test_defaults_path_env_override_and_startup_roundtrip(
+        tmp_path, monkeypatch):
+    from heise.config import defaults_path, load_startup_config
+    p = tmp_path / "defaults.json"
+    monkeypatch.setenv("HEISE_DEFAULTS", str(p))
+    assert defaults_path() == p
+    # absent file -> factory defaults
+    assert load_startup_config().com_port == HeiseConfig().com_port
+    cfg = HeiseConfig()
+    cfg.com_port = "COM9"
+    cfg.poll_s = 0.123
+    cfg.save(p)
+    back = load_startup_config()
+    assert back.com_port == "COM9"
+    assert back.poll_s == 0.123
+
+
+def test_load_startup_config_corrupt_falls_back(tmp_path, monkeypatch):
+    from heise.config import load_startup_config
+    p = tmp_path / "defaults.json"
+    monkeypatch.setenv("HEISE_DEFAULTS", str(p))
+    p.write_text("{not json", encoding="utf-8")
+    assert load_startup_config().com_port == HeiseConfig().com_port

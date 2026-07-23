@@ -40,6 +40,9 @@ class DevicePickerDialog(QDialog):
         self.setWindowTitle("Custom mode — pick active devices")
         self.setModal(True)
         self.setMinimumWidth(600)
+        # sizeable list → real min/max buttons (maximizable)
+        self.setWindowFlags(self.windowFlags()
+                            | Qt.WindowType.WindowMinMaxButtonsHint)
         self.setStyleSheet(theme.get_stylesheet())
         self._boxes: Dict[str, QCheckBox] = {}
         pre = set(preselected or [])

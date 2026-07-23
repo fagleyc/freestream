@@ -28,7 +28,8 @@ _DEVICES_DIR = Path(__file__).resolve().parents[2] / "devices"
 if str(_DEVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_DEVICES_DIR))
 
-from traverse_swt.config import TraverseConfig                # noqa: E402
+from traverse_swt.config import (TraverseConfig,              # noqa: E402
+                                 load_startup_config)
 from traverse_swt.device import TraverseDrive                 # noqa: E402
 
 from ..hal import (AxisSpec, DeviceStatus, MoveHandle, FAULT,  # noqa: E402
@@ -45,8 +46,17 @@ class TraverseAdapter(ConfigurableAdapter):
 
     def __init__(self, sim: bool = False,
                  config_path: Optional[str] = None):
-        cfg = (TraverseConfig.load(config_path) if config_path
-               else TraverseConfig())
+        # Config provenance mirrors the standalone app: an explicit path
+        # wins; otherwise a LIVE session starts from the device's own
+        # startup defaults (defaults_path() — the operator's rig-proven
+        # "Set as Defaults" calibration/limits), while SIM stays on
+        # hermetic factory defaults (deterministic tests/demo).
+        if config_path:
+            cfg = TraverseConfig.load(config_path)
+        elif sim:
+            cfg = TraverseConfig()
+        else:
+            cfg = load_startup_config()
         cfg.force_sim = bool(sim)
         if sim:
             # No power-cycle offset to re-zero in the emulator: trust

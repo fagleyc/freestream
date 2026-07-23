@@ -58,8 +58,12 @@ class DeviceCard(QFrame):
         top = QHBoxLayout()
         name = QLabel(getattr(dev, "label", dev.id))
         name.setStyleSheet("font-weight: bold; background: transparent;")
-        top.addWidget(name)
-        top.addStretch(1)
+        # compressible: a long label WRAPS instead of forcing the card
+        # wider than the dock viewport (which clipped the status pill
+        # and the readout line at the card's right edge)
+        name.setWordWrap(True)
+        name.setMinimumWidth(1)
+        top.addWidget(name, 1)
         if self._configurable:
             gear = QLabel("⚙")
             gear.setToolTip("Click card to configure this device")

@@ -45,6 +45,12 @@ log = logging.getLogger(__name__)
 
 FAKE_MANIFEST = Path(__file__).resolve().parent / "_fake_manifest.json"
 
+# default dock widths (px) — large enough that the rail cards' status
+# pills and the planner's grid columns never clip at the default window
+# sizes; re-asserted whenever a collapsed pane slides back in
+LEFT_DOCK_WIDTH = 300                 # devices rail
+RIGHT_DOCK_WIDTH = 380                # sweep planner
+
 
 def build_manager(mode: str, sim: bool, on_log=None,
                   custom_devices: Optional[Sequence[str]] = None
@@ -484,7 +490,7 @@ class FreestreamMainWindow(QMainWindow):
         dock = QDockWidget("Devices", self)
         dock.setObjectName("devicesDock")
         dock.setWidget(self.rail)
-        dock.setMinimumWidth(230)
+        dock.setMinimumWidth(260)
         self.devices_dock = dock
         dock.visibilityChanged.connect(
             lambda v: self._sync_pane_toggle(self.left_handle, v))
@@ -500,7 +506,7 @@ class FreestreamMainWindow(QMainWindow):
         dock = QDockWidget("Sweep Planner", self)
         dock.setObjectName("plannerDock")
         dock.setWidget(self.planner)
-        dock.setMinimumWidth(320)
+        dock.setMinimumWidth(340)
         self.planner_dock = dock
         dock.visibilityChanged.connect(
             lambda v: self._sync_pane_toggle(self.right_handle, v))
@@ -512,7 +518,8 @@ class FreestreamMainWindow(QMainWindow):
         # widest card text) would otherwise claim width the dashboard's
         # top band needs at the default window size
         self.resizeDocks([self.devices_dock, self.planner_dock],
-                         [240, 320], Qt.Orientation.Horizontal)
+                         [LEFT_DOCK_WIDTH, RIGHT_DOCK_WIDTH],
+                         Qt.Orientation.Horizontal)
 
         self.console = ConsolePanel()
         dock = QDockWidget("Run Log", self)
@@ -710,13 +717,13 @@ class FreestreamMainWindow(QMainWindow):
             # re-assert the width: a re-shown dock otherwise reopens at
             # whatever squeezed width the layout last left it (clipped
             # under the central frame's minimum)
-            self.resizeDocks([self.devices_dock], [240],
+            self.resizeDocks([self.devices_dock], [LEFT_DOCK_WIDTH],
                              Qt.Orientation.Horizontal)
 
     def _toggle_right_pane(self, visible: bool) -> None:
         self.planner_dock.setVisible(visible)
         if visible and not self.planner_dock.isFloating():
-            self.resizeDocks([self.planner_dock], [320],
+            self.resizeDocks([self.planner_dock], [RIGHT_DOCK_WIDTH],
                              Qt.Orientation.Horizontal)
 
     @staticmethod
@@ -1213,7 +1220,15 @@ class FreestreamMainWindow(QMainWindow):
             return
         try:
             from .device_config import DeviceConfigDialog
-            dlg = DeviceConfigDialog(dev, self)
+            dlg = DeviceConfigDialog(
+                dev, self,
+                # live callbacks: connect/disconnect + Set-as-Defaults act
+                # IMMEDIATELY (no dialog close needed) and stay consistent
+                # with the rail/console/_connected bookkeeping
+                on_connect=lambda d=dev_id: self._connect_device(d),
+                on_disconnect=lambda d=dev_id: self._disconnect_device(d),
+                on_save_defaults=lambda d=dev_id:
+                    self._save_device_defaults(d))
             accepted = bool(dlg.exec())
             changed = accepted or dlg.applied          # Apply w/o OK counts
         except Exception as exc:                       # noqa: BLE001
@@ -1280,6 +1295,19 @@ class FreestreamMainWindow(QMainWindow):
             self._connected = False
         self.rail.poll()
         self._update_ui_state()
+
+    def _save_device_defaults(self, dev_id: str) -> None:
+        """Device dialog → "Set as Defaults": snapshot THIS adapter's
+        config_dict() into the bundle, then persist the whole startup-
+        defaults file (reuses :meth:`_save_defaults`, which re-snapshots
+        every device — the point is that this device's edits land NOW)."""
+        dev = self.manager.devices.get(dev_id)
+        if dev is not None and callable(getattr(dev, "config_dict", None)):
+            try:
+                self.config.device_configs[dev_id] = dev.config_dict()
+            except Exception as exc:                   # noqa: BLE001
+                self.console.log(f"config snapshot {dev_id} failed: {exc}")
+        self._save_defaults()
 
     # ── config menu ──────────────────────────────────────────────────────
     def _save_defaults(self) -> None:

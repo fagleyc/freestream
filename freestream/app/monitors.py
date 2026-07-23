@@ -17,7 +17,7 @@ from collections import deque
 from typing import Dict, Optional
 
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtWidgets import QTabWidget
+from PyQt6.QtWidgets import QMainWindow, QMenu, QTabWidget
 
 from .. import theme
 from ..hal import Streaming
@@ -25,6 +25,32 @@ from ..manager import DeviceManager
 
 SAMPLE_MS = 200                       # 5 Hz UI sampling of latest()
 HISTORY_N = 600                       # ≈120 s of history
+
+
+class DetachedTabWindow(QMainWindow):
+    """Top-level host for a detached monitor tab (multi-monitor use).
+
+    A NORMAL window — title bar with minimize/maximize/close — so it can
+    fill a second display. The tab's widget is REPARENTED in as the
+    central widget; closing the window re-docks it at its original
+    index in the MonitorPanel."""
+
+    def __init__(self, panel: "MonitorPanel", widget, title: str,
+                 index: int):
+        super().__init__()
+        self._panel = panel
+        self.tab_title = title
+        self.home_index = index
+        self.setWindowTitle(f"{title} — Freestream")
+        self.setCentralWidget(widget)
+        # a NON-current tab page was explicitly hidden by the tab stack —
+        # that hidden flag survives reparenting, so re-show it here
+        widget.show()
+        self.resize(960, 640)
+
+    def closeEvent(self, event) -> None:               # noqa: N802
+        self._panel._redock(self)
+        super().closeEvent(event)
 
 
 class MonitorPanel(QTabWidget):
@@ -86,10 +112,62 @@ class MonitorPanel(QTabWidget):
         self._build_subpanels()
         self._discover()
 
+        # ── detachable tabs (multi-monitor): double-click a tab or use
+        # the tab bar's context menu to float it as a real window ────────
+        self._detached: Dict[str, DetachedTabWindow] = {}
+        self.tabBarDoubleClicked.connect(self.detach_tab)
+        bar = self.tabBar()
+        bar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        bar.customContextMenuRequested.connect(self._tab_context_menu)
+
         self._timer = QTimer(self)
         self._timer.setInterval(SAMPLE_MS)
         self._timer.timeout.connect(self._sample)
         self._timer.start()
+
+    # ── detach / re-dock ─────────────────────────────────────────────────
+    def _tab_context_menu(self, pos) -> None:
+        index = self.tabBar().tabAt(pos)
+        if index < 0:
+            return
+        menu = QMenu(self)
+        act = menu.addAction(f"Detach “{self.tabText(index)}” "
+                             "into its own window")
+        act.triggered.connect(lambda _c=False, i=index: self.detach_tab(i))
+        menu.exec(self.tabBar().mapToGlobal(pos))
+
+    def detach_tab(self, index: int) -> None:
+        """Float the tab at ``index`` as its own top-level window.
+
+        The page widget is reparented, NEVER rebuilt — every curve/deque
+        reference stays valid, so the panel's ``_sample`` loop (and the
+        self-timed subpanels' own timers) keep updating it while
+        detached. Closing the floating window re-docks it."""
+        if index < 0 or index >= self.count():
+            return
+        title = self.tabText(index)
+        widget = self.widget(index)
+        self.removeTab(index)
+        win = DetachedTabWindow(self, widget, title, index)
+        self._detached[title] = win
+        win.show()
+        if self.count():
+            self.setCurrentIndex(min(index, self.count() - 1))
+
+    def _redock(self, win: DetachedTabWindow) -> None:
+        """Floating window closed → tab returns at its original index."""
+        self._detached.pop(win.tab_title, None)
+        widget = win.takeCentralWidget()
+        if widget is None:
+            return
+        index = min(win.home_index, self.count())
+        self.insertTab(index, widget, win.tab_title)
+        self.setCurrentIndex(index)
+
+    def redock_all(self) -> None:
+        """Close every floating tab window (each close re-docks)."""
+        for win in list(self._detached.values()):
+            win.close()
 
     # ── sub-panels (self-timed tabs: Tunnel, Forces, Results) ────────────
     def _build_subpanels(self) -> None:
@@ -252,5 +330,6 @@ class MonitorPanel(QTabWidget):
 
     def shutdown(self) -> None:
         self._timer.stop()
+        self.redock_all()             # no floating windows may outlive us
         for panel in self._subpanels:
             panel.shutdown()

@@ -30,7 +30,7 @@ _DEVICES_DIR = Path(__file__).resolve().parents[2] / "devices"
 if str(_DEVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_DEVICES_DIR))
 
-from lswt_sting.config import StingConfig                     # noqa: E402
+from lswt_sting.config import StingConfig, load_startup_config  # noqa: E402
 from lswt_sting.device import StingDrive                      # noqa: E402
 
 from ..hal import (AxisSpec, DeviceStatus, MoveHandle, FAULT,   # noqa: E402
@@ -44,11 +44,23 @@ class LswtStingAdapter(ConfigurableAdapter):
     id = "lswt_sting"
     label = "LSWT Sting (alpha/beta)"
     settings_dialog_path = "lswt_sting.app.settings_dialog:SettingsDialog"
+    comscan_module = "lswt_sting.comscan"
+    comscan_hit_attr = "is_sting"
 
     def __init__(self, sim: bool = False,
                  config_path: Optional[str] = None):
-        cfg = (StingConfig.load(config_path) if config_path
-               else StingConfig())
+        # Config provenance mirrors the standalone app: an explicit path
+        # wins; otherwise a LIVE session starts from the device's own
+        # startup defaults (defaults_path()) — the rig-proven COM port
+        # and limits — while SIM stays on hermetic factory defaults
+        # (deterministic tests/demo, no dependence on the developer's
+        # home directory).
+        if config_path:
+            cfg = StingConfig.load(config_path)
+        elif sim:
+            cfg = StingConfig()
+        else:
+            cfg = load_startup_config()
         cfg.force_sim = bool(sim)
         if sim:
             # The emulator's step counter starts at zero, so the default
@@ -73,7 +85,17 @@ class LswtStingAdapter(ConfigurableAdapter):
 
     # ── DeviceBase ───────────────────────────────────────────────────────
     def connect(self) -> None:
-        self._dev.connect()
+        """Connect like the standalone flow: resolve the COM port first
+        (blank port → one comscan), and if the configured port does not
+        answer, one rescue scan before giving up — the embedded
+        equivalent of the operator's Search button."""
+        self.resolve_com_port()
+        try:
+            self._dev.connect()
+        except Exception:
+            if not self.rescue_com_port():
+                raise
+            self._dev.connect()
 
     def disconnect(self) -> None:
         self._dev.disconnect()

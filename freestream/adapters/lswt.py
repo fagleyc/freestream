@@ -38,7 +38,7 @@ if str(_DEVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_DEVICES_DIR))
 
 from lswt import calibration                                  # noqa: E402
-from lswt.config import LswtConfig                            # noqa: E402
+from lswt.config import LswtConfig, load_startup_config       # noqa: E402
 from lswt.device import LswtDrive                             # noqa: E402
 
 from ..hal import DeviceStatus, OFFLINE, OK                   # noqa: E402
@@ -77,8 +77,17 @@ class LswtTunnelAdapter(ConfigurableAdapter):
                  config_path: Optional[str] = None,
                  tunnel: str = "north",
                  hz_tol: float = 0.5):
-        cfg = (LswtConfig.load(config_path) if config_path
-               else LswtConfig.for_tunnel(tunnel))
+        # Config provenance mirrors the standalone app: an explicit path
+        # wins; otherwise a LIVE session starts from this tunnel's own
+        # startup defaults (defaults_path(tunnel) — the operator's saved
+        # drive IP in particular; the factory IP is a placeholder), while
+        # SIM stays on hermetic per-tunnel factory defaults.
+        if config_path:
+            cfg = LswtConfig.load(config_path)
+        elif sim:
+            cfg = LswtConfig.for_tunnel(tunnel)
+        else:
+            cfg = load_startup_config(tunnel)
         cfg.force_sim = bool(sim)
         self._cfg = cfg
         self._dev = LswtDrive(cfg)

@@ -24,11 +24,26 @@ on the instrument; pressure units are remotely selectable by code).
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional, Union
 
 BAUD_RATES = (300, 600, 1200, 2400, 4800, 9600)
+
+
+def defaults_path() -> Path:
+    """Where the startup defaults persist (house pattern).
+
+    Same convention as traverse_swt/lswt: overridable via the
+    ``HEISE_DEFAULTS`` env var (tests); default
+    ``~/.heise/defaults.json``. Loaded by :func:`load_startup_config` —
+    hosts (Freestream) use it so an embedded session starts from the
+    same config the operator proved out on the rig (the working COM
+    port in particular), instead of factory placeholders.
+    """
+    env = os.environ.get("HEISE_DEFAULTS")
+    return Path(env) if env else Path.home() / ".heise" / "defaults.json"
 
 #: EUNIT codes from Appendix A (drawing 822B122 conversion factors).
 #: Code 1 is the indicator's base inches-of-water; code 3 is the
@@ -145,3 +160,23 @@ class HeiseConfig:
     def load(cls, path) -> "HeiseConfig":
         return cls.from_dict(json.loads(
             Path(path).read_text(encoding="utf-8")))
+
+
+def load_startup_config() -> "HeiseConfig":
+    """Startup auto-load: ``defaults_path()`` if present.
+
+    Guarded — an unreadable/corrupt defaults file logs a warning and
+    falls back to factory defaults.
+    """
+    import logging
+    p = defaults_path()
+    if p.exists():
+        try:
+            cfg = HeiseConfig.load(p)
+            logging.getLogger(__name__).info("defaults loaded from %s", p)
+            return cfg
+        except Exception as exc:                       # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "defaults file %s unreadable (%s) — factory defaults",
+                p, exc)
+    return HeiseConfig()

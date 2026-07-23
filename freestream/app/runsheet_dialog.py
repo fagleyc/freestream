@@ -52,6 +52,9 @@ class RunSheetDialog(QDialog):
         name = runbook.source_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
         self.setWindowTitle(f"Import Run Sheet — {name}")
         self.setMinimumSize(1000, 780)
+        # large content → real min/max buttons (maximizable)
+        self.setWindowFlags(self.windowFlags()
+                            | Qt.WindowType.WindowMinMaxButtonsHint)
         self.setStyleSheet(theme.get_stylesheet())
 
         root = QVBoxLayout(self)

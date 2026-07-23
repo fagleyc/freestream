@@ -17,6 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Sequence
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFileDialog, QFormLayout,
                              QGridLayout, QGroupBox, QHBoxLayout, QLabel,
@@ -39,6 +40,9 @@ class MeasurementSetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Measurement Setup")
         self.setMinimumWidth(660)
+        # settings-style dialog → real min/max buttons (maximizable)
+        self.setWindowFlags(self.windowFlags()
+                            | Qt.WindowType.WindowMinMaxButtonsHint)
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
