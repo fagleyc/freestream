@@ -22,15 +22,15 @@ import numpy as np
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QBrush, QColor, QPixmap
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
-    QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
-    QWidget)
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
+    QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
+    QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox,
+    QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
+    QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 import pyqtgraph as pg
 
-from .. import theme
+from .. import about, theme
 from ..daq import BACKENDS, BalanceDaq, list_ni_devices
 from ..diagnostics import (OUTLIER_Z, channel_trend, diagnose,
                            diagnostics_text)
@@ -58,6 +58,59 @@ class _ChannelSel:
     expected: float
     z: float
     flagged: bool
+
+
+class AboutDialog(QDialog):
+    """Shared-template About dialog: name + version, summary, author,
+    compact version-history table. Dark theme comes from the app
+    stylesheet."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        import html as _html
+        self.setWindowTitle(f"About {about.APP_NAME}")
+        self.setFixedSize(520, 480)
+
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        title = QLabel(about.APP_NAME)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 20pt; font-weight: bold;")
+        v.addWidget(title)
+
+        ver = QLabel(f"Version {about.__version__}")
+        ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ver.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        v.addWidget(ver)
+
+        summary = QLabel(about.SUMMARY)
+        summary.setWordWrap(True)
+        v.addWidget(summary)
+
+        author = QLabel(f"Author: {about.AUTHOR} — {about.CONTACT}")
+        author.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        author.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        v.addWidget(author)
+
+        rows = "".join(
+            "<tr>"
+            f"<td style='padding:2px 10px 2px 0; white-space:nowrap;'>"
+            f"<b>{_html.escape(version)}</b></td>"
+            f"<td style='padding:2px 10px 2px 0; white-space:nowrap;"
+            f" color:{theme.TEXT_DIM};'>{_html.escape(iso_date)}</td>"
+            f"<td style='padding:2px 0;'>{_html.escape(note)}</td>"
+            "</tr>"
+            for version, iso_date, note in about.VERSION_HISTORY
+        )
+        hist = QTextBrowser()
+        hist.setHtml("<table cellspacing='0' cellpadding='0'>"
+                     + rows + "</table>")
+        v.addWidget(hist, 1)
+
+        btn = QPushButton("Close")
+        btn.clicked.connect(self.accept)
+        v.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
 
 class _AcquireThread(QThread):
@@ -95,6 +148,7 @@ class BalanceCalWindow(QMainWindow):
         self._active_kind: Optional[BalanceKind] = None
         self._pending_key: str = ""
         self._pending_load: float = 0.0
+        self._pending_tare: bool = False
         self._last_vol_path: str = ""
         self._default_backend = backend
         self._default_sim = sim
@@ -301,6 +355,21 @@ class BalanceCalWindow(QMainWindow):
         self.acquire_btn.setObjectName("primary")
         self.acquire_btn.clicked.connect(self._acquire_point)
         btns.addWidget(self.acquire_btn)
+        self.tare_btn = QPushButton("Tare (no load)")
+        self.tare_btn.setToolTip(
+            "Average the unloaded bridges over the same window and "
+            "subtract that DC baseline from every acquired point — do "
+            "this at the start of the loading setup, with nothing "
+            "hanging on the balance")
+        self.tare_btn.clicked.connect(self._handle_tare)
+        btns.addWidget(self.tare_btn)
+        self.tare_clear_btn = QPushButton("Clear Tare")
+        self.tare_clear_btn.clicked.connect(self._clear_tare)
+        self.tare_clear_btn.setEnabled(False)
+        btns.addWidget(self.tare_clear_btn)
+        self.tare_lbl = QLabel("tare: —")
+        self.tare_lbl.setProperty("mono", "true")
+        btns.addWidget(self.tare_lbl)
         rm = QPushButton("Delete Selected Row")
         rm.setObjectName("danger")
         rm.clicked.connect(self._delete_row)
@@ -490,6 +559,30 @@ class BalanceCalWindow(QMainWindow):
         act.triggered.connect(self.close)
         file_menu.addAction(act)
 
+        help_menu = self.menuBar().addMenu("&Help")
+        act = QAction("&Documentation", self)
+        act.triggered.connect(self._open_documentation)
+        help_menu.addAction(act)
+        help_menu.addSeparator()
+        act = QAction(f"&About {about.APP_NAME}", self)
+        act.triggered.connect(self._show_about)
+        help_menu.addAction(act)
+
+    # ── help ─────────────────────────────────────────────────────────────
+    def _open_documentation(self) -> None:
+        """Open the HTML documentation in the default web browser."""
+        import webbrowser
+        docs = Path(__file__).resolve().parents[2] / "docs" / "index.html"
+        if not docs.is_file():
+            QMessageBox.warning(self, "Not Found",
+                                f"Documentation not found at:\n{docs}")
+            return
+        webbrowser.open(docs.as_uri())
+
+    def _show_about(self) -> None:
+        dlg = AboutDialog(self)
+        dlg.exec()
+
     # ── device handling ──────────────────────────────────────────────────
     @property
     def kind(self) -> BalanceKind:
@@ -642,6 +735,8 @@ class BalanceCalWindow(QMainWindow):
         self._active_kind = self.kind
         s.kind = self.kind
         s.points.clear()
+        s.tare_volts = None             # layout changed — old DC invalid
+        self._update_tare_ui()
         # fresh Max Load / Distance cells — stale Force-balance numbers
         # must not be silently re-attributed to Moment elements
         self.max_table.setRowCount(6)
@@ -840,10 +935,15 @@ class BalanceCalWindow(QMainWindow):
         # while the worker averages, and the point belongs to this one
         self._pending_load = load
         self._pending_key = key
-        self.acquire_btn.setEnabled(False)
-        self.orient_combo.setEnabled(False)
+        self._pending_tare = False
         self.acquire_btn.setText(f"Averaging {self.seconds_spin.value():g}"
                                  f" s — [{key}]")
+        self._start_acquire_worker()
+
+    def _start_acquire_worker(self) -> None:
+        self.acquire_btn.setEnabled(False)
+        self.tare_btn.setEnabled(False)
+        self.orient_combo.setEnabled(False)
         self._acquire_thread = _AcquireThread(
             self.daq, self.seconds_spin.value(), self.session.kind, self)
         self._acquire_thread.done.connect(self._acquire_done)
@@ -851,18 +951,63 @@ class BalanceCalWindow(QMainWindow):
         self._acquire_thread.finished.connect(self._acquire_cleanup)
         self._acquire_thread.start()
 
+    # ── tare (bridge DC baseline at setup start) ─────────────────────────
+    def _handle_tare(self) -> None:
+        if self.daq is None or not self.daq.connected:
+            QMessageBox.warning(self, "Not connected",
+                                "Connect a DAQ first.")
+            return
+        if self._acquire_thread is not None:
+            return
+        if QMessageBox.question(
+                self, "Tare",
+                "Capture the bridge DC baseline now?\n\nMake sure "
+                "NOTHING is hanging on the balance — this baseline is "
+                "subtracted from every point acquired afterwards.") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        self._pending_tare = True
+        self.tare_btn.setText(f"Taring {self.seconds_spin.value():g} s…")
+        self._start_acquire_worker()
+
+    def _clear_tare(self) -> None:
+        self.session.tare_volts = None
+        self._update_tare_ui()
+        self._show_status("Tare cleared — recorded volts are absolute "
+                          "again (points already acquired keep the "
+                          "tare they were recorded with)")
+
+    def _update_tare_ui(self) -> None:
+        active = self.session.tare_volts is not None
+        self.tare_clear_btn.setEnabled(active)
+        if active:
+            mv = ", ".join(f"{v * 1e3:+.3f}"
+                           for v in self.session.tare_volts)
+            self.tare_lbl.setText(f"tare: [{mv}] mV")
+            self.tare_lbl.setStyleSheet(f"color: {theme.SUCCESS};")
+        else:
+            self.tare_lbl.setText("tare: —")
+            self.tare_lbl.setStyleSheet(f"color: {theme.TEXT_DIM};")
+
     def _compute_load(self, weight: float) -> float:
         """Entered dead weight x current moment arm."""
         return weight * self.arm_spin.value()
 
     def _acquire_done(self, acq) -> None:
-        key = self._pending_key or self._current_key()
         s = self.session
         bridges = [el.channel for el in s.elements]
+        if getattr(self, "_pending_tare", False):
+            s.tare_volts = [acq.means[b] for b in bridges]
+            self._update_tare_ui()
+            self._show_status(
+                f"Tared over {acq.seconds:g} s — bridge baselines "
+                f"subtracted from every point from now on")
+            return
+        key = self._pending_key or self._current_key()
         constant_exc = self.exc_mode_combo.currentIndex() == 1
         point = TestPoint(
             load=self._pending_load,
-            volts=[acq.means[b] for b in bridges],
+            volts=s.apply_tare([acq.means[b] for b in bridges]),
             excitation=(self.exc_const_spin.value() if constant_exc
                         else acq.means["Excitation"]),
             stds=[acq.stds.get(b, 0.0) for b in bridges])
@@ -883,7 +1028,10 @@ class BalanceCalWindow(QMainWindow):
     def _acquire_cleanup(self) -> None:
         self._acquire_thread = None
         self._pending_key = ""
+        self._pending_tare = False
         self.acquire_btn.setEnabled(True)
+        self.tare_btn.setEnabled(True)
+        self.tare_btn.setText("Tare (no load)")
         self.orient_combo.setEnabled(True)
         # restore the button label WITHOUT re-running the orientation
         # handler: that would reset a manually entered moment arm
@@ -911,7 +1059,14 @@ class BalanceCalWindow(QMainWindow):
         if self.daq is None or not self.daq.connected:
             return
         vals = self.daq.latest_volts(self.session.kind)
-        self.live_label.setText("  ".join(
+        tare = self.session.tare_volts
+        if tare is not None:
+            bridges = [el.channel for el in self.session.elements]
+            for b, t in zip(bridges, tare):
+                if b in vals:
+                    vals[b] = vals[b] - t
+        mark = "T " if tare is not None else ""
+        self.live_label.setText(mark + "  ".join(
             f"{n}:{v:+.4f}" for n, v in vals.items()))
 
     # ── table edit / output ──────────────────────────────────────────────
@@ -1006,6 +1161,7 @@ class BalanceCalWindow(QMainWindow):
         if first:
             self.orient_combo.setCurrentText(first)
         self.orient_combo.blockSignals(False)
+        self._update_tare_ui()          # loaded sessions carry no tare
         self._preview_channels()
         self._on_orientation_changed()
 

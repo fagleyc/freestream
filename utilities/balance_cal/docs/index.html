@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Balance Cal — Documentation</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --bg-side: #252526; --bg-card: #2d2d30;
+    --border: #3e3e42; --text: #d4d4d4; --text-dim: #9d9d9d;
+    --accent: #4fc3f7; --accent2: #81c784; --warn: #ffb74d;
+    --code-bg: #1a1a1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif; line-height: 1.55;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  #sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 250px;
+    background: var(--bg-side); border-right: 1px solid var(--border);
+    padding: 20px 14px; overflow-y: auto;
+  }
+  #sidebar h1 { font-size: 1.15em; margin: 0 0 2px; color: #fff; }
+  #sidebar .ver { color: var(--text-dim); font-size: 0.85em; margin-bottom: 14px; }
+  #sidebar ul { list-style: none; margin: 0; padding: 0; }
+  #sidebar li { margin: 1px 0; }
+  #sidebar a { display: block; padding: 4px 8px; border-radius: 4px; color: var(--text); font-size: 0.92em; }
+  #sidebar a:hover { background: var(--bg-card); text-decoration: none; }
+  #sidebar .sub a { padding-left: 22px; color: var(--text-dim); font-size: 0.87em; }
+  main { margin-left: 250px; padding: 30px 44px 80px; max-width: 950px; }
+  h2 { color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-top: 44px; }
+  h3 { color: var(--accent); margin-top: 28px; }
+  code, pre {
+    font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9em;
+    background: var(--code-bg); border-radius: 4px;
+  }
+  code { padding: 1px 5px; }
+  pre { padding: 12px 14px; overflow-x: auto; border: 1px solid var(--border); }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; margin: 12px 0; width: 100%; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; font-size: 0.92em; }
+  th { background: var(--bg-card); color: #fff; }
+  tr:nth-child(even) td { background: #26262a; }
+  .note {
+    background: var(--bg-card); border-left: 3px solid var(--accent);
+    padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 14px 0;
+  }
+  .warn { border-left-color: var(--warn); }
+</style>
+</head>
+<body>
+<nav id="sidebar">
+  <h1>Balance Cal</h1>
+  <div class="ver">Force/Moment Balance Calibration<br>v1.1.0 &mdash; C. Fagley</div>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#backends">DAQ Backends</a></li>
+    <li><a href="#procedure">Calibration Procedure</a></li>
+    <li class="sub"><a href="#proc-setup">1 &middot; Measurement Setup</a></li>
+    <li class="sub"><a href="#proc-orient">2 &middot; Orientations &amp; arms</a></li>
+    <li class="sub"><a href="#proc-acquire">3 &middot; Acquiring points</a></li>
+    <li class="sub"><a href="#proc-fit">4 &middot; Fit &amp; diagnostics</a></li>
+    <li class="sub"><a href="#proc-vol">5 &middot; Writing the .vol</a></li>
+    <li><a href="#gui">GUI Guide</a></li>
+    <li><a href="#volformat">.vol File Format</a></li>
+    <li><a href="#troubleshoot">Troubleshooting</a></li>
+  </ul>
+</nav>
+<main>
+
+<h2 id="overview">Overview</h2>
+<p><strong>Balance Cal</strong> (<code>balcal_gui</code>) is the Python port of the MATLAB
+<code>FB_Cal_GUI/ForceCal.mlapp</code> calibration app. It acquires bridge voltages from an
+analog-input DAQ while dead-weight loads are applied to a wind-tunnel balance, walks the
+operator through all twelve loading orientations with guide images, fits and diagnoses the
+calibration matrix, and writes a <em>"Voltage Calibration File 3.1"</em> (<code>.vol</code>) &mdash;
+the same format consumed by the device drivers' <code>balcal.read_vol_file</code>, the
+freestream Forces monitor, and Streamlined.</p>
+<pre><code># standalone (NI USB-6351 default)
+python run_balcal_gui.py
+python run_balcal_gui.py --sim                  # no hardware
+python run_balcal_gui.py --backend strainbook   # StrainBook/616</code></pre>
+<p>It can also be launched from freestream via <em>Advanced &rarr; Balance
+Calibration&hellip;</em>, in which case it <strong>shares freestream's live DAQ stream</strong>
+when connected (backend/sim/device/balance-type controls lock to the shared device).</p>
+
+<h3>Balance types</h3>
+<table>
+  <tr><th>Type</th><th>Elements</th><th>Layout</th></tr>
+  <tr><td>Force Balance</td><td>N1, N2, Y1, Y2, Ax (Axial), Mx (Roll)</td>
+      <td>5 Force / 1 Moment</td></tr>
+  <tr><td>Moment Balance</td><td>Aft_Pitch, Aft_Yaw, Fwd_Pitch, Fwd_Yaw, Ax, Mx</td>
+      <td>1 Force / 5 Moment</td></tr>
+</table>
+
+<h2 id="backends">DAQ Backends</h2>
+<table>
+  <tr><th>Backend</th><th>Driver</th><th>Notes</th></tr>
+  <tr><td><code>ni6351</code> (primary)</td><td><code>ni_usb_6351.NiUsb6351</code> (NI-DAQmx)</td>
+      <td>Device alias from NI&nbsp;MAX (e.g. <code>Dev2</code>); the "Search" button
+      enumerates aliases. Six bridge channels + Excitation.</td></tr>
+  <tr><td><code>strainbook</code></td><td><code>strainbook_616.Strainbook616</code> (daqx DLL)</td>
+      <td>Ethernet StrainBook; an IP-looking device name sets the device IP. External
+      excitation read back on CH8.</td></tr>
+</table>
+<ul>
+  <li><strong>Simulation</strong>: check "Simulate (no hardware)" (or <code>--sim</code>) to run
+      against the driver simulator &mdash; the status lamp shows SIMULATION instead of
+      ACQUIRING. All tests run this way.</li>
+  <li><strong>Shared device</strong>: when embedded in freestream the already-connected driver
+      is reused; acquisition adds any software tare back so freestream's tare never leaks
+      into calibration data.</li>
+  <li><strong>Excitation</strong>: measured from the Excitation channel by default, or set a
+      constant supply voltage ("Constant" mode, or File &rarr; Set constant excitation for
+      session&hellip; to overwrite every stored point).</li>
+</ul>
+
+<h2 id="procedure">Calibration Procedure</h2>
+
+<h3 id="proc-setup">1 &middot; Measurement Setup tab</h3>
+<ol>
+  <li>Pick backend, device, scan rate (default 1000&nbsp;Hz), and balance type.</li>
+  <li>Edit physical channels / ranges in the channel table <em>before</em> connecting.</li>
+  <li>Fill in Balance Info: max load and <strong>distance to balance center</strong> [in] per
+      element, operator ("Cal'd by"), serial number, outer diameter, date.</li>
+  <li>Press <strong>Connect</strong> &mdash; the lamp turns ACQUIRING (or SIMULATION).</li>
+</ol>
+
+<h3 id="proc-orient">2 &middot; Orientations and moment arms</h3>
+<p>The Calibration Procedure tab steps through 12 orientations (positive and negative per
+element, e.g. <code>N1_pos &hellip; Mx_neg</code>). Selecting one shows the matching rig photo
+(FB_* / MB_* guide images) and sets the moment arm:</p>
+<ul>
+  <li><strong>Direct forces</strong>: arm = 1.0 (load = dead weight).</li>
+  <li><strong>Moment-balance pitch/yaw</strong>: arm = d1 + d2 (station-to-station distance;
+      weight hangs at the opposite station). A warning appears if the paired distances are
+      not entered &mdash; the arm silently falls back to 1.0 otherwise.</li>
+  <li><strong>Roll</strong>: uses the roll arm distance (default 2.0&nbsp;in).</li>
+</ul>
+<p>Applied load = dead weight &times; moment arm. Loads exceeding the entered max load
+prompt for confirmation.</p>
+
+<h3 id="proc-acquire">3 &middot; Acquiring test points</h3>
+<ol>
+  <li>Hang the weight, let the balance settle, press
+      <strong>Acquire Test Point &mdash; [orientation]</strong> and enter the dead weight.</li>
+  <li>The app averages the six bridges + excitation over the chosen window (off the GUI
+      thread), stores per-channel standard deviations, and warns if excitation is
+      below 0.5&nbsp;V.</li>
+  <li><strong>Always include a zero-load point per orientation</strong> &mdash; the .vol
+      consumers use load&nbsp;=&nbsp;0 rows for zero-offset correction.</li>
+  <li>The live cal plot shows load vs primary bridge volts with &plusmn;1&sigma; error bars;
+      noisy points are highlighted and a dashed linear trend is drawn. The Time History tab
+      shows the last acquisition per channel.</li>
+</ol>
+
+<h3 id="proc-fit">4 &middot; Fit and diagnostics (Cal Summary tab)</h3>
+<ul>
+  <li>Choose the fit type (Linear / Quadratic / Cubic) and press
+      <strong>Compute Calibration</strong>. The fit runs through the <em>exact</em> consumer
+      code path (<code>balcal.read_vol_file</code> + <code>calc_coeffs</code> on a temp .vol),
+      reporting per-element R&sup2;, RMS bias, and the calibration matrix.</li>
+  <li>The diagnostics engine adds iterative MAD-based outlier rejection (masking-proof),
+      per-section health (missing zero-load rows, offset-suspect sections), excitation
+      anomalies, off-diagonal channel scans (Theil-Sen trend + robust z), cross-talk burden
+      notes, and a leave-section-out influence scan &mdash; rendered first in plain language
+      (WHAT / WHY / FIX), then in full detail.</li>
+  <li>Interactive views: Applied vs Predicted, Residuals vs Applied, Channel volts
+      (off-diagonal). Suspect points can be
+      <strong>Repair[ed] from Trend</strong>, <strong>Edit[ed]</strong>,
+      <strong>Exclude[d] &amp; Refit</strong>, <strong>Delete[d] &amp; Refit</strong>, or jumped
+      to in the table; excluded points are left out of both the fit and the written .vol.</li>
+  <li><strong>Save Report&hellip;</strong> writes the text summary.</li>
+</ul>
+
+<h3 id="proc-vol">5 &middot; Writing (and reloading) the .vol</h3>
+<ul>
+  <li><strong>Write to File&hellip;</strong> / File &rarr; Write .vol&hellip; validates the
+      session first (missing max loads, distances, operator, serial are listed) and writes
+      ASCII &mdash; encoding happens before the file is opened, so a bad character can never
+      truncate an existing calibration.</li>
+  <li>File &rarr; <strong>Load .vol for editing&hellip;</strong> round-trips an existing file
+      back into the session (append more points, re-fit, re-write byte-identically).</li>
+  <li>File &rarr; <strong>Summarize existing .vol&hellip;</strong> reports any .vol without
+      loading it for editing.</li>
+</ul>
+
+<h2 id="gui">GUI Guide</h2>
+<table>
+  <tr><th>Element</th><th>Contents</th></tr>
+  <tr><td>File menu</td><td>Load .vol for editing, Write .vol, Summarize existing .vol,
+      Set constant excitation for session, Open device panel, Exit.</td></tr>
+  <tr><td>Help menu</td><td>Documentation (this page); About Balance Cal
+      (version + history).</td></tr>
+  <tr><td>Measurement Setup tab</td><td>Backend/device/rate/balance-type, channel table,
+      excitation mode, Connect, Balance Info metadata.</td></tr>
+  <tr><td>Calibration Procedure tab</td><td>Orientation picker + guide image, moment arm,
+      averaging window, live volts, measurement table, cal plot, Acquire / Delete Row /
+      Write to File.</td></tr>
+  <tr><td>Time History tab</td><td>Last acquisition time-series with per-channel visibility
+      toggles (excitation not plotted).</td></tr>
+  <tr><td>Cal Summary tab</td><td>Fit type, Compute Calibration, Save Report, summary text,
+      interactive diagnostics panel.</td></tr>
+</table>
+<div class="note">Open device panel&hellip; opens the driver's native panel
+(<code>NiDaqPanel</code> / <code>StrainbookPanel</code>) embedded and sharing the connection
+&mdash; useful for channel-level debugging without disconnecting.</div>
+
+<h2 id="volformat">.vol File Format ("Voltage Calibration File 3.1")</h2>
+<pre><code>Voltage Calibration File 3.1
+Date--&gt; 6/6/2025
+Calibration performed by--&gt; ...
+[Balance Description]
+Balance Type--&gt; 5 Force/1 Moment
+Balance Serial Number--&gt; ...
+Balance outer Diameter--&gt; 0.75 in.
+[Maximal Balance Loads]
+N1--&gt; 50 lbs
+...
+[Distances]
+Distance from N1 to center of Balance x1 in inches--&gt; ...
+...
+[N1 pos]
+Number of Loads--&gt; 5
+Load[lbs], N1[Volt], N2[Volt], Y1[Volt], Y2[Volt], Ax[Volt], Mx[Volt], Exct.[Volt]
+0, 1.0000000000E-03, ...</code></pre>
+<ul>
+  <li>One <code>[Element pos|neg]</code> section per orientation; volts in
+      <code>%.10E</code> scientific notation, loads plain.</li>
+  <li>Excluded points are skipped on write; per-point standard deviations are not part of
+      the format (reloaded points carry none).</li>
+  <li>Consumers fold zero offsets from load&nbsp;=&nbsp;0 rows and normalize by the
+      excitation column, then least-squares fit Linear (6&times;6), Quadratic (12&times;6),
+      or Cubic (18&times;6) matrices.</li>
+</ul>
+
+<h2 id="troubleshoot">Troubleshooting</h2>
+<table>
+  <tr><th>Symptom</th><th>Cause / fix</th></tr>
+  <tr><td>No NI devices found</td><td>Check NI&nbsp;MAX alias and cabling; press "Search"
+      again, or run with <code>--sim</code> to work without hardware.</td></tr>
+  <tr><td>Excitation warning (&lt; 0.5 V)</td><td>Excitation channel not wired or supply
+      off. Wire it, switch excitation mode to "Constant", or use File &rarr; Set constant
+      excitation for the whole session.</td></tr>
+  <tr><td>Moment arm warning</td><td>The paired station distances (x1/x2 or y1/y2) are
+      missing from Balance Info &mdash; enter them, otherwise the arm silently falls back
+      to 1.0.</td></tr>
+  <tr><td>Poor R&sup2; on one element</td><td>Open Cal Summary diagnostics: look for flagged
+      outliers, a missing zero-load row, or an offset-suspect section; repair or
+      exclude-and-refit.</td></tr>
+  <tr><td>Off-diagonal channel anomaly</td><td>A bridge shows unexpected response to another
+      element's loading &mdash; usually a swapped channel or mechanical interference; the
+      "Channel volts (off-diagonal)" view pinpoints the row.</td></tr>
+  <tr><td>.vol write fails with encoding error</td><td>A non-ASCII character in a metadata
+      field; the file is never truncated &mdash; fix the field and re-write.</td></tr>
+  <tr><td>Old tab-delimited V1 file won't load</td><td>Only "Voltage Calibration File 3.1"
+      comma-separated files round-trip; re-create the calibration or convert the file.</td></tr>
+  <tr><td>Controls greyed out when opened from freestream</td><td>Expected: the shared live
+      stream owns backend/device/balance-type; disconnect in freestream to change
+      them.</td></tr>
+</table>
+
+<p style="color: var(--text-dim); margin-top: 48px; font-size: 0.85em;">
+Balance Cal v1.1.0 &mdash; Author: C. Fagley &mdash; casey.fagley@afacademy.af.edu</p>
+
+</main>
+</body>
+</html>

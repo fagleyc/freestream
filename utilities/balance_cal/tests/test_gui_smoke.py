@@ -349,6 +349,53 @@ def test_summary_starts_plain_language(win, qapp):
     assert text.index("WHAT THE FIT SAYS") < text.index("Details")
 
 
+def test_tare_captures_and_subtracts(win, qapp):
+    """Tare at setup start: baseline captured unloaded, subtracted from
+    every point acquired afterwards, and written net into the .vol."""
+    win.sim_check.setChecked(True)
+    win._connect()
+    acq0 = win.daq.acquire(0.2, win.session.kind)
+    # tare path through the shared worker completion handler
+    win._pending_tare = True
+    win._acquire_done(acq0)
+    bridges = [el.channel for el in win.session.elements]
+    assert win.session.tare_volts == [acq0.means[b] for b in bridges]
+    assert win.tare_clear_btn.isEnabled()
+    assert win.tare_lbl.text().startswith("tare: [")
+
+    # subsequent point stores tared volts (sim DC is steady → near 0)
+    acq1 = win.daq.acquire(0.2, win.session.kind)
+    win._pending_tare = False
+    win._pending_key = "N1_pos"
+    win._pending_load = 10.0
+    win._acquire_done(acq1)
+    p = win.session.points["N1_pos"][0]
+    expect = [acq1.means[b] - t
+              for b, t in zip(bridges, win.session.tare_volts)]
+    assert p.volts == pytest.approx(expect, abs=1e-12)
+    assert max(abs(v) for v in p.volts) < 0.05     # DC removed
+
+    # written .vol carries the net values
+    from balcal_gui.volfile import vol_text
+    win.operator_edit.setText("t")
+    win._sync_session_meta()
+    assert f"{p.volts[0]:.10E}" in vol_text(win.session)
+
+
+def test_clear_tare_and_type_change_invalidate(win, qapp):
+    win.session.tare_volts = [0.001] * 6
+    win._update_tare_ui()
+    assert win.tare_clear_btn.isEnabled()
+    win._clear_tare()
+    assert win.session.tare_volts is None
+    assert not win.tare_clear_btn.isEnabled()
+    assert win.session.apply_tare([0.5] * 6) == [0.5] * 6
+
+    win.session.tare_volts = [0.001] * 6
+    win.balance_type_combo.setCurrentText("Moment Balance")
+    assert win.session.tare_volts is None       # layout change clears
+
+
 def test_multi_row_delete_maps_indices(win, monkeypatch):
     from PyQt6.QtWidgets import QMessageBox
     win.orient_combo.setCurrentText("N1_pos")

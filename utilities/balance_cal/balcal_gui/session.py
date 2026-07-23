@@ -137,6 +137,11 @@ class CalSession:
     max_loads: Dict[str, float] = field(default_factory=dict)   # by element
     distances: Dict[str, float] = field(default_factory=dict)   # by tag x1…y2
     points: Dict[str, List[TestPoint]] = field(default_factory=dict)
+    #: bridge DC tare captured unloaded at setup start [V]; subtracted
+    #: from every acquired point's volts (excitation is never tared).
+    #: Acquisition-time convenience only — recorded .vol volts are the
+    #: net values, so nothing downstream needs to know about it.
+    tare_volts: Optional[List[float]] = None
 
     @property
     def elements(self):
@@ -168,6 +173,12 @@ class CalSession:
     def excluded_count(self) -> int:
         return sum(1 for v in self.points.values()
                    for p in v if p.excluded)
+
+    def apply_tare(self, volts: List[float]) -> List[float]:
+        """Measured bridge volts → recorded volts (tare subtracted)."""
+        if self.tare_volts is None:
+            return list(volts)
+        return [v - t for v, t in zip(volts, self.tare_volts)]
 
     # ── moment-arm logic ─────────────────────────────────────────────────
     #: pitch elements share one load couple (aft x1 + fwd y1), yaw the
