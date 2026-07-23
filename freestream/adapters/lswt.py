@@ -7,12 +7,17 @@ setpoint is therefore Hz (or velocity in ft/s); the HAL/sweep engine
 speaks ``rpm`` (``set_target(rpm=...)``, ``readback()["rpm"]``,
 /Tunnel RPM_cmd/RPM_meas — see :class:`freestream.hal.SetpointDevice`).
 
-RPM equivalence — stated honestly: this adapter maps ``rpm`` ⇄ Hz with a
-fixed factor of 60 (cycles/s → cycles/min, i.e. the 2-pole synchronous
-speed equivalent). The fan's true shaft RPM depends on motor pole count
-and slip, which the drive does not report; the recorded RPM_cmd/RPM_meas
-are exactly ``Hz × 60`` and the readback also carries the raw ``hz`` /
-``hz_set`` and the calibrated ``velocity_fps`` so nothing is lost.
+RPM ⇄ Hz — 1:1 (rig-corrected 2026-07-23). The freestream tunnel control
+speaks ``rpm`` generically (shared with the SWT Red Lion fan), but the
+LSWT drive's command IS its output frequency in Hz (0–60) and the
+operator sets it in that scale — exactly as the standalone LSWT app
+does. So the value entered here is the drive Hz VERBATIM: ``set_target(
+rpm=10)`` runs the fan at 10 Hz, and RPM_cmd/RPM_meas record the Hz
+value. (The earlier ``Hz × 60`` "synchronous-speed" mapping made a
+commanded 10 run the fan at 0.17 Hz — the scaling bug Casey hit.) The
+readback still carries the raw ``hz`` / ``hz_set`` and the calibrated
+``velocity_fps`` so downstream code that wants true frequency or speed
+has them by name.
 
 Driver constraints honoured (see lswt.device):
 
@@ -44,9 +49,10 @@ from lswt.device import LswtDrive                             # noqa: E402
 from ..hal import DeviceStatus, OFFLINE, OK                   # noqa: E402
 from ._configurable import ConfigurableAdapter                 # noqa: E402
 
-#: rpm ⇄ hz equivalence: cycles/min per cycle/s (2-pole synchronous
-#: speed — NOT shaft RPM; see module docstring)
-RPM_PER_HZ = 60.0
+#: The freestream tunnel "rpm" setpoint IS the LSWT drive frequency in
+#: Hz, 1:1 (see module docstring) — the operator enters the drive scale
+#: (0–60), matching the standalone LSWT app. Not shaft RPM.
+RPM_PER_HZ = 1.0
 
 
 @dataclass
@@ -131,7 +137,8 @@ class LswtTunnelAdapter(ConfigurableAdapter):
 
         * ``hz=``       — drive output frequency (native),
         * ``velocity=`` — tunnel velocity in ft/s (measured calibration),
-        * ``rpm=``      — the HAL/sweep convention, mapped as Hz × 60.
+        * ``rpm=``      — the HAL/sweep convention; for the LSWT this IS
+                          the drive Hz, 1:1 (RPM_PER_HZ, see docstring).
 
         The driver ramps the commanded reference (``ramp_hz_per_s``) and
         clamps to ``config.max_hz``. In SIM the fan is auto-started when
@@ -142,7 +149,7 @@ class LswtTunnelAdapter(ConfigurableAdapter):
         if len(keys) != 1 or set(kw) - {"hz", "velocity", "rpm"}:
             raise ValueError(
                 f"lswt setpoint is ONE of hz=/velocity=(fps)/rpm= "
-                f"(rpm = Hz*60 equivalence); got {sorted(kw)}")
+                f"(rpm = drive Hz, 1:1); got {sorted(kw)}")
         if "hz" in kw:
             hz = float(kw["hz"])
         elif "velocity" in kw:

@@ -281,6 +281,10 @@ class FreestreamMainWindow(QMainWindow):
         # pending monitor-only operator wait (engine thread blocked on it)
         self._wait_ticket: Optional[_OperatorWaitTicket] = None
         self._wait_dialog: Optional[MachWaitDialog] = None
+        # non-modal device config dialogs, one per device id (so the main
+        # window + other device windows stay interactable while any are
+        # open); reopening a device raises its existing dialog
+        self._device_dialogs: Dict[str, object] = {}
 
         self._build_command_bar()
         self._build_central()
@@ -1101,8 +1105,12 @@ class FreestreamMainWindow(QMainWindow):
     # ── monitor-only operator wait (engine thread is blocked) ───────────
     def _on_operator_wait(self, ticket: _OperatorWaitTicket) -> None:
         """GUI thread: show the MachWaitDialog for a monitor-only point.
-        Window-modal but NON-blocking (dlg.open()); the engine worker is
-        the one waiting, on the ticket's Event."""
+        NON-MODAL (dlg.show()) so the operator can still drive the
+        dashboard, device windows and detached monitors while bringing
+        the tunnel up — the ENGINE worker is the one actually waiting,
+        on the ticket's Event, so the dialog needs no modality at all
+        (rig-fixed 2026-07-23: it used to window-modal-lock everything).
+        It stays on top for visibility."""
         if (not self._running or self.engine is None
                 or self.engine.abort_requested):
             ticket.resolve(ABORT_SWEEP)    # sweep already going down
@@ -1110,6 +1118,10 @@ class FreestreamMainWindow(QMainWindow):
         self._wait_ticket = ticket
         dlg = MachWaitDialog(ticket.request, self.config.mach_settle_s,
                              sim=self.manager.sim, parent=self)
+        dlg.setModal(False)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        # keep the prompt visible above the main window without blocking
+        dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self._wait_dialog = dlg
         dlg.finished.connect(
             lambda _r, d=dlg, t=ticket: self._on_wait_dialog_done(d, t))
@@ -1117,7 +1129,8 @@ class FreestreamMainWindow(QMainWindow):
                          f"{ticket.request.describe()} — dialog open "
                          "(auto-proceeds once the measurement holds "
                          f"{self.config.mach_settle_s:g} s in tolerance)")
-        dlg.open()
+        dlg.show()
+        dlg.raise_()
 
     def _on_wait_dialog_done(self, dlg: MachWaitDialog,
                              ticket: _OperatorWaitTicket) -> None:
@@ -1211,12 +1224,21 @@ class FreestreamMainWindow(QMainWindow):
     def _open_device_settings(self, dev_id: str) -> None:
         """Clicking a device card opens the FULL device configuration GUI
         (settings + channels + axis calibration, mirroring the standalone
-        device app)."""
+        device app). NON-MODAL (rig-fixed 2026-07-23): the main window,
+        other device windows and detached monitors stay interactable
+        while any device dialog is open. Reopening a device raises its
+        existing dialog rather than stacking a second one."""
         dev = self.manager.devices.get(dev_id)
         if dev is None:
             return
         if not callable(getattr(dev, "config_dict", None)):
             self.console.log(f"{dev_id}: no configurable driver config")
+            return
+        existing = self._device_dialogs.get(dev_id)
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
             return
         try:
             from .device_config import DeviceConfigDialog
@@ -1229,18 +1251,33 @@ class FreestreamMainWindow(QMainWindow):
                 on_disconnect=lambda d=dev_id: self._disconnect_device(d),
                 on_save_defaults=lambda d=dev_id:
                     self._save_device_defaults(d))
-            accepted = bool(dlg.exec())
-            changed = accepted or dlg.applied          # Apply w/o OK counts
         except Exception as exc:                       # noqa: BLE001
             QMessageBox.warning(self, f"{dev_id} settings", str(exc))
             self.console.log(f"{dev_id} settings failed: {exc}")
             return
-        if changed:
+        dlg.setModal(False)
+        self._device_dialogs[dev_id] = dlg
+        dlg.finished.connect(
+            lambda _r, d=dev_id, g=dlg: self._on_device_dialog_done(d, g))
+        dlg.show()
+        dlg.raise_()
+
+    def _on_device_dialog_done(self, dev_id: str, dlg) -> None:
+        """A non-modal device dialog closed — do the post-edit snapshot
+        the old modal ``exec()`` path did on return."""
+        if self._device_dialogs.get(dev_id) is dlg:
+            del self._device_dialogs[dev_id]
+        dev = self.manager.devices.get(dev_id)
+        changed = (dlg.result() == QDialog.DialogCode.Accepted
+                   or getattr(dlg, "applied", False))
+        if changed and dev is not None and callable(
+                getattr(dev, "config_dict", None)):
             self.config.device_configs[dev_id] = dev.config_dict()
             self.console.log(f"{dev_id} configuration updated "
                              "(communication/sampling changes apply on "
                              "next connect)")
             self.rail.poll()
+        dlg.deleteLater()
 
     def _open_balance_device(self) -> None:
         """Forces page → "Balance device…": open the balance device's
@@ -1415,6 +1452,13 @@ class FreestreamMainWindow(QMainWindow):
         if self.engine is not None:
             self.engine.abort()
         self._release_operator_wait("window close")    # unblock the worker
+        # close any non-modal device dialogs (they hold shared drivers)
+        for dlg in list(self._device_dialogs.values()):
+            try:
+                dlg.close()
+            except Exception:                          # noqa: BLE001
+                pass
+        self._device_dialogs.clear()
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(5000)

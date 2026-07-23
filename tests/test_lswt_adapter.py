@@ -72,11 +72,15 @@ def test_sim_connect_status_and_hz_setpoint():
 
 
 def test_rpm_setpoint_maps_to_hz():
+    """rpm ⇄ Hz is 1:1 for the LSWT (rig-corrected 2026-07-23): the
+    entered value IS the drive Hz, matching the standalone app — a
+    commanded 10 runs the fan at 10 Hz, NOT 0.17 (the old ×60 bug)."""
     a = _fast(LswtTunnelAdapter(sim=True))
     a.connect()
     try:
-        a.set_target(rpm=600.0)                # 600 rpm-equiv = 10 Hz
+        a.set_target(rpm=10.0)                 # 1:1 → 10 Hz
         assert a.readback()["hz_set"] == pytest.approx(10.0)
+        assert a.readback()["rpm_set"] == pytest.approx(10.0)
         assert _wait_at_target(a), "sim fan never settled at 10 Hz"
     finally:
         a.disconnect()

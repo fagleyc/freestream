@@ -158,6 +158,32 @@ def test_dialogs_have_maximize_buttons(app, sim_manager):
     assert pdlg.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint
 
 
+# ── non-modal device dialogs (other windows stay interactable) ───────────
+def test_device_dialog_is_non_modal_and_tracked(app, tmp_path):
+    """A device dialog opened through Freestream is NON-MODAL so the main
+    window + other windows stay clickable; reopening raises the same
+    instance; closing removes it from the tracker (rig-fixed 2026-07-23)."""
+    mgr = DeviceManager("mode1", sim=True)              # real sim adapters
+    config = FreestreamConfig(config_name="uxtest",
+                              data_root=str(tmp_path / "runs"))
+    win = FreestreamMainWindow(config, manager=mgr)
+    try:
+        win._open_device_settings("daqbook")
+        dlg = win._device_dialogs.get("daqbook")
+        assert dlg is not None
+        assert not dlg.isModal()                        # never blocks
+        # reopen → same instance, no second dialog
+        win._open_device_settings("daqbook")
+        assert win._device_dialogs["daqbook"] is dlg
+        dlg.reject()                                    # close
+        app.processEvents()
+        assert "daqbook" not in win._device_dialogs
+    finally:
+        win.close()
+        app.processEvents()
+        mgr.disconnect_all()
+
+
 # ── dock default widths ──────────────────────────────────────────────────
 def test_dock_default_widths_applied(app, fakes_manifest, tmp_path):
     mgr = DeviceManager("mode1", sim=True, manifest_path=fakes_manifest)
