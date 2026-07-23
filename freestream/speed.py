@@ -26,21 +26,27 @@ from typing import Optional
 
 from .derived import GAMMA, R_AIR, live_tunnel_state
 
-#: the user-selectable tunnel-speed entry/display units
-SPEED_UNITS = ("mach", "ft/s", "m/s", "rpm")
+#: the user-selectable tunnel-speed entry/display units. ``hz`` is the
+#: LSWT ACS530 drive OUTPUT FREQUENCY (0–60 Hz — the inverter's actual
+#: input): typed Hz maps to a canonical Mach through the LSWT's measured
+#: hz↔ft/s calibration, so a user can define fan-frequency setpoints
+#: directly.
+SPEED_UNITS = ("mach", "ft/s", "m/s", "rpm", "hz")
 
 #: display labels (also the unit suffix in GUI captions)
-LABELS = {"mach": "Mach", "ft/s": "ft/s", "m/s": "m/s", "rpm": "RPM"}
+LABELS = {"mach": "Mach", "ft/s": "ft/s", "m/s": "m/s", "rpm": "RPM",
+          "hz": "Hz"}
 
 #: value display formats per unit (Mach to 3 places, velocities to one
-#: decimal, RPM as a whole number with a thousands separator)
+#: decimal, RPM as a whole number with a thousands separator, Hz to one)
 FORMATS = {"mach": "{:.3f}", "ft/s": "{:.1f}", "m/s": "{:.1f}",
-           "rpm": "{:,.0f}"}
+           "rpm": "{:,.0f}", "hz": "{:.1f}"}
 
 #: sensible |measured − target| bands per unit, applied when the
 #: operator switches the unit in Measurement Setup (roughly equivalent
 #: widths near the facilities' operating points)
-DEFAULT_TOLERANCES = {"mach": 0.010, "ft/s": 2.0, "m/s": 0.5, "rpm": 10.0}
+DEFAULT_TOLERANCES = {"mach": 0.010, "ft/s": 2.0, "m/s": 0.5, "rpm": 10.0,
+                      "hz": 0.5}
 
 #: tolerance-spinbox hints per unit: (min, max, decimals, single step) —
 #: the Measurement Setup dialog re-ranges its one tolerance spin from
@@ -50,6 +56,7 @@ SPIN_HINTS = {
     "ft/s": (0.1, 100.0, 1, 0.5),
     "m/s": (0.05, 50.0, 2, 0.1),
     "rpm": (1.0, 500.0, 0, 1.0),
+    "hz": (0.1, 10.0, 1, 0.1),
 }
 
 #: sweep-planner speed-row placeholder hints per unit (all units keep
@@ -59,10 +66,12 @@ PLANNER_HINTS = {
     "ft/s": "e.g. 100  or  40:20:120  (air-off 0 added)",
     "m/s": "e.g. 30  or  10:5:35  (air-off 0 added)",
     "rpm": "e.g. 600  or  0:100:600  (air-off 0 added)",
+    "hz": "e.g. 30  or  10:10:60  (LSWT drive Hz; air-off 0 added)",
 }
 
 #: compact axis symbols for the planner's run-book indicator strip
-AXIS_SYMBOLS = {"mach": "M", "ft/s": "V", "m/s": "V", "rpm": "N"}
+AXIS_SYMBOLS = {"mach": "M", "ft/s": "V", "m/s": "V", "rpm": "N",
+                "hz": "f"}
 
 FT_PER_M = 1.0 / 0.3048            # exact international foot
 
@@ -70,6 +79,14 @@ FT_PER_M = 1.0 / 0.3048            # exact international foot
 #: velocity↔Mach conversion — nominal by design; measured comparisons
 #: use the live isentropic chain instead. ≈ 340.29 m/s.
 A0_MS = math.sqrt(GAMMA * R_AIR * 288.15)
+
+
+def _lswt_calibration():
+    """The LSWT drive's measured hz↔ft/s table (lazy import — Hz is an
+    LSWT-only unit; the devices dir is already on sys.path via the
+    lswt adapter)."""
+    from lswt import calibration
+    return calibration
 
 
 def _check_unit(unit: str) -> None:
@@ -90,6 +107,10 @@ def mach_from(value: float, unit: str,
         return v / A0_MS
     if unit == "ft/s":
         return (v / FT_PER_M) / A0_MS
+    if unit == "hz":
+        # LSWT drive Hz → ft/s (measured cal) → Mach (standard-day A0)
+        fps = _lswt_calibration().hz_to_fps(v)
+        return (fps / FT_PER_M) / A0_MS
     # rpm — the MachLoop's own linear map, inverted
     rpm_per_mach = float(rpm_per_mach)
     if rpm_per_mach <= 0:
@@ -110,6 +131,9 @@ def value_from_mach(mach: float, unit: str,
         return m * A0_MS
     if unit == "ft/s":
         return m * A0_MS * FT_PER_M
+    if unit == "hz":
+        fps = m * A0_MS * FT_PER_M
+        return _lswt_calibration().fps_to_hz(fps)
     return m * float(rpm_per_mach)
 
 
@@ -126,20 +150,23 @@ def measured_value(manager, setpoint, unit: str) -> Optional[float]:
 
     Mach and the velocity units come from the one isentropic chain
     (:func:`freestream.derived.live_tunnel_state` — live conditions, not
-    the planning-time A0); RPM comes from the setpoint readback (the
-    ``rpm`` key, else ``hz`` × 60 — the LSWT drive's equivalence)."""
+    the planning-time A0); RPM and Hz come straight from the setpoint
+    readback (the drive's actual reported values — ``hz`` is the ACS530
+    output frequency, ``rpm`` is its 1:1 alias for the LSWT)."""
     _check_unit(unit)
-    if unit == "rpm":
+    if unit in ("rpm", "hz"):
         if setpoint is None:
             return None
         try:
             rb = setpoint.readback() or {}
         except Exception:                              # noqa: BLE001
             return None
-        if "rpm" in rb:
-            return float(rb["rpm"])
-        if "hz" in rb:
-            return float(rb["hz"]) * 60.0
+        if unit in rb:                                 # 'hz' or 'rpm' key
+            return float(rb[unit])
+        # fall back to the sibling key (LSWT: rpm ≡ hz, 1:1)
+        alt = "hz" if unit == "rpm" else "rpm"
+        if alt in rb:
+            return float(rb[alt])
         return None
     st = live_tunnel_state(manager)
     if st is None or not st.valid:

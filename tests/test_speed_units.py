@@ -74,10 +74,46 @@ def test_a0_is_standard_day_speed_of_sound():
 
 @pytest.mark.parametrize("unit", speed.SPEED_UNITS)
 def test_conversions_round_trip(unit):
-    for mach in (0.0, 0.1, 0.3, 0.85):
+    # hz is the LSWT drive frequency (0–60 Hz ≈ Mach 0…0.095): it can
+    # only round-trip within the tunnel's physical range, so exercise it
+    # over low-speed Mach; the unbounded units cover the full range.
+    machs = (0.0, 0.02, 0.05, 0.09) if unit == "hz" \
+        else (0.0, 0.1, 0.3, 0.85)
+    for mach in machs:
         value = speed.value_from_mach(mach, unit, rpm_per_mach=1500.0)
         back = speed.mach_from(value, unit, rpm_per_mach=1500.0)
-        assert back == pytest.approx(mach, abs=1e-12)
+        assert back == pytest.approx(mach, abs=1e-6)
+
+
+def test_hz_maps_through_lswt_calibration():
+    """Typed LSWT drive Hz → canonical Mach via the measured hz↔ft/s
+    table (so the operator can define fan-frequency setpoints). 60 Hz is
+    the tunnel's top speed (105.6851 ft/s ≈ Mach 0.095, standard day)."""
+    from lswt import calibration
+    top_fps = calibration.hz_to_fps(60.0)
+    assert top_fps == pytest.approx(105.6851, abs=1e-3)
+    m60 = speed.mach_from(60.0, "hz")
+    assert m60 == pytest.approx((top_fps / speed.FT_PER_M) / speed.A0_MS,
+                                abs=1e-9)
+    assert speed.value_from_mach(m60, "hz") == pytest.approx(60.0, abs=1e-3)
+    # air-off 0 Hz = 0 Mach in either direction
+    assert speed.mach_from(0.0, "hz") == 0.0
+    assert speed.value_from_mach(0.0, "hz") == pytest.approx(0.0, abs=1e-6)
+
+
+def test_hz_measured_value_reads_drive_frequency():
+    """The live measured Hz comes straight from the setpoint readback's
+    'hz' key (the ACS530 output frequency), not a derived velocity."""
+    class _SP:
+        def readback(self):
+            return {"hz": 27.0, "rpm": 27.0, "hz_set": 30.0}
+    assert speed.measured_value(None, _SP(), "hz") == pytest.approx(27.0)
+    # rpm ≡ hz 1:1 fallback when only the sibling key is present
+    class _SPonlyRpm:
+        def readback(self):
+            return {"rpm": 18.0}
+    assert speed.measured_value(None, _SPonlyRpm(), "hz") == \
+        pytest.approx(18.0)
 
 
 def test_known_conversion_values():
