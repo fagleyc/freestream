@@ -234,6 +234,17 @@ class StingDrive:
             p.command(st.cfg.unit, f"A{st.cfg.acceleration}")
             p.command(st.cfg.unit, f"AD{st.cfg.deceleration}")
             p.command(st.cfg.unit, f"V{st.cfg.velocity}")
+            if st.cfg.brake_output:
+                # OUT<n>B = output n follows Moving/Not-Moving: the
+                # DRIVE releases the brake while stepping and engages
+                # it when stopped/faulted/off. RAM setting on the SX —
+                # (re)sent at every connect on purpose.
+                p.command(st.cfg.unit,
+                          f"OUT{st.cfg.brake_output}B")
+                self._status(
+                    f"{st.cfg.name} brake: O{st.cfg.brake_output} set "
+                    f"to Moving/Not-Moving (released while moving, "
+                    f"engaged at rest)")
         p.command_blind("", "FSD1")     # broadcast — echo not guaranteed
 
     def disconnect(self) -> None:

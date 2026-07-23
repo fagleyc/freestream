@@ -67,6 +67,70 @@ def test_beta_positive_move_sends_positive_steps(tmp_path):
         sting_device.SimSerial = orig
 
 
+class _WireRecorder:
+    """SimSerial subclass factory that records every command line."""
+
+    @staticmethod
+    def install(monkeypatch):
+        import lswt_sting.device as sting_device
+        created = []
+
+        class _Rec(sting_device.SimSerial):
+            def __init__(self, config=None):
+                super().__init__(config)
+                self.sent = []
+                created.append(self)
+
+            def write(self, data):
+                self.sent.append(data.rstrip(b"\r\n").decode("ascii"))
+                return super().write(data)
+
+        monkeypatch.setattr(sting_device, "SimSerial", _Rec)
+        return created
+
+
+def test_brake_output_configured_at_connect(tmp_path, monkeypatch):
+    """Alpha brake on O3: connect must send OUT3B (Moving/Not-Moving
+    output — SX manual ch.4) so the DRIVE releases/engages the brake
+    with motion. Beta has no brake → no OUT command for unit 2."""
+    created = _WireRecorder.install(monkeypatch)
+    dev = StingDrive(_cfg(tmp_path, park_on_disconnect=False,
+                          restore_position=False))
+    try:
+        dev.connect()
+        sent = created[0].sent
+        assert "1OUT3B" in sent, sent
+        assert not any(s.startswith("2OUT") for s in sent), sent
+        # configured with the motion parameters, before the final FSD1
+        assert sent.index("1V.108") < sent.index("1OUT3B") \
+            < sent.index("FSD1")
+    finally:
+        dev.disconnect()
+
+
+def test_brake_output_disabled_sends_nothing(tmp_path, monkeypatch):
+    created = _WireRecorder.install(monkeypatch)
+    cfg = _cfg(tmp_path, park_on_disconnect=False,
+               restore_position=False)
+    cfg.alpha.brake_output = 0
+    dev = StingDrive(cfg)
+    try:
+        dev.connect()
+        assert not any("OUT" in s for s in created[0].sent)
+    finally:
+        dev.disconnect()
+
+
+def test_brake_output_config_round_trip(tmp_path):
+    cfg = _cfg(tmp_path)
+    assert cfg.alpha.brake_output == 3      # default: alpha brake on O3
+    assert cfg.beta.brake_output == 0
+    p = tmp_path / "cfg.json"
+    cfg.alpha.brake_output = 4
+    cfg.save(p)
+    assert StingConfig.load(p).alpha.brake_output == 4
+
+
 def test_park_runs_on_disconnect(tmp_path):
     cfg = _cfg(tmp_path, park_on_disconnect=True,
                restore_position=False, park_alpha_deg=0.3)

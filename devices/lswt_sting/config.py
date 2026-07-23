@@ -84,6 +84,15 @@ class StingAxisConfig:
     max_deg: float = 30.0
     tolerance_deg: float = 0.05     # reporting band only (indexer settles)
 
+    # ── brake (SX programmable output, Moving/Not-Moving function) ──
+    #: SX output number (1-4) wired to the brake release relay, or 0
+    #: for no brake. Configured at connect with ``OUT<n>B`` (manual
+    #: ch.4 "Output Functions"): the DRIVE then asserts the output
+    #: while the motor is moving (brake released) and drops it when
+    #: stopped/faulted/powered off (brake engaged) — wire the brake
+    #: power-to-release through this output so it fails safe.
+    brake_output: int = 0
+
     def counts_to_angle(self, counts: int) -> float:
         return (self.zero_offset_deg
                 + self.direction * counts / self.steps_per_degree)
@@ -108,7 +117,8 @@ def _alpha() -> StingAxisConfig:
     return StingAxisConfig(name="Alpha", unit="1",
                            steps_per_degree=ALPHA_STEPS_PER_DEG,
                            acceleration="10.8528", deceleration="10.8528",
-                           velocity=".108", min_deg=-15.0, max_deg=30.0)
+                           velocity=".108", min_deg=-15.0, max_deg=30.0,
+                           brake_output=3)     # brake on O3 (2026-07)
 
 
 def _beta() -> StingAxisConfig:
