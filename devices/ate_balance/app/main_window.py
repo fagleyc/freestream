@@ -12,15 +12,19 @@ from __future__ import annotations
 
 import logging
 import time
+import webbrowser
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QFileDialog, QLabel, QMainWindow, QStatusBar, QTabWidget, QVBoxLayout,
+    QDialog, QDialogButtonBox, QFileDialog, QHeaderView, QLabel, QMainWindow,
+    QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
     QWidget,
 )
 
+from ate_balance import about
 from ate_balance import protocol as P
 from ate_balance import theme
 from ate_balance.aux_source import SimAuxSource
@@ -36,6 +40,72 @@ from .panels.run_panel import RunPanel
 from .settings_dialog import SettingsDialog
 
 log = logging.getLogger(__name__)
+
+_ABOUT_SUMMARY = (
+    "Standalone TMS client for the ATE 6-component underfloor (external) "
+    "balance at the USAFA wind tunnel. Speaks the TCP/UDP protocol of the "
+    "balance's OGI control PC (AID-010-10015-1 §6): live wind-axis loads, "
+    "yaw/incidence motion control, balance lock/tare and dwell-averaged "
+    "run points. Raw loads only — coefficient reduction is owned by the "
+    "Freestream suite. Part of the AeroVIS instrument suite.")
+
+
+def _about_dialog(parent=None) -> QDialog:
+    """Small dark-themed About dialog: name, version, contact, history."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(f"About {about.APP_NAME}")
+    dlg.setMinimumWidth(560)
+    if parent is None:
+        dlg.setStyleSheet(theme.get_stylesheet())
+    root = QVBoxLayout(dlg)
+    root.setSpacing(8)
+
+    name = QLabel(about.APP_NAME)
+    name.setWordWrap(True)
+    name.setStyleSheet(
+        f"font-size: 15pt; font-weight: 600; color: {theme.TEXT};")
+    root.addWidget(name)
+    ver = QLabel(f"Version {about.__version__}")
+    ver.setProperty("mono", "true")
+    ver.setStyleSheet(f"font-size: 11pt; font-weight: bold; "
+                      f"color: {theme.ACCENT_LIGHT};")
+    root.addWidget(ver)
+
+    summary = QLabel(_ABOUT_SUMMARY)
+    summary.setWordWrap(True)
+    root.addWidget(summary)
+
+    contact = QLabel(
+        f'Author: {about.AUTHOR} — '
+        f'<a href="mailto:{about.CONTACT}" '
+        f'style="color: {theme.ACCENT_LIGHT};">{about.CONTACT}</a>')
+    contact.setOpenExternalLinks(True)
+    contact.setStyleSheet(f"color: {theme.TEXT_DIM};")
+    root.addWidget(contact)
+
+    table = QTableWidget(len(about.VERSION_HISTORY), 3)
+    table.setHorizontalHeaderLabels(["Version", "Date", "Changes"])
+    table.verticalHeader().setVisible(False)
+    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+    table.setWordWrap(True)
+    hdr = table.horizontalHeader()
+    hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+    hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+    hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+    for r, (v, d, s) in enumerate(about.VERSION_HISTORY):
+        for c, text in enumerate((v, d, s)):
+            item = QTableWidgetItem(text)
+            if c == 2:
+                item.setToolTip(text)
+            table.setItem(r, c, item)
+    table.resizeRowsToContents()
+    table.setMinimumHeight(140)
+    root.addWidget(table, 1)
+
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    buttons.rejected.connect(dlg.reject)
+    root.addWidget(buttons)
+    return dlg
 
 
 class AteBalancePanel(QWidget):
@@ -360,6 +430,22 @@ class AteBalanceMainWindow(QMainWindow):
         a_quit = QAction("&Quit", self)
         a_quit.triggered.connect(self.close)
         m.addAction(a_quit)
+
+        h = self.menuBar().addMenu("&Help")
+        a_docs = QAction("&Documentation", self)
+        a_docs.triggered.connect(self._open_docs)
+        h.addAction(a_docs)
+        h.addSeparator()
+        a_about = QAction(f"&About {about.APP_NAME.split(' — ')[0]}", self)
+        a_about.triggered.connect(self._show_about)
+        h.addAction(a_about)
+
+    def _open_docs(self):
+        docs = Path(__file__).resolve().parents[1] / "docs" / "index.html"
+        webbrowser.open(docs.resolve().as_uri())
+
+    def _show_about(self):
+        _about_dialog(self).exec()
 
     def _open_settings(self):
         dlg = SettingsDialog(self.panel.config, self)

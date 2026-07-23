@@ -46,14 +46,17 @@ class SimSerial:
 
     # ── command handling ─────────────────────────────────────────────────
     def _respond(self, text: str) -> None:
-        self._rx += (text + "\r\n").encode("ascii")
+        # live wire truth (2026-07-23): CR-only EOM
+        self._rx += (text + "\r").encode("ascii")
 
     def _handle(self, cmd: str) -> None:
         c = cmd.strip()
         u = c.upper()
         if c == "?":
-            left = self._pressure_psi() * _CONVERT[self._units[0]]
-            right = self._temperature_f()
+            # bench layout (2026-07-23): left = RTD temperature,
+            # right = pressure (EUNIT code of the right port applies)
+            left = self._temperature_f()
+            right = self._pressure_psi() * _CONVERT[self._units[1]]
             self._respond(f"{left:.6f},{right:.6f}")
         elif u.startswith("EUNIT?"):
             self._respond(f"{self._units[0]},{self._units[1]}")
@@ -95,6 +98,9 @@ class SimSerial:
         while b"\r" in self._buf:
             line, _, rest = bytes(self._buf).partition(b"\r")
             self._buf = bytearray(rest)
+            # live wire truth: the indicator ECHOES the command line,
+            # then a bare CR, then the data ('?\r' + '\r' + '...\r')
+            self._rx += line + b"\r\r"
             self._handle(line.decode("ascii", errors="replace"))
         return len(data)
 

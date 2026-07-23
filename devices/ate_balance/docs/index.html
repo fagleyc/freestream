@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ATE External Balance — TMS Client — User Documentation</title>
+<style>
+:root{
+  --bg:#1e1e1e; --bg2:#252526; --bg3:#2d2d30; --border:#3f3f46;
+  --text:#e0e0e0; --dim:#a0a0a0; --accent:#3399ff; --accent2:#0078d4;
+  --ok:#4caf50; --warn:#ff9800; --err:#f44336;
+  --mono:Consolas,"Cascadia Mono","Courier New",monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);
+     font:15px/1.6 "Segoe UI",system-ui,sans-serif;display:flex}
+nav{position:sticky;top:0;align-self:flex-start;height:100vh;overflow-y:auto;
+    width:250px;flex:none;background:var(--bg2);
+    border-right:1px solid var(--border);padding:18px 14px}
+nav h1{font-size:15px;color:var(--accent);margin:0 0 2px}
+nav .ver{font-family:var(--mono);color:var(--dim);font-size:12px;
+         margin-bottom:14px}
+nav a{display:block;color:var(--dim);text-decoration:none;padding:5px 8px;
+      border-radius:5px;font-size:14px}
+nav a:hover{background:#3a3a3c;color:var(--text)}
+main{flex:1;min-width:0;max-width:900px;padding:28px 40px 80px}
+main>header h1{font-size:26px;margin:0;color:var(--text)}
+main>header p.sub{color:var(--dim);margin-top:4px}
+h2{color:var(--accent);border-bottom:1px solid var(--border);
+   padding-bottom:6px;margin-top:44px}
+h3{margin-top:28px}
+code{font-family:var(--mono);background:var(--bg2);
+     border:1px solid var(--border);border-radius:4px;padding:1px 5px;
+     font-size:.92em}
+pre{font-family:var(--mono);background:var(--bg2);
+    border:1px solid var(--border);border-radius:6px;padding:12px 14px;
+    overflow-x:auto;line-height:1.45}
+pre code{border:none;background:none;padding:0}
+.tblwrap{overflow-x:auto}
+table{border-collapse:collapse;margin:14px 0;width:100%}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;
+      vertical-align:top}
+th{background:var(--bg3)}
+tr:nth-child(even) td{background:var(--bg2)}
+.note,.warn,.danger{background:var(--bg2);padding:10px 14px;margin:14px 0;
+      border-left:4px solid var(--ok);border-radius:0 6px 6px 0}
+.warn{border-left-color:var(--warn)}
+.danger{border-left-color:var(--err)}
+a{color:var(--accent)}
+@media(max-width:820px){body{flex-direction:column}
+  nav{position:static;width:100%;height:auto}}
+</style>
+</head>
+<body>
+<nav>
+  <h1>ATE External Balance<br>TMS Client</h1>
+  <div class="ver">ate_balance&nbsp;&nbsp;v1.1.0</div>
+  <a href="#overview">1&nbsp; Overview</a>
+  <a href="#hardware">2&nbsp; Hardware &amp; protocol</a>
+  <a href="#getting-started">3&nbsp; Getting started</a>
+  <a href="#gui">4&nbsp; GUI guide</a>
+  <a href="#config">5&nbsp; Configuration reference</a>
+  <a href="#safety">6&nbsp; Safety &amp; interlocks</a>
+  <a href="#troubleshooting">7&nbsp; Troubleshooting</a>
+  <a href="#history">8&nbsp; Version history</a>
+</nav>
+<main>
+<header>
+  <h1>ATE External Balance — TMS Client</h1>
+  <p class="sub">User documentation for the <code>ate_balance</code>
+  package — Python TMS client + dark-mode PyQt6 GUI for the ATE
+  6-component underfloor balance.<br>
+  Author: C. Fagley — <a href="mailto:casey.fagley@afacademy.af.edu">
+  casey.fagley@afacademy.af.edu</a></p>
+</header>
+
+<h2 id="overview">1&nbsp; Overview &amp; purpose</h2>
+<p>The <strong>ATE Aerodynamic Test Equipment 6-component underfloor
+(external) balance</strong> at the USAFA wind tunnel is controlled by its
+<strong>OGI</strong> control PC. This package is a standalone client
+("TMS") speaking the OGI's TCP/UDP protocol: live wind-axis loads, motion
+control (yaw / incidence drives), balance lock/tare and dwell-averaged run
+points, in a GUI styled to match the Streamlined project.</p>
+<p>The app shows <strong>raw wind-axis loads only</strong> — coefficient
+reduction (reference geometry, air density) is owned by the Freestream
+suite. The reduced layer uses Streamlined's exact field names
+(<code>lift_forces</code>/<code>drag_forces</code>/… ,
+<code>TunnelConditions(Q, …)</code>) so a run drops straight into the
+Streamlined tooling. The driver mirrors the <code>wtdaq</code>
+<code>DAQbook2000</code> driver shape so it can later drop into the
+AeroSENSE/<code>wtdaq</code> framework unchanged.</p>
+<p>Protocol source of truth: <code>AID-010-10015-1.pdf</code> §6 "Client
+Communication Facilities", cross-checked against
+<code>OGI/Source/USAFA_Code.pas</code>.</p>
+
+<h2 id="hardware">2&nbsp; Hardware &amp; protocol</h2>
+<div class="tblwrap"><table>
+<tr><th>Channel</th><th>Transport</th><th>Default port</th>
+    <th>Direction</th><th>Payload</th></tr>
+<tr><td>TMSC control</td><td>TCP</td><td>3040</td>
+    <td>OGI dials the client</td>
+    <td><code>{M&lt;serial&gt;:CMD args}</code> /
+        <code>{R&lt;serial&gt;:reply}</code></td></tr>
+<tr><td>TMSD data</td><td>UDP</td><td>3041</td><td>OGI → client</td>
+    <td><code>b"LOADS"</code> + 6×float32 (+ int32 sync), big-endian</td></tr>
+<tr><td>OGIT trigger</td><td>UDP</td><td>3042</td><td>client → OGI</td>
+    <td><code>TMS_CONNECT</code></td></tr>
+</table></div>
+<p>The OGI control PC lives at rig static IP <code>192.168.1.60</code>.
+Loads are wind-axis, order <strong>Lift, Pitch, Drag, Side, Yaw,
+Roll</strong> (N, N·m). Control commands: <code>ZERO</code>,
+<code>TAKE_SAMPLE</code>, <code>LOCK_BAL</code>, <code>UNLOCK_BAL</code>,
+<code>GET_LOCK_STATUS</code>, <code>GET_POSITIONS</code>,
+<code>GOTO_YAW_POS</code>, <code>GOTO_INC_POS</code>,
+<code>GET_FILTERS</code>, <code>STOP_ALL_MOTION</code>.</p>
+<div class="note"><strong>Rig-verified (2026-07-06,
+<code>probe_ate_rig.py</code>):</strong> TMS_CONNECT → OGI dialled back in
+&lt;10 ms; <strong>LOADS stream 300 Hz, 29-byte packets (no sync
+word)</strong> — the USAFA-build variant
+(<code>device.last_had_sync == False</code>); <code>GET_FILTERS</code> →
+<code>300Hz 9</code> ×6 channels; positions/lock queries answered;
+unloaded loads ≈0 (|mean| &lt; 0.1, sd ≈ 0.02–0.17), consistent with
+N/N·m. Still to confirm at the rig: apply a known weight to lock in the
+N / N·m units assumption.</div>
+
+<h3>Drives &amp; span configuration</h3>
+<p>The rig has two physical drives — YAW (−90..90°) and INCIDENCE
+(−10..45°). How the logical α/β axes map onto them is the
+<em>model span configuration</em>:</p>
+<ul>
+<li><strong>Full span</strong> (default): α = incidence drive
+    (<code>GOTO_INC_POS</code>), β = yaw drive
+    (<code>GOTO_YAW_POS</code>).</li>
+<li><strong>½ span</strong>: semispan model on the turntable — α = the
+    YAW drive (angle of attack comes from yaw); the incidence drive is
+    unused and there is no β axis.</li>
+</ul>
+
+<h2 id="getting-started">3&nbsp; Getting started</h2>
+<pre><code>pip install -r requirements.txt          # numpy, PyQt6
+
+# 1) Pure simulation — no hardware, no network:
+python run_ate_balance_app.py --sim
+
+# 2) Against the bundled Python emulator (two terminals):
+python -m ate_balance.emulator --tms-ip 127.0.0.1
+python run_ate_balance_app.py --ip 127.0.0.1
+
+# 3) Against the real OGI on the rig network (192.168.1.60, the default):
+python run_ate_balance_app.py
+
+# read-only rig check (safe queries only):
+python probe_ate_rig.py</code></pre>
+<h3>First-connect checklist</h3>
+<ol>
+<li>By default the client <strong>listens</strong> on TCP 3040 — the OGI
+    dials in, per the manual. Press <strong>Connect</strong>; the lamp
+    goes <code>WAITING FOR OGI</code> → <code>LINKED</code> once the OGI
+    connects and the LOADS stream arrives.</li>
+<li>If the OGI doesn't dial in, press <strong>Trigger</strong>
+    (sends <code>TMS_CONNECT</code> on the OGIT port to prompt a
+    (re)dial). Auto-trigger on Connect is on by default.</li>
+<li>Check the stream rate readout (~300 Hz on the rig) and that unloaded
+    loads read near zero.</li>
+<li>Testing with <code>OGI_Sim.exe</code> (the rig's own simulator):
+    point its <code>OGI.ini</code> <code>[TMSC] IP</code> at the machine
+    running this client, start it, and run with <code>--ip</code> set to
+    the OGI_Sim host (<code>127.0.0.1</code> if on the same PC).</li>
+</ol>
+
+<h2 id="gui">4&nbsp; GUI guide</h2>
+<h3>Connection panel (top bar)</h3>
+<div class="tblwrap"><table>
+<tr><th>Control</th><th>Function</th></tr>
+<tr><td>OGI IP</td><td>OGI control PC address (default
+    192.168.1.60; 127.0.0.1 for emulator/OGI_Sim).</td></tr>
+<tr><td>TMSC / TMSD / OGIT</td><td>The three port numbers (defaults
+    3040/3041/3042).</td></tr>
+<tr><td>Role</td><td><code>listen</code> (we are the TCP server, the OGI
+    dials us — documented behaviour) or <code>dial</code> (we connect out
+    to the OGI, fallback).</td></tr>
+<tr><td>Simulate</td><td>Synthetic loads, no sockets.</td></tr>
+<tr><td>Lamp</td><td><code>DISCONNECTED</code> / <code>SIMULATION</code> /
+    <code>WAITING FOR OGI</code> / <code>LINKED</code>.</td></tr>
+<tr><td>Trigger</td><td>Send <code>TMS_CONNECT</code> so the OGI dials
+    this client.</td></tr>
+<tr><td>Connect / Disconnect</td><td>Open/close the TMS listener
+    sockets.</td></tr>
+</table></div>
+
+<h3>Live tab</h3>
+<ul>
+<li><strong>Wind-axis load bars</strong> — the six loads (Lift, Drag,
+    Side, Roll, Pitch, Yaw), smoothed over the bar-averaging window, one
+    fixed color per channel across all panels.</li>
+<li><strong>Overstress hint</strong> — shown while a smoothed load
+    exceeds a nonzero rated maximum (Settings → Rated load maxima).</li>
+<li><strong>Device status strip</strong> — yaw/incidence positions,
+    stream rate, sync input, bar smoothing, and tunnel q (visible only
+    when a real DaqBook aux source is attached via
+    <code>--daqbook</code>).</li>
+</ul>
+
+<h3>Motion tab</h3>
+<ul>
+<li><strong>Model span</strong> combo — the single editor for
+    <code>span_config</code>; relabels/disables the drive boxes so the
+    α/β ↔ drive mapping is unmistakable, and is recorded into data
+    files.</li>
+<li><strong>Yaw drive / Incidence drive boxes</strong> — live position,
+    target spin box clamped to the drive limits (yaw −90..90°, incidence
+    −10..45°), <strong>Move</strong>, <strong>Stop</strong> (stops all
+    motion) and <strong>To Zero</strong>.</li>
+<li><strong>Balance box</strong> — Lock / Unlock / Status,
+    <strong>Zero (tare)</strong>, and <strong>E-STOP</strong>
+    (<code>STOP_ALL_MOTION</code>).</li>
+</ul>
+
+<h3>Run tab</h3>
+<ul>
+<li><strong>Single sample (OGI average)</strong> — duration +
+    <em>Take Sample</em> sends <code>TAKE_SAMPLE</code>; the OGI's
+    averaged SAMPLES/TARES replies show in the "Last sample" line.</li>
+<li><strong>Dwell point (live average)</strong> — enter α/β,
+    <em>Start/Stop Dwell</em>: frames are averaged live into a reduced
+    point (mean ± 1σ tooltips) appended to the results table.</li>
+<li><strong>Time history</strong> — full-rate plots of every frame in the
+    ring buffer (300 Hz on the rig); window 5/10/30/60 s,
+    Pause/Resume.</li>
+<li><strong>Results table + export</strong> — Clear, Export CSV…, Export
+    TestCase (.npz)… (Streamlined-shaped named arrays).</li>
+</ul>
+
+<h3>Menus</h3>
+<div class="tblwrap"><table>
+<tr><th>Menu</th><th>Items</th></tr>
+<tr><td>File</td><td>Settings… (Ctrl+,) — network/sampling/display/rated
+    maxima; Save config… / Load config… (JSON); Quit.</td></tr>
+<tr><td>Help</td><td>Documentation (this page); About ATE External
+    Balance — version and history.</td></tr>
+</table></div>
+
+<h2 id="config">5&nbsp; Configuration reference</h2>
+<p>All settings live in <code>AteConfig</code>
+(<code>ate_balance/config.py</code>); JSON load/save, plus
+<code>AteConfig.from_ogi_ini()</code> to seed ports/IP from the rig's own
+<code>OGI.ini</code>.</p>
+<div class="tblwrap"><table>
+<tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>ogi_ip</code></td><td><code>192.168.1.60</code></td>
+    <td>OGI control PC (rig static IP); 127.0.0.1 for the
+    emulator/OGI_Sim.</td></tr>
+<tr><td><code>bind_host</code></td><td><code>0.0.0.0</code></td>
+    <td>Local interface to bind the TMSC/TMSD listeners on; set to the
+    PC's rig-side IP to pin the link to the rig network.</td></tr>
+<tr><td><code>tmsc_port</code></td><td><code>3040</code></td>
+    <td>TCP control port.</td></tr>
+<tr><td><code>tmsd_port</code></td><td><code>3041</code></td>
+    <td>UDP data port.</td></tr>
+<tr><td><code>ogit_port</code></td><td><code>3042</code></td>
+    <td>UDP trigger port (the OGI listens here).</td></tr>
+<tr><td><code>connect_mode</code></td><td><code>listen</code></td>
+    <td><code>listen</code> (OGI dials us — documented) or
+    <code>dial</code> (we connect out — fallback).</td></tr>
+<tr><td><code>force_sim</code></td><td><code>false</code></td>
+    <td>Ignore sockets, generate synthetic data.</td></tr>
+<tr><td><code>auto_trigger</code></td><td><code>true</code></td>
+    <td>Send <code>TMS_CONNECT</code> automatically on connect().</td></tr>
+<tr><td><code>default_sample_seconds</code></td><td><code>5</code></td>
+    <td>Default duration for <code>TAKE_SAMPLE</code> requests.</td></tr>
+<tr><td><code>span_config</code></td><td><code>full</code></td>
+    <td><code>full</code>: α = incidence drive, β = yaw drive;
+    <code>half</code>: α = yaw drive, incidence unused, no β. Inherited
+    into recorded data for post-processing.</td></tr>
+<tr><td><code>plot_window_s</code></td><td><code>10.0</code></td>
+    <td>Time-history window (s) at full rate.</td></tr>
+<tr><td><code>bar_avg_ms</code></td><td><code>50</code></td>
+    <td>Live bar smoothing window (ms); time histories always show the
+    raw stream.</td></tr>
+<tr><td><code>max_loads</code></td><td>all <code>0.0</code></td>
+    <td>Rated maximum per wire axis (Lift/Drag/Side in N,
+    Pitch/Yaw/Roll in N·m); 0.0 = no limit configured. Drives the
+    overstress hint and the suite's utilization bars.</td></tr>
+<tr><td><code>aux_channel_labels</code></td><td><code>[]</code></td>
+    <td>Auxiliary (DAQbook) channel labels — reserved for later
+    wiring.</td></tr>
+</table></div>
+
+<h2 id="safety">6&nbsp; Safety &amp; interlocks</h2>
+<ul>
+<li><strong>E-STOP</strong> (Motion tab) and the per-drive
+    <strong>Stop</strong> buttons all issue
+    <code>STOP_ALL_MOTION</code> to the OGI.</li>
+<li><strong>Drive limits</strong>: target spin boxes are clamped to the
+    documented drive travels (yaw −90..90°, incidence −10..45°).</li>
+<li><strong>Balance lock</strong>: Lock / Unlock / Status via
+    <code>LOCK_BAL</code> / <code>UNLOCK_BAL</code> /
+    <code>GET_LOCK_STATUS</code> — lock the balance before model
+    changes.</li>
+<li><strong>Rated load maxima</strong>: configure under File → Settings →
+    "Rated load maxima"; the Live panel flags OVERSTRESS while a smoothed
+    load exceeds a nonzero maximum.</li>
+<li>In the ½-span configuration the incidence controls are disabled — the
+    drive is unused and cannot be commanded accidentally.</li>
+</ul>
+
+<h2 id="troubleshooting">7&nbsp; Troubleshooting</h2>
+<div class="tblwrap"><table>
+<tr><th>Symptom</th><th>Cause / fix</th></tr>
+<tr><td>Lamp stuck at <code>WAITING FOR OGI</code></td>
+    <td>The OGI hasn't dialled in: press <strong>Trigger</strong>
+    (TMS_CONNECT). Check the OGI's <code>OGI.ini</code>
+    <code>[TMSC] IP</code> points at this machine, and that the local
+    firewall allows TCP 3040 / UDP 3041 inbound.</td></tr>
+<tr><td>Linked but no loads</td>
+    <td>The LOADS stream is UDP on 3041 (OGI → client) — verify the port
+    and firewall. On the rig the stream is 300 Hz, 29-byte packets
+    without the sync word (<code>device.last_had_sync == False</code>) —
+    both variants are decoded.</td></tr>
+<tr><td>Which machine does the OGI dial?</td>
+    <td>The address in its own <code>OGI.ini</code> <code>[TMSC]
+    IP</code>. <code>AteConfig.from_ogi_ini()</code> can seed the client
+    config from that file.</td></tr>
+<tr><td>Loads magnitudes uncertain</td>
+    <td>Units are N / N·m per the protocol; the README notes the final
+    known-weight check on <code>Lift</code> is still to be performed at
+    the rig. <code>probe_ate_rig.py</code> re-runs the whole read-only
+    verification safely at any time.</td></tr>
+<tr><td>Testing without the rig</td>
+    <td>Three options: <code>--sim</code> (pure synthetic),
+    <code>python -m ate_balance.emulator</code> (real sockets, FakeOGI),
+    or the rig's own <code>OGI_Sim.exe</code>.</td></tr>
+<tr><td>Coefficients missing</td>
+    <td>By design — this device measures loads only; coefficient
+    reduction (geometry, density) is owned by the Freestream
+    suite.</td></tr>
+</table></div>
+
+<h2 id="history">8&nbsp; Version history</h2>
+<div class="tblwrap"><table>
+<tr><th>Version</th><th>Date</th><th>Changes</th></tr>
+<tr><td>1.1.0</td><td>2026-07-23</td><td>In-app Help system: bundled HTML
+    documentation and About dialog.</td></tr>
+<tr><td>1.0.0</td><td>2026-07-06</td><td>Initial TMS client + dark PyQt6
+    GUI (wire protocol per AID-010-10015-1 §6, FakeOGI emulator, dwell
+    averaging, motion/lock control); verified against the live OGI at
+    192.168.1.60: 300 Hz 29-byte LOADS stream (USAFA build, no sync
+    word), control link, position/lock/filter queries.</td></tr>
+</table></div>
+
+<p style="color:var(--dim);margin-top:40px">ATE External Balance — TMS
+Client &nbsp;·&nbsp; ate_balance v1.1.0 &nbsp;·&nbsp; C. Fagley —
+<a href="mailto:casey.fagley@afacademy.af.edu">casey.fagley@afacademy.af.edu</a></p>
+</main>
+</body>
+</html>

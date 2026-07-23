@@ -22,3 +22,7 @@ devices/ac_delta/info/delta-c2000-manual.pdf
 # Runtime/test state (regenerated every session)
 devices/lswt_sting/sting_state.json
 devices/tests/_state_scratch.json
+
+# cloud-sync artifacts
+*conflicted copy*
+.git_broken_cloudsync/

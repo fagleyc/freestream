@@ -11,4 +11,4 @@ __all__ = ["BAUD_RATES", "PRESSURE_UNITS", "TEMPERATURE_UNITS",
            "HeiseConfig", "HeisePortConfig", "HeiseGauge", "HeiseError",
            "HeiseProtocol", "ScanRingBuffer", "unit_code", "unit_name"]
 
-__version__ = "0.1.0"
+from .about import __version__                        # noqa: F401

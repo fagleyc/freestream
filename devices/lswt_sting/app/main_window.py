@@ -9,19 +9,21 @@ tab (soft travel limits, park + comms behaviour).
 from __future__ import annotations
 
 import logging
+import webbrowser
+from pathlib import Path
 from typing import Optional
 
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
-    QMessageBox, QPushButton, QSpinBox, QStatusBar, QTabWidget,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
+    QLabel, QMainWindow, QMessageBox, QPushButton, QSpinBox, QStatusBar,
+    QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from lswt_sting import theme
+from lswt_sting import about, theme
 from lswt_sting.config import StingConfig
 from lswt_sting.device import StingDrive
 from lswt_sting.protocol import StingError
@@ -724,6 +726,61 @@ class StingPanel(QWidget):
         self._apply_limits()
 
 
+class _AboutDialog(QDialog):
+    """Small dark-themed About box: app name + version, summary, author
+    line, compact version-history table."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"About {about.APP_NAME}")
+        self.setStyleSheet(theme.get_stylesheet())
+        self.setMinimumWidth(560)
+        v = QVBoxLayout(self)
+        v.setSpacing(8)
+
+        name = QLabel(about.APP_NAME)
+        name.setStyleSheet(f"font-size: 16pt; font-weight: 600; "
+                           f"color: {theme.TEXT};")
+        v.addWidget(name)
+        ver = QLabel(f"version {about.__version__}")
+        ver.setProperty("mono", "true")
+        ver.setStyleSheet(f"color: {theme.ACCENT_LIGHT}; "
+                          f"font-weight: bold;")
+        v.addWidget(ver)
+
+        summary = QLabel(about.SUMMARY)
+        summary.setWordWrap(True)
+        summary.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        v.addWidget(summary)
+
+        author = QLabel(f"Author: {about.AUTHOR} — {about.CONTACT}")
+        author.setProperty("mono", "true")
+        v.addWidget(author)
+
+        hist = QTableWidget(len(about.VERSION_HISTORY), 3)
+        hist.setHorizontalHeaderLabels(["Version", "Date", "Changes"])
+        hist.verticalHeader().setVisible(False)
+        hist.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        hist.setWordWrap(True)
+        for row, (version, date, text) in enumerate(about.VERSION_HISTORY):
+            for col, val in enumerate((version, date, text)):
+                hist.setItem(row, col, QTableWidgetItem(val))
+        hist.horizontalHeader().setStretchLastSection(True)
+        hist.setColumnWidth(0, 70)
+        hist.setColumnWidth(1, 90)
+        hist.resizeRowsToContents()
+        hist.setMinimumHeight(150)
+        v.addWidget(hist)
+
+        close = QPushButton("Close")
+        close.setObjectName("primary")
+        close.clicked.connect(self.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(close)
+        v.addLayout(row)
+
+
 class StingMainWindow(QMainWindow):
     def __init__(self, cfg: Optional[StingConfig] = None):
         super().__init__()
@@ -773,6 +830,26 @@ class StingMainWindow(QMainWindow):
         a_quit = QAction("&Quit", self)
         a_quit.triggered.connect(self.close)
         m.addAction(a_quit)
+
+        h = self.menuBar().addMenu("&Help")       # LAST menu
+        a_docs = QAction("&Documentation", self)
+        a_docs.triggered.connect(self._open_docs)
+        h.addAction(a_docs)
+        h.addSeparator()
+        a_about = QAction(f"&About {about.APP_NAME}", self)
+        a_about.triggered.connect(self._show_about)
+        h.addAction(a_about)
+
+    def _open_docs(self):
+        docs = Path(__file__).resolve().parents[1] / "docs" / "index.html"
+        if docs.exists():
+            webbrowser.open(docs.resolve().as_uri())
+        else:
+            self.statusBar().showMessage(
+                f"Documentation not found: {docs}", 5000)
+
+    def _show_about(self):
+        _AboutDialog(self).exec()
 
     def _open_settings(self):
         dlg = SettingsDialog(self.panel.config, self)

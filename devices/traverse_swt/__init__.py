@@ -17,7 +17,7 @@ Layers
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from .about import __version__                        # noqa: F401
 
 from .config import AxisConfig, TraverseConfig, slopes_from_legacy_xml
 from .device import HomingResult, TraverseDrive

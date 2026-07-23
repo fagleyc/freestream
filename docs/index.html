@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Freestream — Documentation</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --bg-side: #252526; --bg-card: #2d2d30;
+    --border: #3e3e42; --text: #d4d4d4; --text-dim: #9d9d9d;
+    --accent: #4fc3f7; --accent2: #81c784; --warn: #ffb74d;
+    --danger: #ef5350; --code-bg: #1a1a1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif; line-height: 1.55;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  #sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 265px;
+    background: var(--bg-side); border-right: 1px solid var(--border);
+    padding: 20px 14px; overflow-y: auto;
+  }
+  #sidebar h1 { font-size: 1.15em; margin: 0 0 2px; color: #fff; }
+  #sidebar .ver { color: var(--text-dim); font-size: 0.85em; margin-bottom: 14px; }
+  #sidebar ul { list-style: none; margin: 0; padding: 0; }
+  #sidebar li { margin: 1px 0; }
+  #sidebar a { display: block; padding: 3px 8px; border-radius: 4px; color: var(--text); font-size: 0.92em; }
+  #sidebar a:hover { background: var(--bg-card); text-decoration: none; }
+  #sidebar .sub a { padding-left: 22px; color: var(--text-dim); font-size: 0.87em; }
+  main { margin-left: 265px; padding: 30px 44px 80px; max-width: 980px; }
+  h2 { color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-top: 44px; }
+  h3 { color: var(--accent); margin-top: 28px; }
+  h4 { color: var(--accent2); margin-bottom: 6px; }
+  code, pre {
+    font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9em;
+    background: var(--code-bg); border-radius: 4px;
+  }
+  code { padding: 1px 5px; }
+  pre { padding: 12px 14px; overflow-x: auto; border: 1px solid var(--border); }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; margin: 12px 0; width: 100%; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left;
+           font-size: 0.92em; vertical-align: top; }
+  th { background: var(--bg-card); color: #fff; }
+  tr:nth-child(even) td { background: #26262a; }
+  .note {
+    background: var(--bg-card); border-left: 3px solid var(--accent);
+    padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 14px 0;
+  }
+  .warn { border-left-color: var(--warn); }
+  .danger { border-left-color: var(--danger); }
+  .kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px;
+         padding: 0 6px; background: var(--bg-card); font-family: Consolas, monospace; font-size: 0.88em; }
+</style>
+</head>
+<body>
+<nav id="sidebar">
+  <h1>Freestream</h1>
+  <div class="ver">Wind Tunnel Suite<br>v2.1.0 &mdash; C. Fagley</div>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+    <li class="sub"><a href="#arch-hal">HAL &amp; capability roles</a></li>
+    <li class="sub"><a href="#arch-adapters">Adapters</a></li>
+    <li class="sub"><a href="#arch-manager">Device manager</a></li>
+    <li class="sub"><a href="#arch-sweep">Sweep engine</a></li>
+    <li class="sub"><a href="#arch-recorder">Recorder</a></li>
+    <li class="sub"><a href="#arch-derived">Derived quantities</a></li>
+    <li><a href="#modes">Modes</a></li>
+    <li><a href="#gui">GUI Walkthrough</a></li>
+    <li class="sub"><a href="#gui-cmdbar">Command bar</a></li>
+    <li class="sub"><a href="#gui-menus">Menus</a></li>
+    <li class="sub"><a href="#gui-dashboard">Tunnel dashboard</a></li>
+    <li class="sub"><a href="#gui-forces">Forces page</a></li>
+    <li class="sub"><a href="#gui-planner">Sweep planner</a></li>
+    <li class="sub"><a href="#gui-grammar">Sweep grammar</a></li>
+    <li class="sub"><a href="#gui-runbook">Run-book import</a></li>
+    <li class="sub"><a href="#gui-setup">Measurement Setup</a></li>
+    <li class="sub"><a href="#gui-devices">Device dialogs</a></li>
+    <li class="sub"><a href="#gui-balcal">Balance Calibration</a></li>
+    <li><a href="#datafiles">Data Files</a></li>
+    <li class="sub"><a href="#data-markers">Self-describing markers</a></li>
+    <li class="sub"><a href="#data-interop">Streamlined interop</a></li>
+    <li><a href="#configref">Configuration Reference</a></li>
+    <li><a href="#troubleshoot">Troubleshooting</a></li>
+  </ul>
+</nav>
+<main>
+
+<h2 id="overview">Overview</h2>
+<p><strong>Freestream</strong> is the tunnel-side control and acquisition suite &mdash; the
+counterpart to <strong>Streamlined</strong> (the reduction app). It commands attitude and
+tunnel-speed sweeps over the facility's device drivers, streams live engineering-unit
+monitors, and records <em>raw</em>, self-describing per-point run files that Streamlined
+reduces.</p>
+<div class="note">
+<strong>Core principle:</strong> calibration is <em>never</em> applied at capture. Balance
+channels are recorded verbatim (volts for internal balances, resolved loads for the
+external balance); .vol calibration files are recorded as <em>pointers</em> in metadata
+only. Anything derived on-screen (Mach, q, wind-axis forces) is display-only and never
+persisted as reduced data.
+</div>
+<p>Layers: <code>hal</code> (capability contracts) &rarr; <code>adapters</code> (thin wrappers
+over the device drivers) &rarr; <code>manager</code> (registry/modes) &rarr;
+<code>sweep</code> (state-machine engine) &rarr; <code>recorder</code> (HDF5/.mat/.xlsx)
+&rarr; <code>app</code> (dock GUI). Launch with <code>python run_freestream.py</code>.</p>
+
+<h2 id="architecture">Architecture</h2>
+
+<h3 id="arch-hal">HAL &mdash; capability roles (<code>freestream/hal.py</code>)</h3>
+<p>Devices are described by runtime-checkable capability protocols, not by type:</p>
+<table>
+  <tr><th>Protocol</th><th>Contract</th></tr>
+  <tr><td><code>DeviceBase</code></td><td><code>id</code>, <code>label</code>,
+      <code>connect()/disconnect()</code>, <code>connected</code>, <code>sim</code>,
+      <code>status()</code> (OK / OFFLINE / FAULT).</td></tr>
+  <tr><td><code>Streaming</code></td><td><code>start()/stop()</code>, <code>channels()</code>
+      (each a <code>ChannelSpec</code>: name, unit, HDF5 group, kind), <code>latest()</code>,
+      <code>drain_block()</code>, <code>sample_rate()</code>.</td></tr>
+  <tr><td><code>Positioner</code></td><td><code>move_to(**axes)</code>, <code>axes()</code>
+      (<code>AxisSpec</code>: name, unit, limits, tolerance), <code>positions()</code>,
+      <code>settled()</code>, <code>stop_all()</code> (E-STOP path).</td></tr>
+  <tr><td><code>Zeroable</code></td><td><code>zero(seconds)</code> &mdash; balance tare.</td></tr>
+  <tr><td><code>SetpointDevice</code></td><td><code>set_target(**kw)</code>,
+      <code>at_target()</code>, <code>readback()</code>. The tunnel PLC exposes fan RPM,
+      not Mach &mdash; Mach/q are computed in <code>derived.py</code>.</td></tr>
+</table>
+
+<h3 id="arch-adapters">Adapters (<code>freestream/adapters/</code>)</h3>
+<p>One thin wrapper per driver; drivers themselves are never modified. Each adapter exposes
+its driver config (<code>config_dict()/apply_config_dict()</code> &mdash; excluding
+<code>force_sim</code>, which the manager owns) and its native settings dialog.</p>
+<table>
+  <tr><th>Adapter (id)</th><th>Device</th><th>Capabilities / group</th></tr>
+  <tr><td><code>crescent</code></td><td>ARC Crescent (alpha/beta)</td>
+      <td>Positioner, &alpha;/&beta; deg.</td></tr>
+  <tr><td><code>strainbook</code></td><td>StrainBook/616 internal balance</td>
+      <td>Streaming + Zeroable; group <code>StrainBook_0</code>; raw bridge volts
+      (N1 N2 Y1 Y2 Axial Roll + Excitation); device-owned <code>vol_path</code> /
+      <code>cal_type</code> / <code>balance_config</code>.</td></tr>
+  <tr><td><code>daqbook</code></td><td>DaqBook/2000 tunnel conditions</td>
+      <td>Streaming; group <code>DaqBook2005</code>; Pdiff/Ptot/Temp.</td></tr>
+  <tr><td><code>ate</code></td><td>ATE external balance (loads + alpha/beta)</td>
+      <td>Streaming + Positioner + Zeroable; groups <code>ATE_Balance</code> +
+      <code>Positioner</code>; resolved Lift/Pitch/Drag/Side/Yaw/Roll in N / N&middot;m
+      recorded truthfully; <code>span_config</code> full/half (half-span = alpha-is-yaw,
+      no beta).</td></tr>
+  <tr><td><code>tunnel</code></td><td>Tunnel PLC (fan RPM)</td>
+      <td>SetpointDevice; reads always, writes gated by <code>rpm_max&gt;0</code> and
+      <code>enable_writes</code>.</td></tr>
+  <tr><td><code>traverse</code></td><td>SSWT traverse</td>
+      <td>Positioner, x/y/z inches.</td></tr>
+  <tr><td><code>lswt_sting</code></td><td>LSWT sting (alpha/beta)</td>
+      <td>Positioner; open-loop serial steppers with fault latch.</td></tr>
+  <tr><td><code>lswt</code></td><td>North LSWT fan (ABB ACS530)</td>
+      <td>SetpointDevice; native Hz (rpm = Hz &times; 60 equivalence).</td></tr>
+  <tr><td><code>heise</code></td><td>Heise PM (Ptot / Temp)</td>
+      <td>Streaming; group <code>Heise</code>; slow serial poll.</td></tr>
+  <tr><td><code>ni_daq</code></td><td>NI USB-6351 DAQ</td>
+      <td>Streaming + Zeroable; group <code>NI_USB_6351</code>; bridges + guaranteed
+      Excitation (ai6) and Pdiff (ai7) channels.</td></tr>
+</table>
+
+<h3 id="arch-manager">Device manager (<code>freestream/manager.py</code>)</h3>
+<ul>
+  <li><code>DeviceManager(mode, sim, ...)</code> builds the registry from
+      <code>devices_manifest.json</code>, wiring role &rarr; adapter per mode
+      (roles: <code>positioner</code>, <code>balance</code>,
+      <code>tunnel_conditions</code>, <code>tunnel</code>).</li>
+  <li><code>connect_all()</code> / <code>disconnect_all()</code>;
+      <code>stop_all_motion()</code> is the E-STOP path (stops every Positioner).</li>
+  <li><code>record_blockers()</code> implements <em>refuse-to-record</em>: any device not OK,
+      plus registered extra blockers (e.g. the Forces page's balance-overstress
+      interlock), blocks sweep start/recording.</li>
+  <li><code>DeviceManager.custom(device_ids)</code> builds an explicit device subset
+      ("custom" mode); roles are inferred from capabilities.</li>
+</ul>
+
+<h3 id="arch-sweep">Sweep engine (<code>freestream/sweep.py</code>)</h3>
+<p><code>SweepEngine</code> is a per-point state machine (no Qt) with states
+<code>queued &rarr; moving &rarr; acquiring &rarr; done / failed / skipped</code>. Per-point
+cycle: refuse-to-record check &rarr; set tunnel &rarr; move positioner &rarr; wait settled
+&rarr; optional zero &rarr; drain stale samples &rarr; dwell &rarr; acquire &rarr; write
+&rarr; advance.</p>
+<ul>
+  <li><strong>Pause/Resume</strong> take effect at the <em>next point boundary</em> &mdash; the
+      current point finishes acquiring and writing first. A failed point auto-pauses the
+      sweep with the remaining points re-queued.</li>
+  <li><strong>Abort</strong> is graceful; <strong>E-STOP</strong> calls
+      <code>stop_all_motion()</code> immediately, then aborts.</li>
+  <li><strong>Tunnel gate</strong>: with tunnel control disabled (default) and Mach-verify
+      enabled, a monitor-only operator wait dialog opens at each Mach change; with control
+      enabled, the Mach loop commands fan RPM (a run-sheet <code>rpm</code> column bypasses
+      the Mach loop verbatim). With Mach-verify off the gate is skipped entirely.</li>
+  <li>Air state is derived from Mach: <code>mach 0</code> &rarr; AirOff, else AirOn.</li>
+</ul>
+<p><code>machloop.py</code> maps target Mach to clamped fan RPM
+(<code>rpm_per_mach</code>), verifies against <em>measured</em> isentropic Mach within
+<code>mach_tolerance</code>, and iterates proportionally up to
+<code>mach_max_iterations</code> before faulting (RPM-proxy fallback in SIM).</p>
+
+<h3 id="arch-recorder">Recorder (<code>freestream/recorder.py</code>)</h3>
+<p><code>Hdf5Recorder</code> writes one file per test point under
+<code>&lt;data_root&gt;/&lt;config_name&gt;/</code> in the selected
+<code>output_format</code> (h5 / mat / xlsx; dependency checked at construction).
+Run numbers are generic (<code>run_NNNN</code>), continuing across all formats.
+See <a href="#datafiles">Data Files</a>.</p>
+
+<h3 id="arch-derived">Derived quantities (<code>derived.py</code>, <code>aero.py</code>)</h3>
+<ul>
+  <li><code>derived.py</code> is the one isentropic Mach/q module (identical constants to
+      Streamlined's SSWT chain: &gamma;=1.4, R=287.058, psi&rarr;Pa 6894.75729). Tunnel
+      condition channels <code>Pdiff / Ptot / Temp</code> are found <em>by name</em> across
+      streaming devices (SWT: one DaqBook; LSWT: split across NI + Heise).
+      <code>tunnel_state()</code> never raises; it flags validity.</li>
+  <li><code>aero.py</code> does display-only balance reduction for the Forces page:
+      .vol calibration &rarr; wind-axis Lift/Drag/Side/Roll/Pitch/Yaw &rarr; coefficients
+      over q&middot;S with utilization vs rated loads (overstress at &ge;100%). Never
+      persisted.</li>
+</ul>
+
+<h2 id="modes">Modes</h2>
+<table>
+  <tr><th>Mode</th><th>Legacy alias</th><th>Device set (role: id)</th></tr>
+  <tr><td><strong>SWT-AC-Internal</strong></td><td><code>mode1</code></td>
+      <td>positioner: <code>crescent</code>; balance: <code>strainbook</code>;
+      tunnel_conditions: <code>daqbook</code>; tunnel: <code>tunnel</code></td></tr>
+  <tr><td><strong>SWT-External</strong></td><td><code>mode2</code></td>
+      <td>positioner + balance: <code>ate</code> (one all-in-one adapter);
+      tunnel_conditions: <code>daqbook</code>; tunnel: <code>tunnel</code></td></tr>
+  <tr><td><strong>SWT-Traverse</strong></td><td><code>mode3</code></td>
+      <td>positioner: <code>traverse</code>; tunnel_conditions: <code>daqbook</code>.
+      No balance/tunnel &rarr; no data device &rarr; automated sweep disabled
+      (manual positioning).</td></tr>
+  <tr><td><strong>LSWT-LSWTSting-NI</strong></td><td>&mdash;</td>
+      <td>positioner: <code>lswt_sting</code>; balance: <code>ni_daq</code>;
+      tunnel_conditions: <code>heise</code>; tunnel: <code>lswt</code></td></tr>
+  <tr><td><strong>custom</strong></td><td>&mdash;</td>
+      <td>Operator-picked device subset (checkbox picker); roles inferred from HAL
+      capabilities.</td></tr>
+</table>
+<p>Legacy <code>mode1/mode2/mode3</code> names are still accepted everywhere (configs,
+manifest lookups) and normalized on load.</p>
+
+<h2 id="gui">GUI Walkthrough</h2>
+<p>Dock layout: top command bar; left <strong>Devices</strong> rail (one status card per
+device: status pill, SIM badge, live readout, right-click Configure/Connect/Disconnect);
+center monitor tabs (<strong>Tunnel</strong>, <strong>Balance</strong>,
+<strong>Position</strong>, <strong>Forces</strong>, <strong>Results</strong>); right
+<strong>Sweep Planner</strong>; bottom <strong>Run Log</strong>. Slide-out pane handles:
+<span class="kbd">Ctrl+1</span> device rail, <span class="kbd">Ctrl+2</span> planner.
+<span class="kbd">Esc</span> is E-STOP.</p>
+
+<h3 id="gui-cmdbar">Command bar</h3>
+<table>
+  <tr><th>Control</th><th>Behavior</th></tr>
+  <tr><td>Mode</td><td>Manifest modes + "custom" (opens the device picker). Changing mode
+      rebuilds the registry.</td></tr>
+  <tr><td>Connect All</td><td>Connects every registered device; toggles to
+      Disconnect All.</td></tr>
+  <tr><td>Start Sweep</td><td>Runs the planner's point list on a worker thread; refused
+      while blockers exist (red banner lists them).</td></tr>
+  <tr><td>Pause / Resume</td><td>Pauses at the next point boundary (current point finishes
+      and is written); Resume continues with the remaining queue.</td></tr>
+  <tr><td>Abort</td><td>Graceful stop after the current point.</td></tr>
+  <tr><td>E-STOP</td><td>Immediate <code>stop_all_motion()</code> on every positioner, then
+      abort. Direct GUI-thread call, never queued. Also on
+      <span class="kbd">Esc</span>.</td></tr>
+  <tr><td>SIM / LIVE</td><td>Adapter simulation vs hardware; only changeable while
+      disconnected. A SIM badge shows when simulated.</td></tr>
+</table>
+
+<h3 id="gui-menus">Menus</h3>
+<table>
+  <tr><th>Menu</th><th>Contents</th></tr>
+  <tr><td>File</td><td>Save Config&hellip; / Load Config&hellip; (JSON);
+      Set Current as Defaults (stores <em>all</em> settings incl. every device's driver
+      config to <code>~/.freestream/defaults.json</code>, auto-loaded at launch);
+      Import Run Sheet&hellip;; Measurement Setup&hellip;; Exit.</td></tr>
+  <tr><td>Devices</td><td>Rebuilt on open from the active registry &mdash; one submenu per
+      device: Configure&hellip;, Connect, Disconnect.</td></tr>
+  <tr><td>Advanced</td><td>Balance Calibration&hellip; (the balcal_gui .vol-acquisition
+      window).</td></tr>
+  <tr><td>Help</td><td>Documentation (this page); About Freestream (version +
+      history).</td></tr>
+</table>
+
+<h3 id="gui-dashboard">Tunnel dashboard (Tunnel tab)</h3>
+<ul>
+  <li>Top band: fan rotor + RPM gauge (reused from the tunnel_plc app), &alpha;/&beta;
+      attitude crosshair pad with ghost target marker, and stat tiles &mdash; Mach, q,
+      Fan RPM (accented), P total, T total, Velocity.</li>
+  <li>Status lamps: fan running, inverter fault, oil level low, bearing temp low, bearing
+      heater on, console control.</li>
+  <li>Three linked strip charts (Mach / q / Fan RPM, ~120 s of history at 5 Hz).</li>
+  <li>Responsive: lamp column, fan graphic, and attitude pad drop out as the window
+      narrows.</li>
+</ul>
+
+<h3 id="gui-forces">Forces page</h3>
+<ul>
+  <li>Six wind-axis tiles &mdash; Lift, Drag, Side [lb]; Roll, Pitch, Yaw [in&middot;lb]
+      &mdash; each with a <strong>peak-hold load bar</strong>: filled bar = live utilization
+      of rated load, bright marker = rolling 30 s peak (reset on tare), tick at 100%.</li>
+  <li><strong>Device-owned .vol</strong>: the calibration file, fit type, and Force/Moment
+      layout are owned by the balance device's configuration and re-read each tick &mdash;
+      the "Balance device&hellip;" button jumps to that device dialog. There is no separate
+      Forces-page calibration state.</li>
+  <li>Internal balances: live volts &rarr; .vol calibration &rarr; wind-axis loads and
+      coefficients (display only, using a non-consuming tail of the stream so the recorder
+      never loses samples). External (ATE) balance: resolved loads compared directly to
+      rated limits.</li>
+  <li><strong>Overstress interlock</strong>: any channel at &ge;100% utilization raises an
+      alarm and registers a record blocker &mdash; sweeps refuse to record until it
+      clears.</li>
+</ul>
+
+<h3 id="gui-planner">Sweep planner</h3>
+<ul>
+  <li>Axis fields adapt to the mode: &alpha;/&beta;/M (aero modes) or X/Y/Z (traverse).
+      Each cell takes the <a href="#gui-grammar">sweep grammar</a>.</li>
+  <li>Build Grid expands the cells into the point table (Mach outermost with the air-off
+      zero point first, then beta, alpha innermost); statuses colorize live during the
+      run; double-click a FAILED row to re-run just that point.</li>
+  <li>Import Run Sheet loads a <a href="#gui-runbook">run-book workbook</a> (or flat
+      CSV/XLSX fallback with columns alpha, beta, mach, x, y, z, dwell_s, samples,
+      air_state, rpm &mdash; unknown columns ride into file metadata verbatim).</li>
+  <li>Dwell and samples-per-point come from Measurement Setup (run sheets can
+      override).</li>
+</ul>
+
+<h3 id="gui-grammar">Sweep grammar (<code>sweepgrammar.py</code>)</h3>
+<table>
+  <tr><th>Cell</th><th>Meaning</th></tr>
+  <tr><td><code>(blank)</code></td><td>Axis not swept.</td></tr>
+  <tr><td><code>2</code></td><td>Single value.</td></tr>
+  <tr><td><code>0,2,4</code></td><td>Comma list.</td></tr>
+  <tr><td><code>-4:2:8</code></td><td>Range <code>start:delta:end</code> &mdash; the middle
+      value is the <em>step</em>, end inclusive &rarr; -4,-2,0,2,4,6,8. Partial tail is
+      dropped; delta sign follows the start&rarr;end direction.</td></tr>
+  <tr><td><code>0:2:10R</code></td><td>Return sweep: up 0&hellip;10 then back down
+      (apex not repeated); points are tagged <code>up</code>/<code>dn</code> and filenames
+      get <code>_up</code>/<code>_dn</code> when hysteresis tagging is on.</td></tr>
+  <tr><td><code>@name</code></td><td>Named array from the run-book's Named Arrays
+      sheet.</td></tr>
+  <tr><td><code>csv:aoa.csv</code></td><td>One column from a CSV file.</td></tr>
+  <tr><td><code>-4:2:8, 10, 12</code></td><td>Any of the above, comma-joined.</td></tr>
+</table>
+<div class="note warn">The middle number is the <strong>delta</strong>, not the end &mdash;
+this replaced the old <code>start:stop:step</code> reading. A Mach sweep automatically
+prepends the air-off Mach 0 point (planner path).</div>
+
+<h3 id="gui-runbook">Run-book import</h3>
+<p>The primary import path is the 5-sheet workbook
+(<code>Freestream_RunSheet_Template.xlsx</code>): <strong>Guide</strong>,
+<strong>Test Info</strong> (test/model/engineer/operator, reference dims Sref, cref, bref,
+MRC_x/y/z, objectives&hellip;), <strong>Run Matrix</strong> (one row per run: enable flag,
+alpha/beta/mach grammar cells, samples, rate, model config, notes),
+<strong>Model Configs</strong> (named configuration rows &mdash; every column rides verbatim
+into point metadata), and <strong>Named Arrays</strong> (definitions for
+<code>@name</code>). The run-sheet dialog previews everything, shows live expanded point
+counts, and loads one run or all enabled runs. Loading a run merges Test Info + reference
+dims into the configuration and sets the output folder from the run's Model Config.</p>
+
+<h3 id="gui-setup">Measurement Setup dialog</h3>
+<table>
+  <tr><th>Section</th><th>Fields</th></tr>
+  <tr><td>General</td><td>Operator, configuration name (output subfolder), data
+      root.</td></tr>
+  <tr><td>Acquisition</td><td>Sample rate (one suite-wide streaming rate), samples/point,
+      dwell, move timeout.</td></tr>
+  <tr><td>Output</td><td>File format (HDF5 / .mat readable by Streamlined; .xlsx for
+      review), optional filename template.</td></tr>
+  <tr><td>Tunnel</td><td>Tunnel timeout, Mach settle time, Mach tolerance;
+      <strong>"Tunnel RPM control"</strong> checkbox (off by default &mdash; the Red Lion
+      currently rejects Block2 writes, so freestream is monitor-only);
+      <strong>"Verify Mach at each point"</strong> checkbox &mdash; on: operator
+      dialog / settle check at each Mach change; off: no per-point Mach gate.</td></tr>
+  <tr><td>Balance</td><td>Display-only .vol pointer ("set in the balance device panel") and
+      reference S/c/b for the Forces page.</td></tr>
+  <tr><td>Model/Test</td><td>Test name, model, engineer, data prefix (inherited from the
+      run sheet; reference dims read-only).</td></tr>
+</table>
+<p><strong>OK + Set as Defaults</strong> stores everything (including every device's driver
+config) as the startup defaults (<code>~/.freestream/defaults.json</code>, or
+<code>FREESTREAM_DEFAULTS</code>).</p>
+
+<h3 id="gui-devices">Device dialogs (embedded apps)</h3>
+<p>Configure&hellip; on any device opens <code>DeviceConfigDialog</code>: the device's own
+standalone app panel (CrescentPanel, StrainbookPanel, DaqbookPanel, AteBalancePanel,
+TunnelPanel, TraversePanel, LswtPanel, StingPanel, NiDaqPanel, HeisePanel) is embedded as
+the primary tab and <em>shares the live driver</em> &mdash; one device, one connection.
+Settings/axis tabs edit the driver config (suite-owned fields like the streaming rate are
+hidden); Apply rebinds a running driver; Save/Load to file supported. Tunnel-control panels
+are ARM-gated.</p>
+
+<h3 id="gui-balcal">Advanced &#9656; Balance Calibration</h3>
+<p>Opens the balance_cal (.vol acquisition) window &mdash; one window per session. When
+freestream is connected with the StrainBook as the balance, the window shares the live
+driver; otherwise it runs standalone with its own backend selection. See the balance_cal
+documentation (<code>utilities/balance_cal/docs/index.html</code>).</p>
+
+<h2 id="datafiles">Data Files</h2>
+<p>One file per test point, under <code>&lt;data_root&gt;/&lt;config_name&gt;/</code>:</p>
+<pre><code>run_{NNNN:04d}[_alpha_{a}][_beta_{b}][_mach_{m:.2f}][_x_..][_y_..][_z_..][_up|_dn].h5
+e.g.  run_0012_alpha_2.0_beta_0.0_mach_0.30.h5</code></pre>
+<ul>
+  <li>Run numbers are generic and monotonically increasing across all formats (never
+      model-specific). Air state is a root attribute, not a filename token &mdash; a
+      <code>mach_0.00</code> point already marks air-off.</li>
+  <li>A custom <code>filename_template</code> may reference <code>{run}</code>,
+      <code>{air_state}</code>, <code>{dir}</code>, <code>{config_name}</code> and any
+      point-meta key.</li>
+</ul>
+
+<h4>HDF5 layout</h4>
+<pre><code>/ (root attrs: run_number, timestamp, mode, config_name, operator, air_state,
+   positions_source, balance_group, balance_type, span_config, + run-sheet meta)
+/StrainBook_0 | /ATE_Balance | /NI_USB_6351   raw balance channels (verbatim)
+/DaqBook2005 | /Heise                          tunnel-condition channels
+/Positioner                                    Alpha/Beta (or X/Y/Z)
+/Tunnel                                        RPM_meas, RPM_cmd, Mach_cmd,
+                                               Mach_meas*, q_meas*   (*derived)
+/Time/Time
+/meta/devices/&lt;id&gt;                             device metadata (cal_file = POINTER)
+/meta/config                                   full config JSON</code></pre>
+<p>Each dataset carries <code>wf_increment</code>, <code>wf_samples</code>,
+<code>wf_start_time</code>, and <code>unit</code> attributes (mirroring TDMS waveform
+conventions).</p>
+
+<h3 id="data-markers">Self-describing markers</h3>
+<table>
+  <tr><th>Root attr</th><th>Meaning</th></tr>
+  <tr><td><code>positions_source</code></td><td>Which device produced the position channels
+      (positioner id).</td></tr>
+  <tr><td><code>balance_group</code></td><td>Group holding balance data
+      (<code>StrainBook_0</code>, <code>ATE_Balance</code>, <code>NI_USB_6351</code>).</td></tr>
+  <tr><td><code>balance_type</code></td><td><code>internal</code> (raw bridge volts, needs
+      .vol reduction) or <code>external</code> (resolved loads).</td></tr>
+  <tr><td><code>span_config</code></td><td>ATE mode: <code>full</code> or <code>half</code>
+      (half-span records constant-zero Beta).</td></tr>
+</table>
+<div class="note">
+<strong>ATE truth-naming:</strong> external-balance channels are recorded under their real
+names (Lift, Drag, Side, Roll, Pitch, Yaw in N / N&middot;m) &mdash; the historical aliasing
+onto StrainBook bridge names (N1&larr;Lift, &hellip;) is gone. Readers of old mode-2 files
+can still fall back to the legacy alias map (as freestream's own Results panel does).
+</div>
+
+<h3 id="data-interop">Output formats and Streamlined interop</h3>
+<table>
+  <tr><th>Format</th><th>Notes</th></tr>
+  <tr><td>HDF5 (<code>.h5</code>, default)</td><td>Read directly by Streamlined
+      (<code>read_hdf5_file</code>); layout mirrors the TDMS group structure it
+      reduces.</td></tr>
+  <tr><td>MATLAB (<code>.mat</code>, v5)</td><td>Struct per group + <code>meta</code>
+      (run attrs, channels, devices, config JSON, sanitized-name map); read by Streamlined's
+      <code>read_mat_file</code>.</td></tr>
+  <tr><td>Excel (<code>.xlsx</code>)</td><td>Review only (one Data sheet per group +
+      Meta/Channels/Devices/Config sheets) &mdash; <em>not</em> readable by
+      Streamlined.</td></tr>
+</table>
+<p>Derived Mach/q use the identical isentropic constants as Streamlined's SWT chain, and
+reference dims (Sref/cref/bref/MRC) from the run book are recorded so Streamlined can
+reduce coefficients without re-entry.</p>
+
+<h2 id="configref">Configuration Reference (<code>FreestreamConfig</code>)</h2>
+<table>
+  <tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><code>mode</code></td><td>"SWT-AC-Internal"</td><td>Manifest mode (legacy
+      mode1/2/3 normalized on load).</td></tr>
+  <tr><td><code>custom_devices</code></td><td>[]</td><td>Device ids for custom mode.</td></tr>
+  <tr><td><code>sim</code></td><td>true</td><td>SIM vs LIVE adapters.</td></tr>
+  <tr><td><code>operator</code></td><td>""</td><td>Operator name (recorded).</td></tr>
+  <tr><td><code>config_name</code></td><td>"default"</td><td>Output subfolder per model
+      configuration.</td></tr>
+  <tr><td><code>data_root</code></td><td>"runs"</td><td>Root output folder.</td></tr>
+  <tr><td><code>samples</code></td><td>2000</td><td>Target balance samples per point.</td></tr>
+  <tr><td><code>dwell_s</code></td><td>0.5</td><td>Settle dwell before acquiring.</td></tr>
+  <tr><td><code>sample_rate_hz</code></td><td>200.0</td><td>One suite-wide streaming
+      rate.</td></tr>
+  <tr><td><code>zero_each_point</code></td><td>false</td><td>Tare balances before every
+      point (JSON-only).</td></tr>
+  <tr><td><code>move_timeout_s</code></td><td>60.0</td><td>Positioner settle timeout.</td></tr>
+  <tr><td><code>tunnel_timeout_s</code></td><td>120.0</td><td>Tunnel wait timeout.</td></tr>
+  <tr><td><code>settle_poll_s</code></td><td>0.1</td><td>Poll interval.</td></tr>
+  <tr><td><code>refuse_on_blockers</code></td><td>true</td><td>Hard refuse-to-record
+      interlock.</td></tr>
+  <tr><td><code>tunnel_control_enabled</code></td><td>false</td><td>Fan RPM writes
+      (monitor-only by default).</td></tr>
+  <tr><td><code>mach_check_enabled</code></td><td>true</td><td>Per-point Mach verify
+      (operator dialog / settle check).</td></tr>
+  <tr><td><code>mach_settle_s</code></td><td>2.0</td><td>Mach must hold in tolerance this
+      long to auto-proceed.</td></tr>
+  <tr><td><code>rpm_per_mach</code></td><td>1500.0</td><td>Linear Mach&rarr;RPM map
+      (rig-tuned).</td></tr>
+  <tr><td><code>mach_tolerance</code></td><td>0.01</td><td>&plusmn;Mach band for
+      at-target.</td></tr>
+  <tr><td><code>mach_max_iterations</code></td><td>3</td><td>RPM corrections per point
+      before FAULT.</td></tr>
+  <tr><td><code>cal_files</code></td><td>{}</td><td>Cal-file pointers (metadata only,
+      never applied).</td></tr>
+  <tr><td><code>vol_path</code> / <code>cal_type</code> / <code>balance_config</code></td>
+      <td>"" / "Linear" / "Force"</td><td>Balance display settings (device-owned; mirrored
+      for the Forces page).</td></tr>
+  <tr><td><code>warn_utilization</code></td><td>0.8</td><td>Amber load-bar threshold.</td></tr>
+  <tr><td><code>ref_area</code> / <code>ref_chord</code> / <code>ref_span</code></td>
+      <td>1.0</td><td>S / c / b for display coefficients.</td></tr>
+  <tr><td><code>test_name, model_name, facility, engineer, data_prefix,
+      objectives</code></td><td>""</td><td>Run-sheet Test Info (recorded to
+      metadata).</td></tr>
+  <tr><td><code>Sref, cref, bref, MRC_x, MRC_y, MRC_z</code></td><td>0.0</td>
+      <td>Run-sheet reference geometry + moment reference center (for
+      Streamlined).</td></tr>
+  <tr><td><code>output_format</code></td><td>"h5"</td><td>h5 / mat / xlsx.</td></tr>
+  <tr><td><code>filename_template</code></td><td>""</td><td>Empty = built-in structured
+      name.</td></tr>
+  <tr><td><code>tag_hysteresis</code></td><td>true</td><td>Append _up/_dn on return-sweep
+      points.</td></tr>
+  <tr><td><code>device_configs</code></td><td>{}</td><td>Snapshot of every device's driver
+      config (bundled with Save Config / defaults).</td></tr>
+</table>
+
+<h2 id="troubleshoot">Troubleshooting</h2>
+<table>
+  <tr><th>Symptom</th><th>Cause / fix</th></tr>
+  <tr><td>Start Sweep refused, red banner</td>
+      <td>Refuse-to-record: a device is OFFLINE/FAULT or the balance is overstressed. The
+      banner lists every blocker; clear them (connect/reset/tare) and retry.</td></tr>
+  <tr><td>"No data devices" info banner</td>
+      <td>The active mode has no Streaming device (e.g. SWT-Traverse) &mdash; automated
+      sweeps are disabled by design; manual positioning still works.</td></tr>
+  <tr><td>Tunnel never reaches Mach / dialog every point</td>
+      <td>Tunnel RPM control is off by default (Red Lion rejects Block2 writes) &mdash;
+      freestream is monitor-only and asks the operator to set fan speed. Enable "Tunnel RPM
+      control" in Measurement Setup only if the PLC accepts writes; disable "Verify Mach at
+      each point" to skip the gate entirely.</td></tr>
+  <tr><td>Mach loop FAULTs after N iterations</td>
+      <td><code>rpm_per_mach</code> is mis-tuned for the rig, or tunnel conditions channels
+      (Pdiff/Ptot/Temp) are missing/invalid. Check the DaqBook/Heise cards and the
+      dashboard tiles.</td></tr>
+  <tr><td>StrainBook streams wrong values / excitation stuck at 10 V in LIVE</td>
+      <td>A defaults bundle saved during a SIM session used to re-arm <code>force_sim</code>
+      on the live driver (rig-found 2026-07-22). Fixed &mdash; SIM/LIVE is owned by the
+      manager and excluded from saved device configs. Re-save defaults if they predate the
+      fix.</td></tr>
+  <tr><td>Forces page shows "no cal"</td>
+      <td>The .vol path/fit/layout are owned by the balance <em>device</em> config &mdash;
+      set them in the balance device panel (button on the Forces page), not in Measurement
+      Setup.</td></tr>
+  <tr><td>Old external-balance files show N1/N2/&hellip; channels</td>
+      <td>Files written before ATE truth-naming; readers (incl. the Results panel) fall
+      back to the legacy alias map. New files record true Lift/Drag/&hellip;
+      channels.</td></tr>
+  <tr><td>Output format change seems ignored</td>
+      <td>The recorder is rebuilt at sweep start &mdash; a format change applies to the
+      next sweep. Missing scipy (mat) or openpyxl (xlsx) is reported at that point and
+      falls back to HDF5.</td></tr>
+  <tr><td>Sweep paused unexpectedly</td>
+      <td>A point failed (move timeout, device fault, empty acquisition) &mdash; the sweep
+      auto-pauses with remaining points re-queued. Fix the cause, then Resume; or
+      double-click the FAILED row to re-run it.</td></tr>
+  <tr><td>Legacy config won't load / mode name unknown</td>
+      <td>mode1/2/3 are auto-migrated; unknown keys are dropped on load. Re-save the config
+      to modernize it.</td></tr>
+</table>
+
+<p style="color: var(--text-dim); margin-top: 48px; font-size: 0.85em;">
+Freestream v2.1.0 &mdash; Author: C. Fagley &mdash; casey.fagley@afacademy.af.edu</p>
+
+</main>
+</body>
+</html>

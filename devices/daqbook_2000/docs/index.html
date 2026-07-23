@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DaqBook/2000 — Tunnel Conditions DAQ — User Documentation</title>
+<style>
+:root{
+  --bg:#1e1e1e; --bg2:#252526; --bg3:#2d2d30; --border:#3f3f46;
+  --text:#e0e0e0; --dim:#a0a0a0; --accent:#3399ff; --accent2:#0078d4;
+  --ok:#4caf50; --warn:#ff9800; --err:#f44336;
+  --mono:Consolas,"Cascadia Mono","Courier New",monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);
+     font:15px/1.6 "Segoe UI",system-ui,sans-serif;display:flex}
+nav{position:sticky;top:0;align-self:flex-start;height:100vh;overflow-y:auto;
+    width:250px;flex:none;background:var(--bg2);
+    border-right:1px solid var(--border);padding:18px 14px}
+nav h1{font-size:15px;color:var(--accent);margin:0 0 2px}
+nav .ver{font-family:var(--mono);color:var(--dim);font-size:12px;
+         margin-bottom:14px}
+nav a{display:block;color:var(--dim);text-decoration:none;padding:5px 8px;
+      border-radius:5px;font-size:14px}
+nav a:hover{background:#3a3a3c;color:var(--text)}
+main{flex:1;min-width:0;max-width:900px;padding:28px 40px 80px}
+main>header h1{font-size:26px;margin:0;color:var(--text)}
+main>header p.sub{color:var(--dim);margin-top:4px}
+h2{color:var(--accent);border-bottom:1px solid var(--border);
+   padding-bottom:6px;margin-top:44px}
+h3{margin-top:28px}
+code{font-family:var(--mono);background:var(--bg2);
+     border:1px solid var(--border);border-radius:4px;padding:1px 5px;
+     font-size:.92em}
+pre{font-family:var(--mono);background:var(--bg2);
+    border:1px solid var(--border);border-radius:6px;padding:12px 14px;
+    overflow-x:auto;line-height:1.45}
+pre code{border:none;background:none;padding:0}
+.tblwrap{overflow-x:auto}
+table{border-collapse:collapse;margin:14px 0;width:100%}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;
+      vertical-align:top}
+th{background:var(--bg3)}
+tr:nth-child(even) td{background:var(--bg2)}
+.note,.warn,.danger{background:var(--bg2);padding:10px 14px;margin:14px 0;
+      border-left:4px solid var(--ok);border-radius:0 6px 6px 0}
+.warn{border-left-color:var(--warn)}
+.danger{border-left-color:var(--err)}
+a{color:var(--accent)}
+@media(max-width:820px){body{flex-direction:column}
+  nav{position:static;width:100%;height:auto}}
+</style>
+</head>
+<body>
+<nav>
+  <h1>DaqBook/2000<br>Tunnel Conditions DAQ</h1>
+  <div class="ver">daqbook_2000&nbsp;&nbsp;v1.1.0</div>
+  <a href="#overview">1&nbsp; Overview</a>
+  <a href="#hardware">2&nbsp; Hardware &amp; connection</a>
+  <a href="#getting-started">3&nbsp; Getting started</a>
+  <a href="#gui">4&nbsp; GUI guide</a>
+  <a href="#config">5&nbsp; Configuration reference</a>
+  <a href="#safety">6&nbsp; Safety &amp; session care</a>
+  <a href="#troubleshooting">7&nbsp; Troubleshooting</a>
+  <a href="#history">8&nbsp; Version history</a>
+</nav>
+<main>
+<header>
+  <h1>DaqBook/2000 — Tunnel Conditions DAQ</h1>
+  <p class="sub">User documentation for the <code>daqbook_2000</code>
+  package — Python driver + dark-mode PyQt6 GUI for the IOtech
+  DaqBook/2005.<br>
+  Author: C. Fagley — <a href="mailto:casey.fagley@afacademy.af.edu">
+  casey.fagley@afacademy.af.edu</a></p>
+</header>
+
+<h2 id="overview">1&nbsp; Overview &amp; purpose</h2>
+<p>The <strong>IOtech DaqBook/2005</strong> at the USAFA subsonic tunnel
+digitizes the tunnel's <strong>dynamic pressure (Pdiff)</strong>,
+<strong>total pressure (Ptot)</strong> and <strong>temperature
+(Temp)</strong> transducer voltages. This package is a fully self-contained
+driver + GUI; the AeroVIS suite composes it with the other instruments
+(e.g. serving tunnel q via <code>DaqbookAuxSource</code>), but no device
+package imports another.</p>
+<p>It talks to the hardware through the vendor <strong>DaqX API</strong>
+(<code>DaqX64.dll</code>, ctypes) over Ethernet. Acquisition is continuous
+(<code>DaamInfinitePost</code>, immediate trigger) into a circular driver
+buffer; a poll thread lifts out new scans, converts counts → volts →
+engineering units and timestamps them against the actual ADC clock. The
+driver owns its ring buffer (<code>device.ring</code>), so the GUI, the
+balance app's aux source and the AeroVIS sync layer all read one
+stream.</p>
+
+<h2 id="hardware">2&nbsp; Hardware &amp; connection</h2>
+<div class="tblwrap"><table>
+<tr><th></th><th></th></tr>
+<tr><td>Device alias</td><td><code>DaqBook2005</code></td></tr>
+<tr><td>IP</td><td><code>192.168.1.125</code> (serial 808713)</td></tr>
+<tr><td>CH0 <code>Pdiff</code></td><td>differential, 0..+3 V requested →
+    native 0–5 V (×2)</td></tr>
+<tr><td>CH2 <code>Ptot</code></td><td>differential, ±10 V (×1)</td></tr>
+<tr><td>CH4 <code>Temp</code></td><td>single-ended, 0–10 V (×1)</td></tr>
+</table></div>
+<p>Default engineering slopes come from Streamlined's
+<code>PRESSLOPvxi18.PCF</code>: transducer <strong>[220]</strong> Pdiff
+0.386949 psi/V, <strong>[690]</strong> Ptot 1.92604 psi/V. The temperature
+transmitter is <strong>1 V = 10 °C</strong> (scale 10, unit degC). Default
+scan rate is 200 Hz.</p>
+<div class="warn"><strong>Hardware constraint (DaqX error 134):</strong>
+single-ended channels accept only <em>bipolar</em> ranges; unipolar is
+differential-only. The driver's range picker enforces this (an SE 0–10 V
+request becomes ±10 V native).</div>
+
+<h3>One-time DaqX setup (per PC)</h3>
+<p><code>daqOpen</code> addresses the device by an alias, not by IP.
+Two pieces must exist on the PC:</p>
+<ol>
+<li><strong>The device alias</strong> — create/list/delete with the
+    bundled tool (uses the DLL's own <code>daqCreateDevice</code>):
+<pre><code>python daqbook_setup.py list
+python daqbook_setup.py create DaqBook2005 192.168.1.125</code></pre></li>
+<li><strong>The DaqX Ethernet kernel driver</strong>
+    (<code>DaqX600e.sys</code>) must be installed <em>and loaded</em>.
+    Status: <code>sc query DaqX600e</code>.</li>
+</ol>
+
+<h3>Fresh Windows 11 PC bring-up (each step was required once)</h3>
+<ol>
+<li><strong>Windows Driver Policy</strong> blocks the 2006 IOtech kernel
+    drivers (CodeIntegrity Event 3077). Remove it with
+    <code>devices\remove_driver_policy.ps1</code> (Secure Boot round-trip;
+    see script header). Re-check after major Windows updates with
+    <code>devices\check_daqx_driver.ps1</code>.</li>
+<li><strong>Kernel driver for this device family is
+    <code>daqbk2k.sys</code></strong> (not just DaqX600e): copy from
+    <code>Drivers\Ethernet_x64</code> to <code>System32\drivers</code>,
+    <code>sc config daqbk2k start= auto</code>,
+    <code>sc start daqbk2k</code>.</li>
+<li><strong>Device alias</strong>:
+    <code>python daqbook_setup.py create DaqBook2005 192.168.1.125</code>.
+    Config lives at
+    <code>HKLM\SYSTEM\CurrentControlSet\Services\Daqx\DaqBk2k0</code>.</li>
+<li><strong>Registry ACL</strong>: <code>daqOpen</code> demands
+    Read/<em>Write</em> on that key, so non-elevated apps get "alias not
+    found" (error 113/−1). One-time fix (elevated): grant
+    <code>BUILTIN\Users</code> FullControl on
+    <code>HKLM\SYSTEM\CurrentControlSet\Services\Daqx</code>
+    (inheritable).</li>
+<li><strong>Single-session device</strong>: if <code>daqOpen</code> fails
+    with DerrNotOnLine (2) and the device RSTs TCP port 50001, another
+    client (or a stale session) holds it — the embedded status page at
+    <code>http://192.168.1.125/</code> shows <code>Opened</code>; use its
+    <em>Reset Device</em> link (or power cycle).</li>
+</ol>
+<p>The DLL is found automatically in the rig's LabVIEW folder; override
+with <code>--dll</code> or File → Settings.</p>
+
+<h2 id="getting-started">3&nbsp; Getting started</h2>
+<pre><code># from the devices/ directory
+python run_daqbook_2000_app.py --sim   # pure simulation — no hardware, no DLL
+python run_daqbook_2000_app.py         # real device (after DaqX setup)
+python probe_daqbook.py                # safe read-only probe (DLL → daqOpen → 1 s)</code></pre>
+<h3>First-connect checklist</h3>
+<ol>
+<li>Kernel drivers loaded (<code>sc query DaqX600e</code>,
+    <code>sc query daqbk2k</code>) and alias created.</li>
+<li>Nobody else holds the session
+    (<code>http://192.168.1.125/</code> not <code>Opened</code>).</li>
+<li>Launch, verify the alias and rate, press <strong>Connect</strong> —
+    the lamp shows <code>ACQUIRING @ 200 Hz</code>.</li>
+<li>Sanity check (tunnel off, live-verified 2026-07-06): Pdiff ≈ 0 psid,
+    Ptot ≈ 11.38 psia (correct ambient for USAFA's elevation — validates
+    the [690] slope), Temp ≈ 2.4 V raw and noisy (±0.19 V).</li>
+</ol>
+
+<h2 id="gui">4&nbsp; GUI guide</h2>
+<h3>Connection bar</h3>
+<div class="tblwrap"><table>
+<tr><th>Control</th><th>Function</th></tr>
+<tr><td>Device</td><td>DaqX alias (the applet owns the alias→IP
+    mapping).</td></tr>
+<tr><td>Rate</td><td>Scan rate in Hz (default 200).</td></tr>
+<tr><td>Simulate</td><td>Synthetic tunnel signals — no hardware, no
+    DLL.</td></tr>
+<tr><td>Lamp</td><td><code>DISCONNECTED</code> / <code>SIMULATION</code> /
+    <code>ACQUIRING @ … Hz</code>.</td></tr>
+<tr><td>Connect / Disconnect</td><td>Open/close the DaqX session and
+    start/stop the continuous scan.</td></tr>
+</table></div>
+
+<h3>Live tab</h3>
+<ul>
+<li><strong>Stat tiles</strong> — one per enabled channel (Pdiff, Ptot,
+    Temp) in engineering units, smoothed over the tile-averaging
+    window.</li>
+<li><strong>Window</strong> combo (10 s / 30 s / 2 min / 5 min).</li>
+<li><strong>Show raw volts</strong> — switches the history from
+    engineering units to raw volts.</li>
+<li><strong>Pause / Resume</strong> — freezes the plot (acquisition
+    continues).</li>
+<li><strong>History plot</strong> — full-rate channel histories,
+    envelope-decimated so long windows and high rates stay smooth.</li>
+</ul>
+
+<h3>Channels tab</h3>
+<p>Per-channel table: enable, hardware channel number, name,
+differential/single-ended, requested voltage range (min/max), engineering
+scale (units per volt), offset and unit. Changes take effect on the next
+Connect. The range picker snaps requests to the nearest native range and
+enforces the SE-bipolar-only constraint.</p>
+
+<h3>Menus</h3>
+<div class="tblwrap"><table>
+<tr><th>Menu</th><th>Items</th></tr>
+<tr><td>File</td><td>Settings… (Ctrl+,) — device alias/IP/DLL,
+    acquisition, display; Save config… / Load config… (JSON); Quit.</td></tr>
+<tr><td>Help</td><td>Documentation (this page); About DaqBook/2000 —
+    version and history.</td></tr>
+</table></div>
+
+<h2 id="config">5&nbsp; Configuration reference</h2>
+<p>All settings live in <code>DaqbookConfig</code> /
+<code>ChannelConfig</code> (<code>daqbook_2000/config.py</code>) and
+serialize to JSON.</p>
+<h3>DaqbookConfig</h3>
+<div class="tblwrap"><table>
+<tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>device_name</code></td><td><code>DaqBook2005</code></td>
+    <td>Alias from the Daq Configuration applet /
+    <code>daqbook_setup.py</code>.</td></tr>
+<tr><td><code>device_ip</code></td><td><code>192.168.1.125</code></td>
+    <td>Informational — the applet owns the alias→IP mapping.</td></tr>
+<tr><td><code>dll_path</code></td><td>(blank)</td>
+    <td>Explicit DaqX64.dll path; blank = search standard
+    locations.</td></tr>
+<tr><td><code>scan_hz</code></td><td><code>200.0</code></td>
+    <td>Scan rate — plenty for tunnel pressures/temps and light on the
+    GUI.</td></tr>
+<tr><td><code>buffer_seconds</code></td><td><code>5.0</code></td>
+    <td>Circular driver-buffer length.</td></tr>
+<tr><td><code>poll_ms</code></td><td><code>25</code></td>
+    <td>Transfer-status poll period.</td></tr>
+<tr><td><code>force_sim</code></td><td><code>false</code></td>
+    <td>Always simulate.</td></tr>
+<tr><td><code>plot_window_s</code></td><td><code>30.0</code></td>
+    <td>Time-history window (s).</td></tr>
+<tr><td><code>tile_avg_ms</code></td><td><code>200</code></td>
+    <td>Live tile smoothing window (ms).</td></tr>
+<tr><td><code>channels</code></td><td>rig defaults</td>
+    <td>List of <code>ChannelConfig</code> (below).</td></tr>
+</table></div>
+<h3>ChannelConfig (per channel)</h3>
+<div class="tblwrap"><table>
+<tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>channel</code></td><td><code>0</code></td>
+    <td>Hardware analog-input channel.</td></tr>
+<tr><td><code>name</code></td><td>Pdiff / Ptot / Temp</td>
+    <td>Channel name.</td></tr>
+<tr><td><code>enabled</code></td><td><code>true</code></td>
+    <td>Include in the scan.</td></tr>
+<tr><td><code>differential</code></td><td>true / true / false</td>
+    <td>Differential vs single-ended input.</td></tr>
+<tr><td><code>v_min</code> / <code>v_max</code></td>
+    <td>0..3 / ±10 / 0..10</td>
+    <td>Requested range; the nearest native range is used (SE channels
+    are forced bipolar).</td></tr>
+<tr><td><code>scale</code></td><td>0.386949 / 1.92604 / 10.0</td>
+    <td>Engineering units per volt (PCF transducer slopes; Temp
+    1 V = 10 °C).</td></tr>
+<tr><td><code>offset</code></td><td><code>0.0</code></td>
+    <td>Engineering units at 0 V.</td></tr>
+<tr><td><code>unit</code></td><td>psid / psia / degC</td>
+    <td>Engineering unit label.</td></tr>
+</table></div>
+
+<h3>Serving tunnel q to other consumers (AeroVIS)</h3>
+<pre><code>from daqbook_2000 import Daqbook2000, DaqbookConfig, DaqbookAuxSource
+dev = Daqbook2000(DaqbookConfig())
+dev.connect(); dev.start()
+aux = DaqbookAuxSource(dev, own_device=True)   # q in Pa from Pdiff psid</code></pre>
+<p><code>DaqbookAuxSource</code> exposes the live stream through a tiny
+duck-typed interface (<code>dynamic_pressure() -&gt; Pa</code>,
+<code>temperature_k() -&gt; K</code>) so panels can consume tunnel
+conditions without cross-package imports.</p>
+
+<h2 id="safety">6&nbsp; Safety &amp; session care</h2>
+<ul>
+<li>This app commands no motion — it is measurement-only.</li>
+<li><strong>Single-session device</strong>: never kill a Python process
+    mid-acquisition without <code>disconnect()</code> — always the GUI
+    Disconnect or Ctrl-C so the session closes. A wedged session is
+    cleared from the device status page
+    (<code>http://192.168.1.125/</code> → <em>Reset Device</em>) or by
+    power cycle.</li>
+<li>Keep the kernel-driver policy check
+    (<code>check_daqx_driver.ps1</code>) in the post-Windows-update
+    routine.</li>
+</ul>
+
+<h2 id="troubleshooting">7&nbsp; Troubleshooting</h2>
+<div class="tblwrap"><table>
+<tr><th>Symptom</th><th>Cause / fix</th></tr>
+<tr><td><code>daqOpen</code> fails: alias not found (error 113/−1)</td>
+    <td>Alias missing (<code>daqbook_setup.py create</code>) or the
+    registry ACL blocks non-elevated write access — grant
+    <code>BUILTIN\Users</code> FullControl on
+    <code>HKLM\...\Services\Daqx</code> once, elevated.</td></tr>
+<tr><td><code>daqOpen</code> fails: DerrNotOnLine (2), TCP 50001
+    RSTs</td>
+    <td>Another client or a stale session holds the device — status page
+    shows <code>Opened</code>; use <em>Reset Device</em> or power
+    cycle.</td></tr>
+<tr><td>DaqX error 134 configuring a channel</td>
+    <td>Unipolar range requested on a single-ended channel — SE accepts
+    bipolar only. The driver's range picker enforces this; check custom
+    scripts.</td></tr>
+<tr><td>Kernel driver won't load (CodeIntegrity Event 3077)</td>
+    <td>Windows 11 driver policy blocks the 2006 IOtech drivers — run
+    <code>devices\remove_driver_policy.ps1</code> (Secure Boot
+    round-trip), then verify with
+    <code>devices\check_daqx_driver.ps1</code>. Re-check after major
+    Windows updates.</td></tr>
+<tr><td>DLL not found</td>
+    <td>It is normally auto-found in the rig's LabVIEW folder; set an
+    explicit path via <code>--dll</code> or File → Settings.</td></tr>
+<tr><td>Temp reads noisy</td>
+    <td>Live-verified behaviour: ≈2.4 V raw ±0.19 V with the tunnel off.
+    Set the transmitter scale and consider filtering when known.</td></tr>
+<tr><td>Full end-to-end check</td>
+    <td><code>python verify_daqbook_live.py</code> — the 2026-07-06 run
+    logged 19,917 scans / 20 s at the 1 kHz ADC clock, monotonic 1 ms
+    timebase, zero overruns.</td></tr>
+</table></div>
+
+<h2 id="history">8&nbsp; Version history</h2>
+<div class="tblwrap"><table>
+<tr><th>Version</th><th>Date</th><th>Changes</th></tr>
+<tr><td>1.1.0</td><td>2026-07-23</td><td>In-app Help system: bundled HTML
+    documentation and About dialog.</td></tr>
+<tr><td>1.0.0</td><td>2026-07-06</td><td>Initial DaqX driver + dark PyQt6
+    GUI, live-verified on the rig DaqBook/2005: 19,917 scans / 20 s at the
+    1 kHz ADC clock with zero overruns, [690] Ptot slope validated
+    end-to-end; single-ended bipolar-only range constraint (DaqX error
+    134) enforced by the range picker; DaqbookAuxSource serves tunnel q to
+    other consumers.</td></tr>
+</table></div>
+
+<p style="color:var(--dim);margin-top:40px">DaqBook/2000 — Tunnel
+Conditions DAQ &nbsp;·&nbsp; daqbook_2000 v1.1.0 &nbsp;·&nbsp; C. Fagley —
+<a href="mailto:casey.fagley@afacademy.af.edu">casey.fagley@afacademy.af.edu</a></p>
+</main>
+</body>
+</html>

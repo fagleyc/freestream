@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StrainBook/616 — Balance Bridge DAQ — User Documentation</title>
+<style>
+:root{
+  --bg:#1e1e1e; --bg2:#252526; --bg3:#2d2d30; --border:#3f3f46;
+  --text:#e0e0e0; --dim:#a0a0a0; --accent:#3399ff; --accent2:#0078d4;
+  --ok:#4caf50; --warn:#ff9800; --err:#f44336;
+  --mono:Consolas,"Cascadia Mono","Courier New",monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);
+     font:15px/1.6 "Segoe UI",system-ui,sans-serif;display:flex}
+nav{position:sticky;top:0;align-self:flex-start;height:100vh;overflow-y:auto;
+    width:250px;flex:none;background:var(--bg2);
+    border-right:1px solid var(--border);padding:18px 14px}
+nav h1{font-size:15px;color:var(--accent);margin:0 0 2px}
+nav .ver{font-family:var(--mono);color:var(--dim);font-size:12px;
+         margin-bottom:14px}
+nav a{display:block;color:var(--dim);text-decoration:none;padding:5px 8px;
+      border-radius:5px;font-size:14px}
+nav a:hover{background:#3a3a3c;color:var(--text)}
+main{flex:1;min-width:0;max-width:900px;padding:28px 40px 80px}
+main>header h1{font-size:26px;margin:0;color:var(--text)}
+main>header p.sub{color:var(--dim);margin-top:4px}
+h2{color:var(--accent);border-bottom:1px solid var(--border);
+   padding-bottom:6px;margin-top:44px}
+h3{margin-top:28px}
+code{font-family:var(--mono);background:var(--bg2);
+     border:1px solid var(--border);border-radius:4px;padding:1px 5px;
+     font-size:.92em}
+pre{font-family:var(--mono);background:var(--bg2);
+    border:1px solid var(--border);border-radius:6px;padding:12px 14px;
+    overflow-x:auto;line-height:1.45}
+pre code{border:none;background:none;padding:0}
+.tblwrap{overflow-x:auto}
+table{border-collapse:collapse;margin:14px 0;width:100%}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;
+      vertical-align:top}
+th{background:var(--bg3)}
+tr:nth-child(even) td{background:var(--bg2)}
+.note,.warn,.danger{background:var(--bg2);padding:10px 14px;margin:14px 0;
+      border-left:4px solid var(--ok);border-radius:0 6px 6px 0}
+.warn{border-left-color:var(--warn)}
+.danger{border-left-color:var(--err)}
+a{color:var(--accent)}
+@media(max-width:820px){body{flex-direction:column}
+  nav{position:static;width:100%;height:auto}}
+</style>
+</head>
+<body>
+<nav>
+  <h1>StrainBook/616<br>Balance Bridge DAQ</h1>
+  <div class="ver">strainbook_616&nbsp;&nbsp;v1.3.0</div>
+  <a href="#overview">1&nbsp; Overview</a>
+  <a href="#hardware">2&nbsp; Hardware &amp; connection</a>
+  <a href="#getting-started">3&nbsp; Getting started</a>
+  <a href="#gui">4&nbsp; GUI guide</a>
+  <a href="#config">5&nbsp; Configuration reference</a>
+  <a href="#safety">6&nbsp; Safety &amp; limits</a>
+  <a href="#troubleshooting">7&nbsp; Troubleshooting</a>
+  <a href="#history">8&nbsp; Version history</a>
+</nav>
+<main>
+<header>
+  <h1>StrainBook/616 — Balance Bridge DAQ</h1>
+  <p class="sub">User documentation for the <code>strainbook_616</code>
+  package — Python driver + dark-mode PyQt6 GUI for the IOtech
+  StrainBook/616.<br>
+  Author: C. Fagley — <a href="mailto:casey.fagley@afacademy.af.edu">
+  casey.fagley@afacademy.af.edu</a></p>
+</header>
+
+<h2 id="overview">1&nbsp; Overview &amp; purpose</h2>
+<p>The <strong>IOtech StrainBook/616</strong> at the USAFA subsonic tunnel
+is the internal-balance bridge readout: six strain-gage bridges —
+<strong>N1, N2, Y1, Y2, Axial, Roll</strong> (the Streamlined channel
+names) — plus an <strong>Excitation</strong> readback channel. This package
+is a fully standalone driver + GUI and part of the AeroVIS suite; the same
+panel embeds unchanged in the Freestream host with a single shared
+driver.</p>
+<p>Bridge channels display <strong>input-referred volts</strong>; recorded
+data is always raw volts. Conversion to forces happens either live in the
+app's Forces tab (via a Streamlined <code>.vol</code> balance calibration)
+or downstream in Streamlined/AeroVIS.</p>
+
+<h2 id="hardware">2&nbsp; Hardware &amp; connection</h2>
+<div class="tblwrap"><table>
+<tr><th></th><th></th></tr>
+<tr><td>Device alias</td><td><code>StrainBook_0</code> (from the Daq
+    applet)</td></tr>
+<tr><td>IP</td><td><code>192.168.1.123</code> (serial 807042; reports as
+    WaveBook/516E)</td></tr>
+<tr><td>Kernel driver</td><td><code>wavebk.sys</code> (installed,
+    auto-start)</td></tr>
+<tr><td>API</td><td>vendor DaqX (<code>DaqX64.dll</code>, ctypes) over
+    Ethernet</td></tr>
+<tr><td>CH1–4 (N1, N2, Y1, Y2)</td><td>Full bridge, 10 V excitation,
+    1 kHz filter, ±11 mV (×447)</td></tr>
+<tr><td>CH5–6 (Axial, Roll)</td><td>Full bridge, 10 V excitation,
+    1 kHz filter, ±32 mV (×155.8)</td></tr>
+<tr><td>CH8 (Excitation)</td><td>External excitation supply readback
+    ("0 to 10 V" range)</td></tr>
+</table></div>
+
+<h3>Architecture facts (verified live 2026-07-06 / 2026-07-16)</h3>
+<p>These are hard-won rig facts recorded in the package README — do not
+re-learn them:</p>
+<ol>
+<li><strong>Channel map</strong>: the built-in strain conditioning is an
+    internal WBK16 bank on DaqX channels <strong>9–16</strong>;
+    front-panel "CH n" = DaqX channel n + 8
+    (<code>STRAIN_CHANNEL_OFFSET</code>). Channels 0–8 are the raw
+    WaveBook core (module type Wbk516A) and reject all Wbk16 options with
+    error 67. LabVIEW's channel table hides this offset.</li>
+<li><strong>Data is SIGNED int16</strong> regardless of the
+    <code>DafUnsigned</code> scan flag — 0 counts = 0 V,
+    <code>0x7FFF</code> = +FS, <code>0x8000</code> = −FS. An offset-binary
+    decode maps real ~100 µV bridges onto the ±range rail (the 2026-07-16
+    "all channels railed" bug).</li>
+<li><strong>Scan polarity is per channel and it matters</strong>: bridge
+    channels need <code>DafBipolar</code> — scanned unipolar they peg at
+    <code>0x8000</code>. The 0–10 V excitation channel scans
+    <em>unipolar</em>, which shifts the data one half-span down
+    (0 V input = −FS): true volts = decoded + 5.</li>
+<li><strong>Options download at arm time, only for channels in the scan
+    list</strong> — configure options on 9–16 <em>and scan 9–16</em>.</li>
+<li><strong><code>OutSource=ReadExcVolts</code> monitors only the INTERNAL
+    excitation banks.</strong> With the rig's EXTERNAL supply it reads 0 V.
+    The external excitation is instead wired into CH8's differential input
+    and measured as a plain voltage (<code>OutSource=ReadSignal</code>,
+    full bridge 4-wire, ×1, unipolar) → reads the true supply (9.86 V
+    measured). The internal excitation banks are NEVER commanded — two
+    sources on the excitation bus would fight.</li>
+<li><strong>Open channels rail at ±range</strong> (e.g. ±11.19 mV at ×447)
+    — the expected wind-off-unplugged signature, matching LabVIEW.</li>
+<li><strong>SSH defaults OFF</strong> pending verification with a
+    connected balance (<code>DafSSHHold = 0x10</code> exists as a
+    per-channel scan flag — the likely missing piece if SSH is wanted
+    later).</li>
+<li><strong>Single-session device</strong>: a dead client wedges the
+    session. The status page <code>http://192.168.1.123/</code> shows
+    <code>Opened</code>; its <em>Reset Device</em> link clears it.</li>
+</ol>
+<p>Live-verified end to end 2026-07-16 with the balance cabled and a 10 V
+external supply: 200 Hz × 7 channels, bridges at
+−250/−200/−695/+764/+250 µV (Axial +16.5 mV genuine offset), excitation
+9.864 V — matching LabVIEW.</p>
+
+<h2 id="getting-started">3&nbsp; Getting started</h2>
+<pre><code># from the devices/ directory
+python run_strainbook_616_app.py --sim   # no hardware
+python run_strainbook_616_app.py         # real StrainBook_0 (192.168.1.123)
+python probe_strainbook.py               # 3-step live probe</code></pre>
+<h3>First-connect checklist</h3>
+<ol>
+<li>The <code>wavebk</code> kernel service must be RUNNING (re-run
+    <code>check_daqx_driver.ps1</code> after major Windows updates — same
+    Windows 11 driver-policy caveat as the DaqBook, see
+    <code>daqbook_2000/README.md</code>).</li>
+<li>The DaqX device alias <code>StrainBook_0</code> must exist (Daq
+    applet).</li>
+<li>Confirm nobody else holds the session — check
+    <code>http://192.168.1.123/</code> (should not say
+    <code>Opened</code>; use <em>Reset Device</em> if it does).</li>
+<li>Launch the app, check the alias and scan rate in the Connection bar,
+    press <strong>Connect</strong>. The lamp shows
+    <code>ACQUIRING @ 200 Hz</code> (or <code>SIMULATION</code>).</li>
+<li>With the tunnel off, expect small bridge signals (hundreds of µV) and
+    excitation ≈ the external supply voltage. Open/unplugged channels rail
+    at ±range — that is normal.</li>
+</ol>
+
+<h2 id="gui">4&nbsp; GUI guide</h2>
+<h3>Connection bar</h3>
+<div class="tblwrap"><table>
+<tr><th>Control</th><th>Function</th></tr>
+<tr><td>Device</td><td>DaqX alias (maps to 192.168.1.123 via the
+    applet).</td></tr>
+<tr><td>Rate</td><td>Scan rate in Hz (default 200).</td></tr>
+<tr><td>Simulate</td><td>Synthetic bridge signals, no hardware.</td></tr>
+<tr><td>Lamp</td><td><code>DISCONNECTED</code> / <code>SIMULATION</code> /
+    <code>ACQUIRING @ … Hz</code>.</td></tr>
+<tr><td>Connect / Disconnect</td><td>Open/close the DaqX session and
+    start/stop the continuous scan. Always disconnect cleanly — see the
+    single-session caveat.</td></tr>
+</table></div>
+
+<h3>Live tab</h3>
+<ul>
+<li><strong>Stat tiles</strong> — one per enabled channel, smoothed over
+    the tile-averaging window.</li>
+<li><strong>Tare (zero bridges) / Clear tare</strong> — software tare of
+    the bridge channels.</li>
+<li><strong>Window</strong> combo (10 s / 30 s / 2 min / 5 min),
+    <strong>Pause/Resume</strong>, and <strong>Follow live</strong>
+    (re-pins the time axis after zoom/pan).</li>
+<li><strong>Show</strong> row — one colored checkbox per channel toggling
+    its curve on the history plot (the excitation strip collapses when its
+    channel is hidden).</li>
+<li><strong>History plot</strong> — all bridges overlaid on one mV plot
+    with a slim excitation strip below; redraws are envelope-decimated so
+    long windows and high rates stay smooth.</li>
+</ul>
+
+<h3>Forces tab</h3>
+<p>Live balance forces/moments from a Streamlined <code>.vol</code>
+calibration: load the file, choose Linear / Quadratic / Cubic, and every UI
+tick the ring buffer's bridge voltages run through the Streamlined pipeline
+(volts/excitation → elements → body-frame Fx…Mz). Per-element loads are
+compared against the balance's rated maxima with amber/red overstress
+warnings and rolling peak-hold utilization bars. The Force ↔ Moment
+balance-layout selector renames the four bridge channels
+(N1/N2/Y1/Y2 ↔ AftPitch/AftYaw/FwdPitch/FwdYaw) on the live device.</p>
+
+<h3>Channels tab</h3>
+<p>Mirrors the rig's LabVIEW "Additional StrainBook Parameters" table.
+Edits apply to the config immediately; a (re)connect pushes them to the
+hardware. Columns: On, CH, Name, Bridge, Range, Filter, AC, Inv, SSH,
+Offset, Unit. Setting a channel's Range to <strong>"0 to 10 V"</strong>
+turns it into the external-excitation readback (CH8). There are no
+internal excitation-bank controls — the external supply is the sole
+authority.</p>
+
+<h3>Menus</h3>
+<div class="tblwrap"><table>
+<tr><th>Menu</th><th>Items</th></tr>
+<tr><td>File</td><td>Settings… (Ctrl+,) — device/acquisition/display;
+    Save config… / Load config… (JSON); Quit.</td></tr>
+<tr><td>Help</td><td>Documentation (this page); About StrainBook/616 —
+    version and history.</td></tr>
+</table></div>
+
+<h2 id="config">5&nbsp; Configuration reference</h2>
+<p>All settings live in <code>StrainbookConfig</code> /
+<code>StrainChannelConfig</code> (<code>strainbook_616/config.py</code>)
+and serialize to JSON.</p>
+<h3>StrainbookConfig</h3>
+<div class="tblwrap"><table>
+<tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>device_name</code></td><td><code>StrainBook_0</code></td>
+    <td>DaqX alias from the applet.</td></tr>
+<tr><td><code>device_ip</code></td><td><code>192.168.1.123</code></td>
+    <td>Informational — the DaqX config owns the alias→IP mapping.</td></tr>
+<tr><td><code>dll_path</code></td><td>(blank)</td>
+    <td>Explicit DaqX64.dll path; blank = search standard
+    locations.</td></tr>
+<tr><td><code>scan_hz</code></td><td><code>200.0</code></td>
+    <td>Scan rate.</td></tr>
+<tr><td><code>buffer_seconds</code></td><td><code>5.0</code></td>
+    <td>Circular driver-buffer length.</td></tr>
+<tr><td><code>poll_ms</code></td><td><code>25</code></td>
+    <td>Transfer-status poll period.</td></tr>
+<tr><td><code>vol_path</code></td><td>(blank)</td>
+    <td>Balance <code>.vol</code> calibration, auto-loaded at startup when
+    set.</td></tr>
+<tr><td><code>cal_type</code></td><td><code>Linear</code></td>
+    <td>Linear | Quadratic | Cubic calibration fit.</td></tr>
+<tr><td><code>balance_config</code></td><td><code>Force</code></td>
+    <td>Force | Moment balance layout — a pure rename of the four bridge
+    channels.</td></tr>
+<tr><td><code>warn_utilization</code></td><td><code>0.8</code></td>
+    <td>Amber warning above this fraction of the rated maximum.</td></tr>
+<tr><td><code>balance_type</code>, <code>balance_serial</code></td>
+    <td>(blank)</td><td>Metadata filled from the .vol; saved with
+    configs/datasets.</td></tr>
+<tr><td><code>force_sim</code></td><td><code>false</code></td>
+    <td>Always simulate.</td></tr>
+<tr><td><code>plot_window_s</code></td><td><code>30.0</code></td>
+    <td>Time-history window (s).</td></tr>
+<tr><td><code>tile_avg_ms</code></td><td><code>200</code></td>
+    <td>Live tile smoothing window (ms).</td></tr>
+<tr><td><code>channels</code></td><td>rig defaults</td>
+    <td>List of <code>StrainChannelConfig</code> (below).</td></tr>
+</table></div>
+<h3>StrainChannelConfig (per channel)</h3>
+<div class="tblwrap"><table>
+<tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>channel</code></td><td><code>1</code></td>
+    <td>Front-panel CH 1–8 (the driver adds the +8 DaqX offset).</td></tr>
+<tr><td><code>name</code></td><td>(rig names)</td>
+    <td>Channel name; the Streamlined reducer keys on the exact bridge
+    names.</td></tr>
+<tr><td><code>enabled</code></td><td><code>true</code></td>
+    <td>Include in the scan.</td></tr>
+<tr><td><code>bridge</code></td><td>Full bridge</td>
+    <td>Bridge completion type.</td></tr>
+<tr><td><code>range_mv</code></td><td>11.0 / 32.0 / 5000.0</td>
+    <td>Requested ± input range; snaps to the nearest IAG×PGA native
+    gain.</td></tr>
+<tr><td><code>filter_type</code></td><td>1 kHz</td>
+    <td>Input filter selection.</td></tr>
+<tr><td><code>ac_couple</code></td><td><code>false</code></td>
+    <td>AC coupling.</td></tr>
+<tr><td><code>invert</code></td><td><code>false</code></td>
+    <td>Sign inversion (bridge polarity).</td></tr>
+<tr><td><code>ssh</code></td><td><code>false</code></td>
+    <td>Simultaneous sample &amp; hold — off pending rig
+    verification.</td></tr>
+<tr><td><code>read_excitation</code></td><td><code>false</code>
+    (CH8: true)</td>
+    <td>Channel reads the external excitation supply back ("0 to 10 V"
+    range).</td></tr>
+<tr><td><code>scale</code></td><td><code>1.0</code></td>
+    <td>Software display gain — forced to 1.0 (display is in volts);
+    recorded data is always raw volts.</td></tr>
+<tr><td><code>offset</code></td><td><code>0.0</code></td>
+    <td>Software display offset (engineering units).</td></tr>
+<tr><td><code>unit</code></td><td><code>V</code></td>
+    <td>Display unit label.</td></tr>
+</table></div>
+
+<h2 id="safety">6&nbsp; Safety &amp; limits</h2>
+<ul>
+<li>This app commands no motion — it is measurement-only. The balance
+    protection features are software limits.</li>
+<li><strong>Overstress warnings</strong> (Forces tab): per-element loads
+    from the .vol calibration are compared against the balance's rated
+    maxima — amber above <code>warn_utilization</code> (default 80 %), red
+    at/over 100 %, with a status-bar "⚠ BALANCE OVERSTRESS — reduce load!"
+    message while active.</li>
+<li><strong>Excitation policy</strong>: the internal excitation banks are
+    never commanded; the external supply is the sole authority. CH8 only
+    reads it back.</li>
+<li><strong>Session hygiene</strong>: always disconnect via the GUI (or
+    Ctrl-C) — killing a client mid-acquisition wedges this single-session
+    device.</li>
+</ul>
+
+<h2 id="troubleshooting">7&nbsp; Troubleshooting</h2>
+<div class="tblwrap"><table>
+<tr><th>Symptom</th><th>Cause / fix</th></tr>
+<tr><td>All channels railed at ±full-scale</td>
+    <td>Offset-binary (unsigned) decode of the signed int16 data, or
+    bridge channels scanned unipolar. The driver decodes signed and scans
+    bridges bipolar — check custom scripts against
+    <code>counts_to_volts</code>.</td></tr>
+<tr><td>One open channel rails at ±range (e.g. ±11.19 mV)</td>
+    <td>Normal wind-off-unplugged signature, matching LabVIEW.</td></tr>
+<tr><td>Excitation reads 0 V though the supply is on</td>
+    <td><code>OutSource=ReadExcVolts</code> monitors only the internal
+    banks. The rig's external supply is read via CH8 as a plain voltage
+    ("0 to 10 V" range) — verify CH8 is enabled and configured for
+    excitation readback.</td></tr>
+<tr><td>Excitation reads ~5 V low</td>
+    <td>The unipolar scan shifts data one half-span down; true volts =
+    decoded + 5. The driver's <code>read_excitation</code> branch applies
+    exactly this.</td></tr>
+<tr><td>Wbk16 options rejected with error 67</td>
+    <td>Options sent to DaqX channels 0–8 (raw WaveBook core). Strain
+    options belong on channels 9–16 (front-panel CH n = DaqX
+    n + 8), and only channels in the scan list accept them.</td></tr>
+<tr><td>Connect fails / device busy</td>
+    <td>Single-session device: another client (or a stale session) holds
+    it. Status page <code>http://192.168.1.123/</code> shows
+    <code>Opened</code> — use its <em>Reset Device</em> link.</td></tr>
+<tr><td>Driver service not running after a Windows update</td>
+    <td>Windows 11 driver policy blocks the 2006 IOtech kernel drivers.
+    Re-run <code>check_daqx_driver.ps1</code>; the <code>wavebk</code>
+    service must be RUNNING (see <code>daqbook_2000/README.md</code> for
+    the full procedure).</td></tr>
+<tr><td>Dead (never-sampled) channels with SSH on</td>
+    <td>SSH gave dead channels in live bring-up — leave it off (default)
+    until the SSH scan-slot behaviour is verified. The 1 kHz filter +
+    200 Hz scan keeps inter-channel skew negligible meanwhile.</td></tr>
+<tr><td>Reproduce the verified raw-count table</td>
+    <td><code>python diagnose_raw_counts.py</code> prints raw hex +
+    decoded volts per channel for rig debugging.</td></tr>
+</table></div>
+
+<h2 id="history">8&nbsp; Version history</h2>
+<div class="tblwrap"><table>
+<tr><th>Version</th><th>Date</th><th>Changes</th></tr>
+<tr><td>1.3.0</td><td>2026-07-23</td><td>In-app Help system: bundled HTML
+    documentation and About dialog.</td></tr>
+<tr><td>1.2.0</td><td>2026-07-17</td><td>Per-channel plot visibility
+    toggles and envelope-decimated redraw performance on the live
+    history.</td></tr>
+<tr><td>1.1.0</td><td>2026-07-16</td><td>Signed-int16 decode +
+    per-channel scan polarity fix (bridges bipolar, excitation unipolar
+    with +5 V half-span shift); external excitation readback via CH8;
+    verified end-to-end with the cabled balance.</td></tr>
+<tr><td>1.0.0</td><td>2026-07-06</td><td>Initial DaqX driver + dark PyQt6
+    GUI; live bring-up: internal WBK16 bank mapping (front-panel CH n =
+    DaqX channel n+8) established, internal excitation banks verified then
+    retired in favour of the rig's external supply.</td></tr>
+</table></div>
+
+<p style="color:var(--dim);margin-top:40px">StrainBook/616 — Balance Bridge
+DAQ &nbsp;·&nbsp; strainbook_616 v1.3.0 &nbsp;·&nbsp; C. Fagley —
+<a href="mailto:casey.fagley@afacademy.af.edu">casey.fagley@afacademy.af.edu</a></p>
+</main>
+</body>
+</html>

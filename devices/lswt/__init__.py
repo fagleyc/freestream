@@ -5,3 +5,5 @@ deployed C#) reached over Modbus TCP, unit 1. Protocol + calibration
 were extracted from the deployed C# source
 ``Tool_LSWT_Flow_Velocity\\HwControllerVelocityLSWT_ACB530.cs``.
 """
+
+from .about import __version__                        # noqa: F401

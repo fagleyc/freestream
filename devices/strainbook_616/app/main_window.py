@@ -8,17 +8,20 @@ from __future__ import annotations
 
 import logging
 import time
+import webbrowser
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton, QStatusBar,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMainWindow, QPushButton, QStatusBar, QTableWidget, QTableWidgetItem,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
-from strainbook_616 import theme
+from strainbook_616 import about, theme
 from strainbook_616.config import StrainbookConfig
 from strainbook_616.device import Strainbook616
 
@@ -31,6 +34,71 @@ log = logging.getLogger(__name__)
 
 _WINDOWS = [("10 s", 10.0), ("30 s", 30.0), ("2 min", 120.0),
             ("5 min", 300.0)]
+
+_ABOUT_SUMMARY = (
+    "Standalone driver and GUI for the IOtech StrainBook/616 balance-bridge "
+    "DAQ at the USAFA subsonic tunnel: live bridge millivolts and external "
+    "excitation readback, software tare, a per-channel configuration table "
+    "mirroring the rig's LabVIEW setup, and balance forces via a Streamlined "
+    ".vol calibration. Part of the AeroVIS instrument suite.")
+
+
+def _about_dialog(parent=None) -> QDialog:
+    """Small dark-themed About dialog: name, version, contact, history."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(f"About {about.APP_NAME}")
+    dlg.setMinimumWidth(560)
+    if parent is None:
+        dlg.setStyleSheet(theme.get_stylesheet())
+    root = QVBoxLayout(dlg)
+    root.setSpacing(8)
+
+    name = QLabel(about.APP_NAME)
+    name.setWordWrap(True)
+    name.setStyleSheet(
+        f"font-size: 15pt; font-weight: 600; color: {theme.TEXT};")
+    root.addWidget(name)
+    ver = QLabel(f"Version {about.__version__}")
+    ver.setProperty("mono", "true")
+    ver.setStyleSheet(f"font-size: 11pt; font-weight: bold; "
+                      f"color: {theme.ACCENT_LIGHT};")
+    root.addWidget(ver)
+
+    summary = QLabel(_ABOUT_SUMMARY)
+    summary.setWordWrap(True)
+    root.addWidget(summary)
+
+    contact = QLabel(
+        f'Author: {about.AUTHOR} — '
+        f'<a href="mailto:{about.CONTACT}" '
+        f'style="color: {theme.ACCENT_LIGHT};">{about.CONTACT}</a>')
+    contact.setOpenExternalLinks(True)
+    contact.setStyleSheet(f"color: {theme.TEXT_DIM};")
+    root.addWidget(contact)
+
+    table = QTableWidget(len(about.VERSION_HISTORY), 3)
+    table.setHorizontalHeaderLabels(["Version", "Date", "Changes"])
+    table.verticalHeader().setVisible(False)
+    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+    table.setWordWrap(True)
+    hdr = table.horizontalHeader()
+    hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+    hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+    hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+    for r, (v, d, s) in enumerate(about.VERSION_HISTORY):
+        for c, text in enumerate((v, d, s)):
+            item = QTableWidgetItem(text)
+            if c == 2:
+                item.setToolTip(text)
+            table.setItem(r, c, item)
+    table.resizeRowsToContents()
+    table.setMinimumHeight(140)
+    root.addWidget(table, 1)
+
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+    buttons.rejected.connect(dlg.reject)
+    root.addWidget(buttons)
+    return dlg
 
 
 class StrainbookPanel(QWidget):
@@ -376,6 +444,22 @@ class StrainbookMainWindow(QMainWindow):
         a_quit = QAction("&Quit", self)
         a_quit.triggered.connect(self.close)
         m.addAction(a_quit)
+
+        h = self.menuBar().addMenu("&Help")
+        a_docs = QAction("&Documentation", self)
+        a_docs.triggered.connect(self._open_docs)
+        h.addAction(a_docs)
+        h.addSeparator()
+        a_about = QAction(f"&About {about.APP_NAME.split(' — ')[0]}", self)
+        a_about.triggered.connect(self._show_about)
+        h.addAction(a_about)
+
+    def _open_docs(self):
+        docs = Path(__file__).resolve().parents[1] / "docs" / "index.html"
+        webbrowser.open(docs.resolve().as_uri())
+
+    def _show_about(self):
+        _about_dialog(self).exec()
 
     def _open_settings(self):
         dlg = SettingsDialog(self.panel.config, self)

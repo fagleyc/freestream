@@ -74,7 +74,7 @@ def test_live_unit_switch(win, app):
     _pump(app, 0.4)
     panel._refresh_ui()
     assert panel.tiles["Pressure"].unit_lbl.text() == "kPa"
-    assert panel.config.left.unit == "kPa"
+    assert panel.config.right.unit == "kPa"
     val = float(panel.tiles["Pressure"].value_lbl.text()
                 .replace(",", "").replace("+", ""))
     assert 95.0 < val < 110.0                      # ~ambient in kPa
@@ -85,7 +85,7 @@ def test_live_unit_switch(win, app):
 def test_unit_switch_disconnected_updates_config(win):
     panel = win.panel
     panel.unit_combo.setCurrentText("mbar")
-    assert panel.config.left.unit == "mbar"
+    assert panel.config.right.unit == "mbar"
     assert panel.tiles["Pressure"].unit_lbl.text() == "mbar"
 
 

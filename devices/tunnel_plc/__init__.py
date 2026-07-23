@@ -21,7 +21,7 @@ analog channels; Freestream computes those from its own DAQ devices.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from .about import __version__                        # noqa: F401
 
 from .config import TunnelConfig
 from .control import TunnelControl, WriteRecord, WriteRefused

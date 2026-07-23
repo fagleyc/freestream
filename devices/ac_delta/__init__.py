@@ -17,7 +17,7 @@ Layers
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from .about import __version__
 
 from .axis import CrescentAxis, AxisError, FWD_STEPS, REV_STEPS
 from .config import AxisConfig, CrescentConfig

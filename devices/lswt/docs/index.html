@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LSWT Fan Control — ABB ACS530 — User Documentation</title>
+<style>
+:root{--bg:#1e1e1e;--bg2:#252526;--bg3:#2d2d30;--text:#e0e0e0;--dim:#a0a0a0;
+ --accent:#0078d4;--accent2:#3399ff;--ok:#4caf50;--warn:#ff9800;--err:#f44336;
+ --border:#3f3f46;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+ font:15px/1.6 "Segoe UI",system-ui,sans-serif}
+nav{position:fixed;top:0;left:0;bottom:0;width:240px;background:var(--bg2);
+ border-right:1px solid var(--border);padding:18px 14px;overflow-y:auto}
+nav .appname{font-size:15px;font-weight:600;color:var(--accent2);margin:0 0 2px}
+nav .ver{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
+ margin-bottom:14px}
+nav a{display:block;color:var(--dim);text-decoration:none;padding:4px 8px;
+ border-radius:4px;font-size:13.5px}
+nav a:hover{background:#3a3a3c;color:var(--text)}
+main{margin-left:240px;padding:28px 40px;max-width:920px}
+h1,h2,h3{color:#fff;line-height:1.3}
+h2{border-bottom:1px solid var(--border);padding-bottom:6px;margin-top:42px}
+code,pre{font-family:Consolas,"Cascadia Mono",monospace;font-size:13.5px}
+code{background:var(--bg3);padding:1px 5px;border-radius:3px;color:#9cdcfe}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+ padding:12px 14px;overflow-x:auto;color:#dcdcaa}
+pre code{background:none;padding:0;color:inherit}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;
+ vertical-align:top}
+th{background:var(--bg3);color:#fff}
+tr:nth-child(even) td{background:var(--bg2)}
+.note,.warn,.danger{border-left:4px solid;border-radius:4px;
+ padding:10px 14px;margin:14px 0;background:var(--bg2)}
+.note{border-color:var(--accent)} .warn{border-color:var(--warn)}
+.danger{border-color:var(--err)}
+footer{margin-top:48px;padding-top:14px;border-top:1px solid var(--border);
+ color:var(--dim);font-size:13px}
+@media(max-width:860px){nav{position:static;width:auto;border-right:0;
+ border-bottom:1px solid var(--border)}main{margin-left:0;padding:20px}}
+</style>
+</head>
+<body>
+<nav>
+ <div class="appname">LSWT Fan Control — ABB ACS530</div>
+ <div class="ver">v1.0.0 · lswt</div>
+ <a href="#overview">1 · Overview &amp; purpose</a>
+ <a href="#hardware">2 · Hardware &amp; connection</a>
+ <a href="#start">3 · Getting started</a>
+ <a href="#gui">4 · GUI guide</a>
+ <a href="#config">5 · Configuration reference</a>
+ <a href="#safety">6 · Safety &amp; interlocks</a>
+ <a href="#trouble">7 · Troubleshooting</a>
+ <a href="#history">8 · Version history</a>
+</nav>
+<main>
+
+<h1>LSWT Fan Control — ABB ACS530</h1>
+<p>User documentation for the <code>lswt</code> package — AeroVIS
+device driver + PyQt6 dark-mode GUI for the two Low-Speed Wind Tunnel
+(North &amp; South) fan drives.</p>
+
+<h2 id="overview">1 · Overview &amp; purpose</h2>
+<p>Each tunnel's fan runs on an <b>ABB ACS530 VFD</b> (the deployed C#
+calls it &quot;ABB530&quot;/&quot;ACB530&quot;) over <b>Modbus TCP,
+unit/slave 1</b>. Everything protocol/calibration here was extracted
+from the deployed C# source
+<code>Tool_LSWT_Flow_Velocity\HwControllerVelocityLSWT_ACB530.cs</code>
+(TunnelVision, on the control-room PC). One app serves both tunnels via
+the tunnel selector; each tunnel keeps its own startup defaults.</p>
+<p>Key improvements over the C#: one persistent, thread-safe pymodbus
+client (the C# reconnected per transaction — open → one register →
+close, every time), typed <code>LswtError</code> wrapping of every
+pymodbus error, and a smooth host-side setpoint ramp instead of the
+C#'s slam-to-zero &quot;protection&quot;.</p>
+
+<h2 id="hardware">2 · Hardware &amp; connection</h2>
+<h3>Register map (wire vs FieldTalk addresses)</h3>
+<p>The C# used FieldTalk, which counts registers from <b>1</b> — every
+C# address is +1 vs the wire (the same lesson as this repo's other C#
+ports). Wire = FieldTalk − 1:</p>
+<table>
+<tr><th>wire</th><th>FieldTalk (C#)</th><th>dir</th><th>meaning</th></tr>
+<tr><td>0</td><td>1</td><td>write</td>
+<td><b>Control</b>: <code>1150</code> = STOP, <code>1151</code> = START
+(ABB drives-profile control words; FC6). C# lines 233, 237–238</td></tr>
+<tr><td>1</td><td>2</td><td>write</td>
+<td><b>Reference</b>: 0–20000 scales 0–full speed; full speed =
+<b>60 Hz</b> motor. <b>The C# wrote the NEGATIVE of the scaled
+value</b> (line 191) — a direction convention on these fans, preserved
+via <code>reference_sign = −1</code>. FC6</td></tr>
+<tr><td>102</td><td>103</td><td>read</td>
+<td><b>Actual speed</b>: current output frequency × 10 (0–600 =
+0–60.0 Hz; e.g. register 452 = 45.2 Hz). C# lines 105–111, 235</td></tr>
+</table>
+<p>Example: 30 Hz → reference counts 20000 × 30/60 = 10000 → wire value
+<b>−10000</b> (<code>0xD8F0</code>) with the default sign.</p>
+<div class="warn"><b>Drive IPs are NOT in the C# source</b>
+(runtime-configured XML). <code>192.168.0.1</code> is a
+<b>placeholder</b> — set the real North/South drive IPs on the
+connection bar, then <i>Set as Defaults</i> (per-tunnel
+<code>~/.lswt/defaults_north.json</code> /
+<code>defaults_south.json</code>; the <code>LSWT_DEFAULTS</code> env
+var overrides the directory).</div>
+<h3>Velocity calibration (measured, ported verbatim)</h3>
+<p><code>calibration.FPS_AT_HZ</code> is the C#
+<code>ftPerSecVelocityToMotorHertz</code> table (lines 59–65): a
+<b>61-point measured curve</b>, index = motor Hz 0…60, value = tunnel
+velocity in ft/s — &quot;Data obtained from LSWT experimental
+data&quot; (C# comment). Endpoints: 0 Hz → 0 ft/s, 60 Hz →
+<b>105.6851 ft/s</b>. <code>hz_to_fps()</code>/<code>fps_to_hz()</code>
+interpolate linearly (the table is strictly monotonic so the inverse is
+exact) and clamp at the ends.</p>
+<p>Unit conversions: fps→m/s, km/h, mph use the exact physical factors
+(they match the C# maxima to &lt;0.01%); <b>Mach uses the C# ratio</b>
+(0.09466 / 105.6851 — the tool's calibrated tunnel-conditions value).
+RPM is deliberately not displayed: the motor pole count is not in the
+source, so Hz is the honest motor quantity.</p>
+
+<h2 id="start">3 · Getting started</h2>
+<pre><code>python run_lswt_app.py --tunnel north --sim   # fan sim, no hardware
+python run_lswt_app.py --tunnel south         # real drive — ARM to act
+python -m pytest tests\test_lswt.py</code></pre>
+<p>Sim mode (<code>--sim</code> / the Simulate checkbox) swaps in
+<code>SimAcs530</code>: a first-order fan model (time constant ~3 s,
+<code>sim_tau_s</code>) honoring start/stop and the reference, so the
+full GUI runs without hardware.</p>
+<h3>First-live-run checklist</h3>
+<ol>
+<li>Set the real drive IP (connection bar) → <i>Set as Defaults</i>.</li>
+<li>Connect (read-passive) — confirm the <b>actual-Hz register</b>: the
+gauge must track the console/drive display (register = Hz × 10).</li>
+<li><b>Verify the reference sign at a tiny reference</b>: arm, setpoint
+~1–2 Hz, Start Fan, and confirm the fan turns the NORMAL direction. A
+wrong <code>reference_sign</code> commands REVERSE — flip it in
+Settings → Advanced if so.</li>
+<li>Confirm the start/stop words: Start Fan spins up, Stop Fan coasts
+down and the reference reads 0.</li>
+<li>Only then run real setpoints; tune <code>ramp_hz_per_s</code> to
+taste.</li>
+</ol>
+
+<h2 id="gui">4 · GUI guide</h2>
+<h3>Connection bar</h3>
+<p><b>Tunnel</b> selector (North/South — switching loads that tunnel's
+saved defaults; disabled while connected) · <b>Drive IP</b> ·
+<b>Simulate</b> · staleness readout · status lamp (DISCONNECTED /
+SIMULATION / LIVE (monitor) / LIVE + ARMED) · <b>Connect</b> /
+<b>Disconnect</b> · <b>Set as Defaults</b> (per-tunnel startup
+defaults).</p>
+<h3>Dashboard</h3>
+<ul>
+<li><b>Fan speed</b>: Hz gauge (actual + setpoint against
+<code>max_hz</code>) with animated rotor.</li>
+<li><b>Flow</b> tiles: Actual frequency, Tunnel velocity (in the chosen
+unit), Setpoint, and <b>Commanded (ramped)</b> — the reference actually
+written to the drive, which ramps toward the setpoint and never
+step-jumps. Below: velocity-unit selector (ft/s, m/s, km/h, mph, Mach)
+and a ramp progress bar with a
+<code>cmd → set · actual</code> readout.</li>
+<li><b>Strip charts</b>: fan frequency (Actual solid, Commanded dashed)
+and velocity, time-linked.</li>
+</ul>
+<h3>Control section (bottom)</h3>
+<p>Visibly <b>DISARMED</b>. <b>ARM FAN CONTROL</b> (confirm dialog on
+live hardware) enables <b>Apply Setpoint</b>, <b>Start Fan</b> and
+<b>Stop Fan</b>. The Hz and velocity setpoint spins cross-update
+through the calibration. The <b>■ E-STOP is always live</b> — arming
+not required.</p>
+<h3>Menus</h3>
+<p><b>File</b>: Settings… (Ctrl+,), Save/Load config, Set current as
+defaults, Quit. <b>Help</b>: Documentation (this page), About.</p>
+
+<h2 id="config">5 · Configuration reference</h2>
+<h3><code>LswtConfig</code></h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>tunnel</code></td><td>north</td><td>&quot;north&quot; |
+    &quot;south&quot;</td></tr>
+<tr><td><code>label</code></td><td>North LSWT</td><td>display label
+    (window title)</td></tr>
+<tr><td><code>ip</code></td><td>192.168.0.1</td><td><b>placeholder</b> —
+    set the real drive IP</td></tr>
+<tr><td><code>port</code></td><td>502</td><td>Modbus TCP port</td></tr>
+<tr><td><code>unit_id</code></td><td>1</td><td>Modbus unit/slave id</td></tr>
+<tr><td><code>modbus_timeout_s</code></td><td>2.0</td><td>Modbus transaction
+    timeout</td></tr>
+<tr><td><code>max_hz</code></td><td>60.0</td><td>reference clamp (drive
+    full speed)</td></tr>
+<tr><td><code>ramp_hz_per_s</code></td><td>2.0</td><td>host-side setpoint
+    ramp — replaces the C#'s &quot;&gt;2 ft/s change → command 0&quot;
+    lockout; the commanded reference never step-jumps</td></tr>
+<tr><td><code>reference_sign</code></td><td>−1</td><td>C# direction
+    convention (negative reference); VERIFY at a tiny reference on first
+    live run</td></tr>
+<tr><td><code>poll_s</code></td><td>0.25</td><td>actual-Hz poll / ramp tick
+    period</td></tr>
+<tr><td><code>stale_after_s</code></td><td>3.0</td><td>no successful poll →
+    status STALE (fan deliberately NOT auto-stopped)</td></tr>
+<tr><td><code>force_sim</code></td><td>False</td><td>use the fan
+    simulator</td></tr>
+<tr><td><code>plot_window_s</code></td><td>120</td><td>strip-chart
+    window</td></tr>
+<tr><td><code>sim_tau_s</code></td><td>3.0</td><td>sim fan first-order time
+    constant</td></tr>
+</table>
+
+<h2 id="safety">6 · Safety &amp; interlocks</h2>
+<ul>
+<li><b>ARM gating</b> (mirrors tunnel_plc): Start Fan / Stop Fan /
+Apply Setpoint stay disabled until the operator explicitly ARMS fan
+control, with a confirm dialog on live hardware.</li>
+<li><b>E-STOP always live</b> — STOP word + zero reference written
+immediately from the calling thread, never queued; enabled regardless
+of arming state.</li>
+<li><b>Host-side ramp</b> (<code>ramp_hz_per_s</code>, default 2 Hz/s):
+the commanded reference always ramps toward the setpoint and never
+step-jumps the fan. This deliberately REPLACES the C#'s crude
+protection (any requested change &gt;2 ft/s → command reference 0,
+i.e. slam the fan toward zero). <code>fan_start()</code> anchors the
+ramp at the current actual speed.</li>
+<li><b><code>fan_stop()</code></b> writes the STOP word <b>and zeroes
+the reference</b>.</li>
+<li><b>Comm loss = alert, NOT auto-stop</b>: no successful poll within
+<code>stale_after_s</code> → status STALE (red in the GUI), but the fan
+is deliberately not stopped — the ACS530 holds its last reference
+safely on its own, and auto-stopping would turn a transient network
+blip into an aborted run / an uncommanded flow change mid-test. The
+physical console and E-STOP remain the backstop.</li>
+<li><b>Read-passive connect</b> — <code>connect()</code> performs no
+writes, so a host reconnect never disturbs a fan already running from a
+previous session.</li>
+</ul>
+
+<h2 id="trouble">7 · Troubleshooting</h2>
+<table>
+<tr><th>symptom</th><th>diagnosis / fix</th></tr>
+<tr><td>Cannot connect</td>
+<td>The default IP is a placeholder — the real North/South drive IPs
+were runtime-configured XML on the old control PC and are not in the
+source. Set the actual drive IP and save it as the tunnel's
+defaults.</td></tr>
+<tr><td>Fan turns the wrong way at a small reference</td>
+<td>The <code>reference_sign</code> convention is wrong for this drive
+— flip it in Settings → Advanced (the C# wrote negative references;
+that is the shipped default).</td></tr>
+<tr><td>Gauge doesn't match the drive display</td>
+<td>Confirm the actual-Hz register scaling: register = Hz × 10
+(452 = 45.2 Hz). If the console shows a different quantity, verify you
+are reading wire register 102.</td></tr>
+<tr><td>STALE in red</td>
+<td>Comm loss. The fan keeps its last reference (deliberate — see
+Safety). Restore the network or control from the physical
+console.</td></tr>
+<tr><td>Setpoint appears to lag</td>
+<td>That is the host-side ramp (<code>ramp_hz_per_s</code>) — watch the
+<i>Commanded (ramped)</i> tile approach the setpoint. Raise the ramp
+rate in Settings if appropriate.</td></tr>
+<tr><td>Unexpected pymodbus errors</td>
+<td>All transport errors are wrapped into <code>LswtError</code> — an
+unwrapped pymodbus timeout once killed a control thread live (repo
+lesson). Check the drive network path and reconnect.</td></tr>
+</table>
+
+<h2 id="history">8 · Version history</h2>
+<table>
+<tr><th>version</th><th>date</th><th>changes</th></tr>
+<tr><td>1.0.0</td><td>2026-07-22</td><td>Initial ABB ACS530 driver +
+GUI: START/STOP control words and negative-reference convention ported
+from the deployed C#; 61-point measured velocity calibration (0–60 Hz →
+0–105.6851 ft/s); host-side ramp replacing the C# slam-to-zero
+protection; ARM gating, always-live E-STOP, read-passive connect,
+per-tunnel defaults.</td></tr>
+</table>
+
+<footer>LSWT Fan Control — ABB ACS530 · lswt v1.0.0 ·
+Author: C. Fagley — casey.fagley@afacademy.af.edu</footer>
+</main>
+</body>
+</html>

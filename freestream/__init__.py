@@ -14,7 +14,7 @@ Layers: :mod:`freestream.hal` (capability contracts) →
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from .about import __version__  # noqa: F401
 
 from .hal import (AxisSpec, ChannelSpec, DeviceStatus, MoveHandle,
                   capabilities)

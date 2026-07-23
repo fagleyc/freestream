@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LSWT Sting Drive — User Documentation</title>
+<style>
+:root{--bg:#1e1e1e;--bg2:#252526;--bg3:#2d2d30;--text:#e0e0e0;--dim:#a0a0a0;
+ --accent:#0078d4;--accent2:#3399ff;--ok:#4caf50;--warn:#ff9800;--err:#f44336;
+ --border:#3f3f46;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+ font:15px/1.6 "Segoe UI",system-ui,sans-serif}
+nav{position:fixed;top:0;left:0;bottom:0;width:240px;background:var(--bg2);
+ border-right:1px solid var(--border);padding:18px 14px;overflow-y:auto}
+nav .appname{font-size:15px;font-weight:600;color:var(--accent2);margin:0 0 2px}
+nav .ver{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
+ margin-bottom:14px}
+nav a{display:block;color:var(--dim);text-decoration:none;padding:4px 8px;
+ border-radius:4px;font-size:13.5px}
+nav a:hover{background:#3a3a3c;color:var(--text)}
+main{margin-left:240px;padding:28px 40px;max-width:920px}
+h1,h2,h3{color:#fff;line-height:1.3}
+h2{border-bottom:1px solid var(--border);padding-bottom:6px;margin-top:42px}
+code,pre{font-family:Consolas,"Cascadia Mono",monospace;font-size:13.5px}
+code{background:var(--bg3);padding:1px 5px;border-radius:3px;color:#9cdcfe}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+ padding:12px 14px;overflow-x:auto;color:#dcdcaa}
+pre code{background:none;padding:0;color:inherit}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;
+ vertical-align:top}
+th{background:var(--bg3);color:#fff}
+tr:nth-child(even) td{background:var(--bg2)}
+.note,.warn,.danger{border-left:4px solid;border-radius:4px;
+ padding:10px 14px;margin:14px 0;background:var(--bg2)}
+.note{border-color:var(--accent)} .warn{border-color:var(--warn)}
+.danger{border-color:var(--err)}
+footer{margin-top:48px;padding-top:14px;border-top:1px solid var(--border);
+ color:var(--dim);font-size:13px}
+@media(max-width:860px){nav{position:static;width:auto;border-right:0;
+ border-bottom:1px solid var(--border)}main{margin-left:0;padding:20px}}
+</style>
+</head>
+<body>
+<nav>
+ <div class="appname">LSWT Sting Drive</div>
+ <div class="ver">v1.1.0 · lswt_sting</div>
+ <a href="#overview">1 · Overview &amp; purpose</a>
+ <a href="#hardware">2 · Hardware &amp; connection</a>
+ <a href="#start">3 · Getting started</a>
+ <a href="#gui">4 · GUI guide</a>
+ <a href="#config">5 · Configuration reference</a>
+ <a href="#safety">6 · Safety &amp; interlocks</a>
+ <a href="#trouble">7 · Troubleshooting</a>
+ <a href="#history">8 · Version history</a>
+</nav>
+<main>
+
+<h1>LSWT Sting Drive</h1>
+<p>User documentation for the <code>lswt_sting</code> package — driver
++ PyQt6 dark-mode GUI for the LSWT model sting: dual-axis (alpha/beta)
+serial stepper-indexer drive, protocol recovered from the deployed C#
+<code>Tool_LSWT_Sting</code>/<code>Core.exe</code>.</p>
+
+<h2 id="overview">1 · Overview &amp; purpose</h2>
+<p>Two SLO-SYN/Compumotor-style serial stepper indexers are
+daisy-chained on one RS-232 port (9600-8N1, CR-terminated), one per
+axis:</p>
+<table>
+<tr><th>Axis</th><th>Unit</th><th>Steps/degree</th><th>Accel/Decel</th>
+    <th>Velocity</th></tr>
+<tr><td>Alpha</td><td>1</td><td>2741.0525</td><td>10.8528</td>
+    <td>0.108</td></tr>
+<tr><td>Beta</td><td>2</td><td>66.8</td><td>2</td><td>0.032</td></tr>
+</table>
+<p>Commands are <code>&lt;unit&gt;&lt;cmd&gt;</code> (<code>1R</code>,
+<code>2G</code>…); moves are relative distances in motor steps
+(<code>D</code> then <code>G</code>); position is the indexer's step
+counter (<code>PR</code>), zeroed with <code>PZ</code>. The position
+loop runs INSIDE the indexers — the host loads a distance, starts the
+move, and polls status until READY.</p>
+<div class="warn"><b>Open loop — no encoder, no brake.</b> Angle is
+tracked by the indexer step counter. The counter zero is established by
+the operator: physically set the sting to a known angle, enter it, and
+Zero the axis (<code>PZ</code>). Until an axis is zeroed, absolute
+moves are refused; only jog steps are allowed. Angle =
+<code>zero_offset_deg + counts / steps_per_degree</code>.</div>
+
+<h2 id="hardware">2 · Hardware &amp; connection</h2>
+<h3>Wire format (recovered from the deployed C#)</h3>
+<ul>
+<li>9600 baud, 8N1, no handshake; lines terminated with a bare CR
+(<code>\r</code>); 500 ms read/write timeouts. DTR/RTS are asserted at
+open (some RS-232 level shifters and Prolific USB adapters sit dead
+until they are high).</li>
+<li>Unit <code>1</code> = Alpha, <code>2</code> = Beta, empty unit =
+broadcast (<code>SSI1</code>, <code>FSD1</code>).</li>
+<li>The drives <b>echo every command line</b>; the echo is read back
+and validated after each write (an unexpected echo means a
+wiring/addressing problem).</li>
+</ul>
+<h3>Command set</h3>
+<table>
+<tr><th>command</th><th>meaning</th></tr>
+<tr><td><code>A</code> / <code>AD</code> / <code>V</code></td>
+    <td>acceleration / deceleration / velocity (drive units, rev/s and
+    rev/s²; transmitted byte-for-byte as the legacy tool did)</td></tr>
+<tr><td><code>D&lt;steps&gt;</code> + <code>G</code></td>
+    <td>load a relative distance, go</td></tr>
+<tr><td><code>S</code></td><td>stop (immediate; the E-stop path writes
+    it raw with no echo wait)</td></tr>
+<tr><td><code>Z</code></td><td>drive reset (bring-up; drives re-boot
+    ~1.1 s after it)</td></tr>
+<tr><td><code>PZ</code> / <code>PR</code></td><td>zero / report the step
+    counter (signed)</td></tr>
+<tr><td><code>R</code></td><td>status request → <code>*B</code> busy ·
+    <code>*R</code> ready · <code>*S</code> stalled</td></tr>
+<tr><td><code>LD3</code></td><td>disable the drive's limit inputs (as
+    the legacy tool does)</td></tr>
+<tr><td><code>SSA0</code> / <code>SSI1</code> / <code>FSD1</code></td>
+    <td>interface setup, sent verbatim (and BLIND — these switches
+    change the drives' echo behaviour as they execute)</td></tr>
+</table>
+<h3>Bring-up sequence (mirrors the legacy <code>InitHw</code>)</h3>
+<p>Probe with <code>1R</code> → broadcast <code>SSI1</code> → per axis
+<code>SSA0</code> (+ optional <code>Z</code> reset, then a ~1.1 s
+re-boot wait) → wait for READY (stall at init is fatal: power-cycle the
+drives) → <code>LD3</code> → read positions → push
+<code>A</code>/<code>AD</code>/<code>V</code> →
+broadcast <code>FSD1</code>.</p>
+<h3>Direction signs (field-verified 2026-07-22)</h3>
+<p><code>counts = direction × (angle − zero_offset) ×
+steps_per_degree</code>. <b>Alpha = −1</b> (positive angle = negative
+counts; the Core.exe IL agrees), <b>Beta = +1</b> (observed backwards
+with −1; the legacy <code>MoveStingByDegrees</code> Beta branch, which
+omits the negation, had the physically correct sign — its absolute path
+carried a dormant sign bug). Getting a sign wrong drives the axis into
+the hard stop (Alpha stall, 2026-07-22).</p>
+
+<h2 id="start">3 · Getting started</h2>
+<pre><code>python run_lswt_sting_app.py --sim   # wire-level drive emulator
+python run_lswt_sting_app.py         # real drives on the configured COM
+python -m pytest tests\test_lswt_sting.py tests\test_sting_safety.py</code></pre>
+<p>Use <b>Search…</b> on the connection bar to probe every COM port
+with a read-only <code>1R</code> status query and auto-select the one
+where the sting chain answers. Sim mode swaps in <code>SimSerial</code>,
+a wire-level emulator, so the full GUI runs without hardware.</p>
+<h3>First-connect checklist</h3>
+<ol>
+<li>Confirm the sting is physically in a safe position — connect runs
+the bring-up sequence, and with <i>Send Z at connect</i> enabled the
+drive reset MAY CAUSE UNCONTROLLED MOVEMENT (legacy warning).</li>
+<li>After connect, each axis shows &quot;— not zeroed —&quot;:
+physically read the sting angle, then <b>Set Current Angle…</b> per
+axis (declares the angle and issues <code>PZ</code>).</li>
+<li>Verify a small step jog moves the expected direction before any
+absolute Go.</li>
+<li>Soft limits ship as a guess (Alpha −15…+30°, Beta −15…+15°) — the
+legacy limits live in the rig's &quot;Tunnel Default File&quot;;
+confirm on first live run (Limits tab).</li>
+</ol>
+<div class="note"><b>Position restore:</b> the live angle is
+checkpointed continuously to <code>sting_state.json</code> and marked
+clean on orderly disconnect. On reconnect the zero reference is
+restored so an abrupt shutdown does not lose the position — with a loud
+warning to verify physically, since an unpowered sting can droop.</div>
+
+<h2 id="gui">4 · GUI guide</h2>
+<h3>Connection bar</h3>
+<p><b>Port</b> combo + <b>Search…</b> · <b>Simulate</b> ·
+<b>Connect</b>/<b>Disconnect</b> · status lamp · <b>FAULT</b> badge
+(lights red with the fault text as tooltip) · <b>STOP ALL</b> —
+immediate stop of both axes, no confirmation, always live while
+connected.</p>
+<h3>Motion tab</h3>
+<ul>
+<li><b>Alpha | Beta axis boxes</b>: big angle readout (or &quot;— not
+zeroed —&quot; with steps), state label (idle / → target / MOVING),
+absolute <b>Target + Go</b> (unlocked once zeroed), <b>Stop</b>,
+<b>Step −/+</b> jog with a configurable °/step size, and <b>Set
+Current Angle…</b> (declare the physical angle, confirm, zero the
+counter).</li>
+<li><b>Go Both</b>: α + β targets moved together (requires both axes
+zeroed).</li>
+<li><b>Drive</b> box: <b>Reset Fault</b> (clears the latched fault
+after the cause is addressed) and <b>Reinitialize Drives</b> (re-runs
+the bring-up incl. the Z reset — warns about uncontrolled movement and
+requires re-zeroing both axes).</li>
+</ul>
+<h3>History tab</h3>
+<p>Motion indicator + angle-vs-time plot for both axes.</p>
+<h3>Limits tab</h3>
+<p>Soft travel limits per axis (take effect immediately), park
+behaviour (Park Alpha on disconnect + park angle), and comms settings
+for the next connect (send Z at connect, poll period).</p>
+<h3>Menus</h3>
+<p><b>File</b>: Settings… (Ctrl+,), Save/Load config, Quit.
+<b>Help</b>: Documentation (this page), About.</p>
+
+<h2 id="config">5 · Configuration reference</h2>
+<h3><code>StingConfig</code></h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>com_port</code></td><td>COM1</td><td>RS-232 port of the
+    daisy chain</td></tr>
+<tr><td><code>baud</code></td><td>9600</td><td>drives are fixed
+    9600-8N1</td></tr>
+<tr><td><code>serial_timeout_s</code></td><td>0.5</td><td>read/write
+    timeout</td></tr>
+<tr><td><code>init_reset</code></td><td>True</td><td>send Z (drive reset)
+    during connect init, exactly like the legacy InitHw</td></tr>
+<tr><td><code>poll_ms</code></td><td>250</td><td>status/position poll
+    period</td></tr>
+<tr><td><code>move_timeout_margin</code></td><td>1.5</td><td>move timeout =
+    estimated duration × margin + 5 s</td></tr>
+<tr><td><code>max_consecutive_errors</code></td><td>5</td><td>serial
+    watchdog → stop + drop connection</td></tr>
+<tr><td><code>park_on_disconnect</code></td><td>True</td><td>park Alpha on
+    disconnect — the sting has NO BRAKE, park is the rest
+    position</td></tr>
+<tr><td><code>park_alpha_deg</code></td><td>30.0</td><td>rest against the
+    +30° end (legacy parked at ~+29.3°)</td></tr>
+<tr><td><code>force_sim</code></td><td>False</td><td>use the wire-level
+    emulator</td></tr>
+<tr><td><code>plot_window_s</code></td><td>60</td><td>history plot
+    window</td></tr>
+<tr><td><code>restore_position</code></td><td>True</td><td>restore the zero
+    reference from the last checkpoint at connect</td></tr>
+<tr><td><code>state_path</code></td><td>&quot;&quot;</td><td>checkpoint
+    file; default <code>&lt;package&gt;/sting_state.json</code></td></tr>
+</table>
+<h3><code>StingAxisConfig</code> (× Alpha / Beta)</h3>
+<table>
+<tr><th>field</th><th>default (α / β)</th><th>meaning</th></tr>
+<tr><td><code>name</code> / <code>unit</code></td><td>Alpha·1 / Beta·2</td>
+    <td>axis identity and daisy-chain unit prefix</td></tr>
+<tr><td><code>enabled</code></td><td>True</td><td>axis participates</td></tr>
+<tr><td><code>steps_per_degree</code></td><td>2741.0525 / 66.8</td>
+    <td>hard-coded constants from the deployed C#</td></tr>
+<tr><td><code>steps_per_rev</code></td><td>25&thinsp;000</td><td>indexer
+    microstep setting; used only to estimate move duration for the
+    timeout watchdog</td></tr>
+<tr><td><code>direction</code></td><td>−1 / +1</td><td>angle↔counts sign
+    (FIELD-VERIFIED 2026-07-22)</td></tr>
+<tr><td><code>acceleration</code> / <code>deceleration</code></td>
+    <td>10.8528 / 2</td><td>drive units, transmitted verbatim</td></tr>
+<tr><td><code>velocity</code></td><td>.108 / .032</td><td>drive units,
+    transmitted verbatim</td></tr>
+<tr><td><code>zero_offset_deg</code></td><td>0.0</td><td>angle at indexer
+    counter zero</td></tr>
+<tr><td><code>zeroed</code></td><td>False</td><td>absolute moves refused
+    until zeroed</td></tr>
+<tr><td><code>min_deg</code> / <code>max_deg</code></td>
+    <td>−15/+30 · −15/+15</td><td>host-side soft travel limits (from the
+    Tunnel Default File — confirm on first live run)</td></tr>
+<tr><td><code>tolerance_deg</code></td><td>0.05</td><td>reporting band only
+    (the indexer settles itself)</td></tr>
+</table>
+
+<h2 id="safety">6 · Safety &amp; interlocks</h2>
+<div class="danger"><b>The sting has no brake.</b> Park is the rest
+position; parking on disconnect is ON by default. The live angle is
+checkpointed continuously, and an interpreter-exit hook parks and
+saves as a last line of defence.</div>
+<ul>
+<li><b>STOP ALL / E-stop</b> — writes <code>1S</code>/<code>2S</code>
+immediately from the calling thread, no echo wait, no queueing behind
+the poll loop; the echoes are drained atomically so a concurrent poll
+can never mistake them for its own response.</li>
+<li><b>Soft travel limits</b> — enforced host-side before any command
+is sent; absolute moves additionally require the axis to be
+zeroed.</li>
+<li><b>Stall / timeout fault latch</b> — a <code>*S</code> (stall)
+response or a move timeout latches a FAULT: everything is stopped and
+further motion refused until <b>Reset Fault</b>. A stall additionally
+requires the drives to be power-cycled (legacy behaviour) and the axes
+re-zeroed.</li>
+<li><b>Reinitialize</b> — re-runs the bring-up sequence including the
+Z reset; the legacy tool warns the reset MAY CAUSE UNCONTROLLED
+MOVEMENT if the sting is not in a safe position, and both axes must be
+re-zeroed afterwards. The GUI requires an explicit confirmation.</li>
+<li><b>Serial watchdog</b> — <code>max_consecutive_errors</code>
+failures in the poll loop → stop everything, drop the connection,
+report via the status bar.</li>
+<li><b>Zeroing gate</b> — un-zeroed axes only allow step jogs; the
+absolute Go/target stays locked.</li>
+</ul>
+
+<h2 id="trouble">7 · Troubleshooting</h2>
+<table>
+<tr><th>symptom</th><th>diagnosis / fix</th></tr>
+<tr><td>No response at connect (&quot;controllers are not
+responding&quot;)</td>
+<td>Check drive power and the COM port (use Search…). Some USB
+adapters/level shifters need DTR/RTS high — the driver asserts them,
+but a dead adapter still probes silent.</td></tr>
+<tr><td>Echo timeouts during bring-up</td>
+<td>Normal for <code>SSA0</code>/<code>SSI1</code>/<code>Z</code>: these
+switches change the drives' echo behaviour as they execute (seen live
+on COM9 via a Prolific adapter). The driver sends them blind, like the
+legacy tool. Persistent echo mismatches on ordinary commands indicate a
+wiring/addressing problem.</td></tr>
+<tr><td>FAULT badge: STALL</td>
+<td>The motor could not follow the commanded profile (e.g. driven into
+the hard stop — this is exactly what a wrong direction sign does).
+Address the cause, <b>power-cycle the drives</b> (legacy requirement),
+Reset Fault, and re-zero both axes.</td></tr>
+<tr><td>Axis moves backwards</td>
+<td>The axis <code>direction</code> sign is wrong. Field-verified
+defaults: Alpha −1, Beta +1 (2026-07-22). Do not trust the legacy C#'s
+absolute Beta path — it carried a dormant sign bug.</td></tr>
+<tr><td>Garbled/fragmented responses while a drive is stepping</td>
+<td>Known behaviour: responses can straddle the read timeout ('*+0' /
+'000000000' fragments seen live). The protocol reassembles lines and
+resyncs after failures; if a transaction still fails, the next one
+starts clean.</td></tr>
+<tr><td>Position wrong after a crash/power loss</td>
+<td>The restore is open loop — the checkpoint warns to verify
+physically; an unpowered sting can droop. Re-zero against the physical
+angle if in doubt.</td></tr>
+<tr><td>Absolute Go greyed out</td>
+<td>The axis is not zeroed (or a fault is latched). Set Current
+Angle… first; Go Both needs BOTH axes zeroed.</td></tr>
+</table>
+
+<h2 id="history">8 · Version history</h2>
+<table>
+<tr><th>version</th><th>date</th><th>changes</th></tr>
+<tr><td>1.1.0</td><td>2026-07-22</td><td>Axis direction signs
+field-verified on the rig (Alpha −1, Beta +1 — the legacy absolute path
+carried a dormant Beta sign bug); serial line-discipline hardening from
+live COM testing (partial-line reassembly, echo resync, blind bring-up
+commands); COM-port search.</td></tr>
+<tr><td>1.0.0</td><td>2026-07-17</td><td>Initial dual-axis driver +
+GUI: RS-232 indexer protocol recovered from the deployed C#; open-loop
+zeroing with absolute-move lockout, soft travel limits, stall fault
+latch, park-on-disconnect, position checkpoint/restore.</td></tr>
+</table>
+
+<footer>LSWT Sting Drive · lswt_sting v1.1.0 ·
+Author: C. Fagley — casey.fagley@afacademy.af.edu</footer>
+</main>
+</body>
+</html>

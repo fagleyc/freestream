@@ -19,7 +19,7 @@ The GUI is intentionally *not* imported here so the core can be used headless.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from .about import __version__
 
 from . import daqx
 from .config import ChannelConfig, DaqbookConfig

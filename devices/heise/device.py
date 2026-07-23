@@ -93,7 +93,11 @@ class HeiseGauge:
                                              cfg.timeout_s)
         try:
             self._proto.clear_input()
-            values = self._proto.read_values()      # probe
+            try:
+                values = self._proto.read_values()  # probe
+            except HeiseError:
+                self._proto.resync()                # power-up stragglers
+                values = self._proto.read_values()
             if cfg.apply_units_on_connect:
                 self._apply_units()
         except HeiseError as exc:
@@ -209,11 +213,18 @@ class HeiseGauge:
         return self._map_values(values)
 
     def _map_values(self, values: List[float]) -> Dict[str, float]:
-        """Map the reply's values onto enabled ports, in port order.
+        """Map the reply's values onto ports.
 
-        The indicator only transmits values for active ports, so a
-        single-float reply feeds the single enabled port.
+        When the indicator transmits a value per PHYSICAL port (the
+        usual case — both ports active on the instrument), map by
+        position so a driver-side disabled port doesn't shift its
+        neighbour's value. A shorter reply feeds the enabled ports in
+        order (indicator-side inactive port).
         """
+        ports = self.config.ports()
+        if len(values) >= len(ports):
+            return {p.name: v for p, v in zip(ports, values)
+                    if p.enabled}
         names = self.channel_names()
         if len(values) < len(names):
             raise HeiseError(

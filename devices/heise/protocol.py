@@ -94,45 +94,60 @@ class HeiseProtocol:
             raise HeiseError(f"serial write failed: {exc}") from exc
 
     def _read_line(self) -> str:
-        """One complete line, tolerant of CR / LF / CRLF terminators."""
+        """One CR-terminated line (a trailing LF, if the EOM is CRLF,
+        is stripped as a leftover on the NEXT line).
+
+        Live 2026-07-23: the indicator's EOM is CR — waiting for LF
+        times out and glues echo + blank + data into one blob
+        ('?\\r\\r73.614870,11.430730'). Read to CR; may legitimately
+        return an empty string for the bare-CR blank lines the
+        indicator emits between echo and data.
+        """
         if self._sp is None:
             raise HeiseError("port not open")
         buf = b""
         for _ in range(3):
             try:
-                raw = self._sp.read_until(b"\n")
+                raw = self._sp.read_until(b"\r")
             except Exception as exc:
                 raise HeiseError(f"serial read failed: {exc}") from exc
             buf += raw
-            if buf.endswith((b"\n", b"\r")):
+            if buf.endswith(b"\r"):
                 break
             if not raw:
                 break
-        text = buf.strip(b"\r\n \t").decode("ascii", errors="replace")
         if not buf:
             raise HeiseError("no response (timeout) — is the indicator "
                              "in REMOTE protocol and powered on?")
-        if not buf.endswith((b"\n", b"\r")) and not text:
+        text = buf.strip(b"\r\n \t").decode("ascii", errors="replace")
+        if not buf.endswith(b"\r") and not text:
             raise HeiseError(f"incomplete response {buf!r}")
         return text
 
     # ── commands ─────────────────────────────────────────────────────────
     def query(self, cmd: str) -> str:
-        """Send ``cmd`` and return the (non-empty) response line.
+        """Send ``cmd`` and return the first REAL response line.
 
-        The indicator does not echo in remote mode; every command
-        answers with data or ``OK``/``ErrNN``. Failures resync the line
-        so leftovers never poison the next transaction.
+        The live indicator echoes the command line back before the
+        data, and separates them with a bare CR — skip echoes and
+        blank lines. Failures resync the line so leftovers never
+        poison the next transaction.
         """
         with self._lock:
             self._write_line(cmd)
             try:
-                resp = self._read_line()
-                if not resp:                # bare EOM — read the payload
+                resp = ""
+                for _ in range(4):          # blanks/echo then payload
                     resp = self._read_line()
+                    if resp and resp != cmd:
+                        break
             except HeiseError:
                 self.resync()
                 raise
+            if not resp or resp == cmd:
+                self.resync()
+                raise HeiseError(
+                    f"no data after echo for {cmd!r}")
             if resp.lower().startswith("err"):
                 raise HeiseError(f"indicator error for {cmd!r}: {resp}")
             return resp

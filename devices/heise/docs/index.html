@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Heise PM Indicator — User Documentation</title>
+<style>
+:root{--bg:#1e1e1e;--bg2:#252526;--bg3:#2d2d30;--text:#e0e0e0;--dim:#a0a0a0;
+ --accent:#0078d4;--accent2:#3399ff;--ok:#4caf50;--warn:#ff9800;--err:#f44336;
+ --border:#3f3f46;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+ font:15px/1.6 "Segoe UI",system-ui,sans-serif}
+nav{position:fixed;top:0;left:0;bottom:0;width:240px;background:var(--bg2);
+ border-right:1px solid var(--border);padding:18px 14px;overflow-y:auto}
+nav .appname{font-size:15px;font-weight:600;color:var(--accent2);margin:0 0 2px}
+nav .ver{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
+ margin-bottom:14px}
+nav a{display:block;color:var(--dim);text-decoration:none;padding:4px 8px;
+ border-radius:4px;font-size:13.5px}
+nav a:hover{background:#3a3a3c;color:var(--text)}
+main{margin-left:240px;padding:28px 40px;max-width:920px}
+h1,h2,h3{color:#fff;line-height:1.3}
+h2{border-bottom:1px solid var(--border);padding-bottom:6px;margin-top:42px}
+code,pre{font-family:Consolas,"Cascadia Mono",monospace;font-size:13.5px}
+code{background:var(--bg3);padding:1px 5px;border-radius:3px;color:#9cdcfe}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+ padding:12px 14px;overflow-x:auto;color:#dcdcaa}
+pre code{background:none;padding:0;color:inherit}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;
+ vertical-align:top}
+th{background:var(--bg3);color:#fff}
+tr:nth-child(even) td{background:var(--bg2)}
+.note,.warn,.danger{border-left:4px solid;border-radius:4px;
+ padding:10px 14px;margin:14px 0;background:var(--bg2)}
+.note{border-color:var(--accent)} .warn{border-color:var(--warn)}
+.danger{border-color:var(--err)}
+footer{margin-top:48px;padding-top:14px;border-top:1px solid var(--border);
+ color:var(--dim);font-size:13px}
+@media(max-width:860px){nav{position:static;width:auto;border-right:0;
+ border-bottom:1px solid var(--border)}main{margin-left:0;padding:20px}}
+</style>
+</head>
+<body>
+<nav>
+ <div class="appname">Heise PM Indicator</div>
+ <div class="ver">v1.0.0 · heise</div>
+ <a href="#overview">1 · Overview &amp; purpose</a>
+ <a href="#hardware">2 · Hardware &amp; connection</a>
+ <a href="#start">3 · Getting started</a>
+ <a href="#gui">4 · GUI guide</a>
+ <a href="#config">5 · Configuration reference</a>
+ <a href="#safety">6 · Robustness &amp; watchdogs</a>
+ <a href="#trouble">7 · Troubleshooting</a>
+ <a href="#history">8 · Version history</a>
+</nav>
+<main>
+
+<h1>Heise PM Indicator</h1>
+<p>User documentation for the <code>heise</code> package — driver +
+PyQt6 dark-mode GUI for the Heise PM digital indicator: live pressure
+and temperature over the RS-232 remote protocol.</p>
+
+<h2 id="overview">1 · Overview &amp; purpose</h2>
+<p>The Heise PM indicator carries up to two sensor ports — each either
+a pressure sensor or an RT-1/RT-2 RTD (temperature) module. This app
+polls the indicator's remote protocol (<code>?</code> query, default
+4 Hz), publishes one scan per reply under the configured channel names
+(default <b>Pressure</b> and <b>Temperature</b>), and exposes the
+instrument functions: remote pressure-unit selection, zero, tare,
+damping and battery check. It follows the suite's standard driver
+shape (connect/start/stop/disconnect, status callbacks, device-owned
+ring buffer) and is embeddable in host suites.</p>
+<p>All protocol facts come from the instrument manual
+(<code>manual-pm-digital-indicator-im.pdf</code>, §13 and Appendix A —
+&quot;Indicator serial port functions V1.0&quot;).</p>
+
+<h2 id="hardware">2 · Hardware &amp; connection</h2>
+<h3>Serial link</h3>
+<ul>
+<li>300 / 600 / 1200 / 2400 / 4800 / 9600 baud, 8 data bits, 1 stop
+bit, no parity, no flow control, straight-through cable.</li>
+<li>Lines end with a selectable end-of-message character — configure
+the indicator for CRLF. Outgoing commands are CR-terminated; the
+reader tolerates CR, LF or CRLF and reassembles lines that straddle
+the read timeout.</li>
+<li><b>Set the indicator's interface to the REMOTE protocol</b>
+(shift → Output → &quot;remote&quot; → baud → EOM).</li>
+<li>DTR/RTS are asserted at open (some level shifters / USB adapters
+sit dead until they are high).</li>
+</ul>
+<h3>Command set (Appendix A)</h3>
+<table>
+<tr><th>command</th><th>meaning</th></tr>
+<tr><td><code>?</code></td><td>current measurement(s):
+<code>0.004469,-0.000227</code> (left,right — one value per active
+port)</td></tr>
+<tr><td><code>EUNIT l, r</code> / <code>EUNIT?</code></td>
+<td>set/get the engineering-unit code per port</td></tr>
+<tr><td><code>ZERO l, r</code></td><td>zero the pressure port(s)</td></tr>
+<tr><td><code>TARE l, r</code> / <code>TARE?</code></td><td>tare
+control/readback</td></tr>
+<tr><td><code>DAMP n</code> / <code>DAMP?</code></td><td>damping
+level</td></tr>
+<tr><td><code>MINMAX?</code></td><td>min/max readback</td></tr>
+<tr><td><code>BATCK?</code></td><td>battery voltage</td></tr>
+<tr><td><code>LASTERR?</code></td><td>last error</td></tr>
+<tr><td><code>PORT n</code> / <code>PORT?</code></td><td>display layout
+(0–5)</td></tr>
+<tr><td><code>HOLD</code>, <code>KEYLOCK</code></td><td>display hold, key
+lock</td></tr>
+</table>
+<p>The indicator does not echo in remote mode; every command answers
+with data or <code>OK</code>/<code>ErrNN</code>.</p>
+<h3>Pressure unit codes (EUNIT, drawing 822B122)</h3>
+<table>
+<tr><th>code</th><th>unit</th><th>code</th><th>unit</th></tr>
+<tr><td>0</td><td>psi</td><td>7</td><td>kPa</td></tr>
+<tr><td>1</td><td>inH2O</td><td>8</td><td>MPa</td></tr>
+<tr><td>2</td><td>inHg</td><td>9</td><td>mmHg</td></tr>
+<tr><td>3</td><td>inH2O@20C</td><td>10</td><td>cmWC</td></tr>
+<tr><td>4</td><td>ftSW</td><td>11</td><td>mmWC</td></tr>
+<tr><td>5</td><td>bar</td><td>12</td><td>kg/cm2</td></tr>
+<tr><td>6</td><td>mbar</td><td></td><td></td></tr>
+</table>
+<p>Pressure units are remotely selectable by code; an RTD
+(temperature) port's unit (F/C/K/Rankine/ohms) is selected on the
+instrument itself and carried in the config for display only.</p>
+
+<h2 id="start">3 · Getting started</h2>
+<pre><code>python run_heise_app.py --sim           # simulator, no hardware
+python run_heise_app.py --port COM5     # real indicator
+python run_heise_app.py                 # use Search in the GUI
+python -m pytest tests\test_heise.py tests\test_heise_gui.py</code></pre>
+<h3>First-connect checklist</h3>
+<ol>
+<li>Put the indicator in <b>REMOTE protocol</b> mode (shift → Output →
+remote → baud → EOM = CRLF).</li>
+<li>Click <b>Search…</b> — every COM port is probed with the read-only
+<code>?</code> query and the port where a Heise answers is selected
+(with the detected baud).</li>
+<li><b>Connect</b> — the driver probes with <code>?</code>, then (by
+default) pushes the configured pressure units via
+<code>EUNIT</code>.</li>
+<li>Confirm the tiles track the instrument display; <b>Zero
+Pressure</b> with the reference condition applied if needed.</li>
+</ol>
+
+<h2 id="gui">4 · GUI guide</h2>
+<h3>Connection bar</h3>
+<p><b>Port</b> combo + <b>Search…</b> · <b>Baud</b> · <b>Simulate</b> ·
+<b>Connect</b>/<b>Disconnect</b> · status lamp (DISCONNECTED /
+SIMULATION / LIVE).</p>
+<h3>Live tab</h3>
+<ul>
+<li><b>Port tiles</b> — big-number readout per enabled port with its
+unit.</li>
+<li><b>Instrument</b> row — pressure-unit selector (live
+<code>EUNIT</code> change when connected), <b>Zero Pressure</b> (with
+confirmation), damping selector (0 off … 3 high), battery-voltage
+readout.</li>
+</ul>
+<h3>History tab</h3>
+<p>One stacked plot per enabled port (the units differ, so they never
+share a y-axis), time-linked for pan/zoom, showing the last ~2 minutes
+from the device-owned ring buffer.</p>
+<h3>Menus</h3>
+<p><b>File</b>: Save/Load config, Exit. <b>Help</b>: Documentation
+(this page), About.</p>
+
+<h2 id="config">5 · Configuration reference</h2>
+<h3><code>HeiseConfig</code></h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>com_port</code></td><td>&quot;&quot;</td><td>serial port (use
+    Search…)</td></tr>
+<tr><td><code>baud</code></td><td>9600</td><td>one of 300/600/1200/2400/
+    4800/9600</td></tr>
+<tr><td><code>timeout_s</code></td><td>1.0</td><td>serial read/write
+    timeout</td></tr>
+<tr><td><code>poll_s</code></td><td>0.25</td><td><code>?</code> query
+    period</td></tr>
+<tr><td><code>buffer_seconds</code></td><td>3600</td><td>ring-buffer
+    depth</td></tr>
+<tr><td><code>apply_units_on_connect</code></td><td>True</td><td>push the
+    configured pressure units via EUNIT at connect</td></tr>
+<tr><td><code>max_consecutive_errors</code></td><td>5</td><td>serial
+    watchdog → disconnect</td></tr>
+<tr><td><code>force_sim</code></td><td>False</td><td>use the
+    simulator</td></tr>
+<tr><td><code>left</code> / <code>right</code></td>
+    <td>Pressure(psi) / Temperature(F)</td>
+    <td>per-port configs (below)</td></tr>
+</table>
+<h3><code>HeisePortConfig</code> (× left / right)</h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>name</code></td><td>Pressure / Temperature</td><td>channel
+    name in blocks/ring</td></tr>
+<tr><td><code>role</code></td><td>pressure / temperature</td>
+    <td>pressure | temperature | off (off = port not scanned)</td></tr>
+<tr><td><code>unit</code></td><td>psi / F</td><td>pressure ports: unit
+    name/code pushed via EUNIT (changeable live); temperature ports:
+    display label only — the RTD unit is selected on the
+    instrument</td></tr>
+</table>
+
+<h2 id="safety">6 · Robustness &amp; watchdogs</h2>
+<ul>
+<li><b>Serial watchdog</b> — <code>max_consecutive_errors</code>
+consecutive poll failures → &quot;check cable/power&quot; status and
+disconnect. Each failure resyncs the line (settle, then drain) so
+leftovers never poison the next transaction.</li>
+<li><b>Line discipline</b> — pyserial's <code>read_until</code>
+returns partial bytes on timeout (lesson learned live on the sting
+drives); the reader accumulates until a proper terminator arrives and
+rejects incomplete responses.</li>
+<li><b>Error replies</b> — an <code>ErrNN</code> reply raises a typed
+<code>HeiseError</code> with the offending command; setters require
+the <code>OK</code> acknowledgement.</li>
+<li><b>Value mapping</b> — the indicator only transmits values for
+active ports; the reply is mapped onto enabled ports in port order and
+a count mismatch is an error, not a silent misassignment.</li>
+<li><b>Read-only search</b> — the COM scan uses only the
+<code>?</code> query; searching is refused while connected (the open
+port would answer the probe).</li>
+</ul>
+
+<h2 id="trouble">7 · Troubleshooting</h2>
+<table>
+<tr><th>symptom</th><th>diagnosis / fix</th></tr>
+<tr><td>&quot;no response (timeout) — is the indicator in REMOTE
+protocol and powered on?&quot;</td>
+<td>The indicator must be in REMOTE protocol mode at the matching baud
+(shift → Output → remote). Check cable (straight-through) and
+power.</td></tr>
+<tr><td>Connect fails with &quot;not responding on COMx&quot;</td>
+<td>Wrong port or baud — run Search…, which probes every port at the
+candidate bauds and reports per-port results in the combo
+tooltips.</td></tr>
+<tr><td>Only one value in the reply for two ports</td>
+<td>Only active ports transmit. Set the unused port's role to
+<code>off</code> in the config (or activate the second port on the
+instrument).</td></tr>
+<tr><td>Unit change rejected</td>
+<td>Unit changes apply to pressure-role ports only; RTD ports ignore
+the pressure code — their unit is chosen on the instrument.</td></tr>
+<tr><td>Values freeze / watchdog trips</td>
+<td>Cable, adapter or power dropout — the watchdog disconnects after 5
+consecutive errors. Reconnect after fixing the link; the ring buffer
+retains history.</td></tr>
+</table>
+
+<h2 id="history">8 · Version history</h2>
+<table>
+<tr><th>version</th><th>date</th><th>changes</th></tr>
+<tr><td>1.0.0</td><td>2026-07-22</td><td>Initial driver + GUI: RS-232
+remote protocol per the PM manual (§13/Appendix A), '?' polling loop
+with serial watchdog, EUNIT pressure-unit control, ZERO/TARE/DAMP/
+BATCK helpers, COM-port search, simulator, big-number tiles + stacked
+history plots.</td></tr>
+</table>
+
+<footer>Heise PM Indicator · heise v1.0.0 ·
+Author: C. Fagley — casey.fagley@afacademy.af.edu</footer>
+</main>
+</body>
+</html>

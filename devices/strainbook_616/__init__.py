@@ -16,7 +16,7 @@ Layers (same architecture as the other AeroVIS device packages)
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from .about import __version__
 
 from . import daqx
 from .config import StrainChannelConfig, StrainbookConfig

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NI USB-6351 — Analog I/O DAQ — User Documentation</title>
+<style>
+:root{--bg:#1e1e1e;--bg2:#252526;--bg3:#2d2d30;--text:#e0e0e0;--dim:#a0a0a0;
+ --accent:#0078d4;--accent2:#3399ff;--ok:#4caf50;--warn:#ff9800;--err:#f44336;
+ --border:#3f3f46;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+ font:15px/1.6 "Segoe UI",system-ui,sans-serif}
+nav{position:fixed;top:0;left:0;bottom:0;width:240px;background:var(--bg2);
+ border-right:1px solid var(--border);padding:18px 14px;overflow-y:auto}
+nav .appname{font-size:15px;font-weight:600;color:var(--accent2);margin:0 0 2px}
+nav .ver{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
+ margin-bottom:14px}
+nav a{display:block;color:var(--dim);text-decoration:none;padding:4px 8px;
+ border-radius:4px;font-size:13.5px}
+nav a:hover{background:#3a3a3c;color:var(--text)}
+main{margin-left:240px;padding:28px 40px;max-width:920px}
+h1,h2,h3{color:#fff;line-height:1.3}
+h2{border-bottom:1px solid var(--border);padding-bottom:6px;margin-top:42px}
+code,pre{font-family:Consolas,"Cascadia Mono",monospace;font-size:13.5px}
+code{background:var(--bg3);padding:1px 5px;border-radius:3px;color:#9cdcfe}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+ padding:12px 14px;overflow-x:auto;color:#dcdcaa}
+pre code{background:none;padding:0;color:inherit}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;
+ vertical-align:top}
+th{background:var(--bg3);color:#fff}
+tr:nth-child(even) td{background:var(--bg2)}
+.note,.warn,.danger{border-left:4px solid;border-radius:4px;
+ padding:10px 14px;margin:14px 0;background:var(--bg2)}
+.note{border-color:var(--accent)} .warn{border-color:var(--warn)}
+.danger{border-color:var(--err)}
+footer{margin-top:48px;padding-top:14px;border-top:1px solid var(--border);
+ color:var(--dim);font-size:13px}
+@media(max-width:860px){nav{position:static;width:auto;border-right:0;
+ border-bottom:1px solid var(--border)}main{margin-left:0;padding:20px}}
+</style>
+</head>
+<body>
+<nav>
+ <div class="appname">NI USB-6351 — Analog I/O DAQ</div>
+ <div class="ver">v1.0.0 · ni_usb_6351</div>
+ <a href="#overview">1 · Overview &amp; purpose</a>
+ <a href="#hardware">2 · Hardware &amp; connection</a>
+ <a href="#start">3 · Getting started</a>
+ <a href="#gui">4 · GUI guide</a>
+ <a href="#config">5 · Configuration reference</a>
+ <a href="#safety">6 · Safety &amp; limits</a>
+ <a href="#trouble">7 · Troubleshooting</a>
+ <a href="#history">8 · Version history</a>
+</nav>
+<main>
+
+<h1>NI USB-6351 — Analog I/O DAQ</h1>
+<p>User documentation for the <code>ni_usb_6351</code> package — driver
++ PyQt6 dark-mode GUI for the NI USB-6351 (X series) multifunction DAQ
+wired to the rig's force balance.</p>
+
+<h2 id="overview">1 · Overview &amp; purpose</h2>
+<p>One NI-DAQmx analog-input task performs hardware-timed continuous
+sampling into the DAQmx input buffer, drained by a poll thread
+(<code>AnalogMultiChannelReader</code>). The task's start trigger is
+configurable — immediate, digital edge on a PFI line, or analog edge on
+APFI0 / a scanned AI channel; with a hardware trigger the task arms at
+connect and the first samples arrive only after the edge. A second
+on-demand task drives the two analog outputs with static DC levels, or
+a hardware-timed regenerated waveform.</p>
+<p>Bridge channels record <b>raw volts</b> (scale forced to 1.0);
+converting to forces is done via the balance <code>.vol</code>
+calibration (a self-contained copy of Streamlined's calibration math —
+same file format, same results): <code>read_vol_file</code> →
+least-squares cal matrix → bridge volts / excitation → element loads →
+body-frame Fx, Fy, Fz, Mx, My, Mz using the balance distances. Units
+follow the .vol file (lb / in·lb at the subsonic tunnel).</p>
+
+<h2 id="hardware">2 · Hardware &amp; connection</h2>
+<h3>Channel map — the rig's &quot;Force Balance&quot; wiring</h3>
+<p>Six balance bridge outputs (via external signal conditioning) on
+AI0–AI5 with the Streamlined names, excitation readback on AI6, and a
+spare tunnel channel on AI7 (disabled until wired):</p>
+<table>
+<tr><th>AI</th><th>Name</th><th>Terminal</th><th>Range</th><th>Balance</th></tr>
+<tr><td>0</td><td>N1</td><td>DIFF</td><td>±0.2 V</td><td>yes</td></tr>
+<tr><td>1</td><td>N2</td><td>DIFF</td><td>±0.2 V</td><td>yes</td></tr>
+<tr><td>2</td><td>Y1</td><td>DIFF</td><td>±0.2 V</td><td>yes</td></tr>
+<tr><td>3</td><td>Y2</td><td>DIFF</td><td>±0.2 V</td><td>yes</td></tr>
+<tr><td>4</td><td>Axial</td><td>DIFF</td><td>±0.5 V</td><td>yes</td></tr>
+<tr><td>5</td><td>Roll</td><td>DIFF</td><td>±0.5 V</td><td>yes</td></tr>
+<tr><td>6</td><td>Excitation</td><td>DIFF</td><td>±10 V</td><td>readback</td></tr>
+<tr><td>7</td><td>Spare</td><td>DIFF</td><td>±10 V</td><td>no</td></tr>
+</table>
+<p>Native AI ranges are ±0.1/0.2/0.5/1/2/5/10 V — the smallest native
+range covering the requested span is used. Terminals: DIFF, RSE, NRSE.</p>
+<h3>Balance layouts (Force ↔ Moment)</h3>
+<p>The four bridge channels are physically identical for both layouts —
+only their NAMES differ (Streamlined's reducer keys on the exact
+names). Switching the layout is a pure rename:
+<b>Force</b> → N1/N2/Y1/Y2, <b>Moment</b> →
+AftPitch/AftYaw/FwdPitch/FwdYaw. A live device keeps its ring-buffer
+and tare keys in sync through the rename.</p>
+<h3>Outputs and triggers</h3>
+<ul>
+<li><b>AO0/AO1</b> (±10 V): static DC level, or a regenerated
+sine/square/triangle waveform (amplitude, frequency, offset;
+<code>ao_update_hz</code> sample clock, default 10 kHz).</li>
+<li><b>Start trigger</b>: <code>immediate</code>;
+<code>digital_edge</code> on PFI0–PFI15 (rising/falling);
+<code>analog_edge</code> on APFI0 or a scanned AI channel crossing
+<code>level_v</code>. Continuous acquisition supports a start trigger
+only — no reference/pre-trigger.</li>
+</ul>
+<h3>Connection</h3>
+<p>The device is addressed by its <b>NI-MAX alias</b> (default
+<code>Dev2</code>). Sim mode (<code>force_sim</code>) swaps in a
+synthetic signal core — no NI-DAQmx install, no hardware.</p>
+
+<h2 id="start">3 · Getting started</h2>
+<pre><code>python run_ni_usb_6351_app.py --sim   # synthetic signals, no hardware
+python run_ni_usb_6351_app.py         # real USB-6351 (NI-MAX alias Dev2)
+python -m pytest tests\test_ni6351.py</code></pre>
+<h3>First-connect checklist</h3>
+<ol>
+<li>Confirm the device alias in NI-MAX matches the <b>Device</b> field
+(default Dev2).</li>
+<li>Set the per-channel sample <b>Rate</b> (default 1000 Hz), then
+<b>Connect</b> — acquisition starts immediately (or arms, if a
+hardware trigger is configured; the lamp shows
+<code>ARMED @ … Hz</code> until the edge arrives).</li>
+<li>Load the balance <code>.vol</code> calibration on the Forces tab
+(auto-reloaded at startup once configured).</li>
+<li><b>Tare (zero bridges)</b> with the model unloaded before taking
+force data.</li>
+</ol>
+
+<h2 id="gui">4 · GUI guide</h2>
+<h3>Connection bar</h3>
+<p><b>Device</b> (NI-MAX alias) · <b>Rate</b> (Hz) · <b>Simulate</b> ·
+trigger-state readout (<code>trig: PFI0</code> / <code>ARMED —
+PFI0</code> / <code>Triggered</code>) · status lamp (DISCONNECTED /
+SIMULATION / ARMED / ACQUIRING @ actual Hz) · <b>Connect</b> /
+<b>Disconnect</b>.</p>
+<h3>Live tab</h3>
+<p>Channel tiles (averaged over <code>tile_avg_ms</code>), <b>Tare
+(zero bridges)</b> / <b>Clear tare</b>, plot window selector
+(10 s – 5 min), <b>Pause</b>/<b>Resume</b>, <b>Follow live</b> (re-pins
+the time axis after zoom/pan), and the multi-channel history plot fed
+from the device-owned ring buffer.</p>
+<h3>Forces tab</h3>
+<p>Load/inspect the balance <code>.vol</code> calibration (balance
+type/serial, cal type Linear/Quadratic/Cubic, R²), pick the balance
+layout (Force ↔ Moment — renames the bridge channels everywhere), and
+watch live body-frame forces/moments with per-component utilization
+bars against the balance max loads — amber above
+<code>warn_utilization</code> (80%), and a
+<b>⚠ BALANCE OVERSTRESS</b> status-bar warning when exceeded.</p>
+<h3>Channels tab</h3>
+<p>Per-channel table: AI number, name, enabled, terminal
+configuration, requested range (nearest native range is applied),
+balance flag, and scale/offset/unit for non-balance channels (balance
+channels are locked to raw volts).</p>
+<h3>Output &amp; Trigger tab</h3>
+<p>AO0/AO1 setup (enable, static level, waveform/amplitude/frequency/
+offset, start/stop waveform) and the AI start-trigger configuration
+(mode, source, edge, analog level).</p>
+<h3>Menus</h3>
+<p><b>File</b>: Settings… (Ctrl+,), Save/Load config, Quit.
+<b>Help</b>: Documentation (this page), About.</p>
+
+<h2 id="config">5 · Configuration reference</h2>
+<h3><code>NiDaqConfig</code></h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>device_name</code></td><td>Dev2</td><td>NI-MAX device
+    alias</td></tr>
+<tr><td><code>scan_hz</code></td><td>1000</td><td>per-channel sample
+    rate</td></tr>
+<tr><td><code>buffer_seconds</code></td><td>5.0</td><td>DAQmx input buffer
+    length</td></tr>
+<tr><td><code>poll_ms</code></td><td>25</td><td>poll-thread read
+    period</td></tr>
+<tr><td><code>trigger</code></td><td>immediate</td><td>TriggerConfig (see
+    below)</td></tr>
+<tr><td><code>ao_channels</code></td><td>AO0, AO1 (disabled)</td>
+    <td>AOChannelConfig list (see below)</td></tr>
+<tr><td><code>ao_update_hz</code></td><td>10&thinsp;000</td><td>waveform
+    sample clock</td></tr>
+<tr><td><code>vol_path</code></td><td>&quot;&quot;</td><td>balance .vol
+    file, auto-loaded at startup when set</td></tr>
+<tr><td><code>cal_type</code></td><td>Linear</td><td>Linear | Quadratic |
+    Cubic</td></tr>
+<tr><td><code>balance_config</code></td><td>Force</td><td>Force | Moment
+    bridge layout (renames the four bridge channels)</td></tr>
+<tr><td><code>warn_utilization</code></td><td>0.8</td><td>amber above this
+    fraction of the balance max load</td></tr>
+<tr><td><code>balance_type</code> / <code>balance_serial</code></td>
+    <td>&quot;&quot;</td><td>identity from the loaded .vol</td></tr>
+<tr><td><code>force_sim</code></td><td>False</td><td>synthetic signals, no
+    NI-DAQmx</td></tr>
+<tr><td><code>plot_window_s</code></td><td>30</td><td>history plot
+    window</td></tr>
+<tr><td><code>tile_avg_ms</code></td><td>200</td><td>live-tile averaging
+    window</td></tr>
+<tr><td><code>channels</code></td><td>see §2 map</td><td>ChannelConfig list
+    (see below)</td></tr>
+</table>
+<h3><code>ChannelConfig</code></h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>channel</code></td><td>0</td><td>ai0…ai15</td></tr>
+<tr><td><code>name</code></td><td>&quot;&quot;</td><td>channel name (ring
+    buffer / Streamlined key)</td></tr>
+<tr><td><code>enabled</code></td><td>True</td><td>scanned when enabled and
+    named</td></tr>
+<tr><td><code>terminal</code></td><td>DIFF</td><td>DIFF | RSE | NRSE</td></tr>
+<tr><td><code>v_min</code> / <code>v_max</code></td><td>−10 / +10</td>
+    <td>requested range; nearest native ± range is applied</td></tr>
+<tr><td><code>balance</code></td><td>False</td><td>bridge channel: tared +
+    fed to balcal</td></tr>
+<tr><td><code>scale</code> / <code>offset</code> / <code>unit</code></td>
+    <td>1.0 / 0.0 / V</td><td>EU conversion for extra channels; forced to
+    raw volts on balance channels</td></tr>
+</table>
+<h3><code>AOChannelConfig</code></h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>channel</code></td><td>0</td><td>ao0 | ao1</td></tr>
+<tr><td><code>enabled</code></td><td>False</td><td>output driven when
+    enabled and named</td></tr>
+<tr><td><code>v_min</code> / <code>v_max</code></td><td>−10 / +10</td>
+    <td>output clamp range</td></tr>
+<tr><td><code>static_v</code></td><td>0.0</td><td>commanded DC level
+    (waveform &quot;none&quot;)</td></tr>
+<tr><td><code>waveform</code></td><td>none</td><td>none | sine | square |
+    triangle</td></tr>
+<tr><td><code>amplitude_v</code> / <code>freq_hz</code> /
+    <code>offset_v</code></td><td>1.0 / 10.0 / 0.0</td>
+    <td>waveform parameters</td></tr>
+</table>
+<h3><code>TriggerConfig</code></h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>mode</code></td><td>immediate</td><td>immediate |
+    digital_edge | analog_edge</td></tr>
+<tr><td><code>source</code></td><td>PFI0</td><td>PFI0–15, or APFI0 / aiN
+    for analog_edge</td></tr>
+<tr><td><code>edge</code></td><td>rising</td><td>rising | falling</td></tr>
+<tr><td><code>level_v</code></td><td>1.0</td><td>analog-edge
+    threshold</td></tr>
+</table>
+
+<h2 id="safety">6 · Safety &amp; limits</h2>
+<ul>
+<li><b>Balance overstress warning</b> — live body-frame loads are
+compared against the .vol file's max loads; utilization above
+<code>warn_utilization</code> (default 80%) renders amber, and
+exceeding a limit raises a persistent
+<b>⚠ BALANCE OVERSTRESS — reduce load!</b> warning in the status
+bar. Reduce the aerodynamic load immediately.</li>
+<li><b>Raw-volts discipline</b> — recorded bridge data is always raw
+volts; scale on balance channels is display-only and forced to 1.0, so
+recorded runs can always be re-reduced with a corrected
+calibration.</li>
+<li><b>AO clamping</b> — commanded output levels clamp to the
+channel's configured min/max.</li>
+<li><b>Input ranges</b> — the requested span maps to the nearest
+native ± range, so a bridge channel is never digitized on a coarser
+range than requested.</li>
+</ul>
+
+<h2 id="trouble">7 · Troubleshooting</h2>
+<table>
+<tr><th>symptom</th><th>diagnosis / fix</th></tr>
+<tr><td>Connect fails on real hardware</td>
+<td>Check the NI-MAX alias (Device field vs NI-MAX), the USB link, and
+that NI-DAQmx is installed. Sim mode requires no install.</td></tr>
+<tr><td>Lamp stuck at ARMED, no data</td>
+<td>Not a fault — a hardware start trigger is configured and the edge
+has not arrived. Check the trigger source wiring (PFI/APFI pin), edge
+polarity and analog level, or set the mode back to
+<code>immediate</code>.</td></tr>
+<tr><td>Forces read zero / wrong</td>
+<td>Load the correct .vol calibration, confirm the balance layout
+(Force vs Moment names), verify the excitation readback channel, and
+re-tare with the model unloaded.</td></tr>
+<tr><td>Force/Moment switch renamed my channels</td>
+<td>By design — the layout switch is a pure rename of the four bridge
+channels at the same AI positions; tares and ring-buffer keys follow
+the rename.</td></tr>
+<tr><td>Overstress warning</td>
+<td>A body-frame component is past the balance max load — reduce load;
+check for a stale tare or wrong .vol if it appears at wind-off.</td></tr>
+</table>
+
+<h2 id="history">8 · Version history</h2>
+<table>
+<tr><th>version</th><th>date</th><th>changes</th></tr>
+<tr><td>1.0.0</td><td>2026-07-17</td><td>Initial driver + GUI:
+NI-DAQmx hardware-timed AI with digital/analog start triggers, AO
+static levels + regenerated waveforms, bridge tare, balance .vol
+calibration to body-frame forces with utilization warnings,
+Force/Moment bridge renaming, full simulation mode.</td></tr>
+</table>
+
+<footer>NI USB-6351 — Analog I/O DAQ · ni_usb_6351 v1.0.0 ·
+Author: C. Fagley — casey.fagley@afacademy.af.edu</footer>
+</main>
+</body>
+</html>

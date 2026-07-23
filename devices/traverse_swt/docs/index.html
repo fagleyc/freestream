@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSWT Traverse — WAGO 750 — User Documentation</title>
+<style>
+:root{--bg:#1e1e1e;--bg2:#252526;--bg3:#2d2d30;--text:#e0e0e0;--dim:#a0a0a0;
+ --accent:#0078d4;--accent2:#3399ff;--ok:#4caf50;--warn:#ff9800;--err:#f44336;
+ --border:#3f3f46;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+ font:15px/1.6 "Segoe UI",system-ui,sans-serif}
+nav{position:fixed;top:0;left:0;bottom:0;width:240px;background:var(--bg2);
+ border-right:1px solid var(--border);padding:18px 14px;overflow-y:auto}
+nav .appname{font-size:15px;font-weight:600;color:var(--accent2);margin:0 0 2px}
+nav .ver{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
+ margin-bottom:14px}
+nav a{display:block;color:var(--dim);text-decoration:none;padding:4px 8px;
+ border-radius:4px;font-size:13.5px}
+nav a:hover{background:#3a3a3c;color:var(--text)}
+main{margin-left:240px;padding:28px 40px;max-width:920px}
+h1,h2,h3{color:#fff;line-height:1.3}
+h2{border-bottom:1px solid var(--border);padding-bottom:6px;margin-top:42px}
+code,pre{font-family:Consolas,"Cascadia Mono",monospace;font-size:13.5px}
+code{background:var(--bg3);padding:1px 5px;border-radius:3px;color:#9cdcfe}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+ padding:12px 14px;overflow-x:auto;color:#dcdcaa}
+pre code{background:none;padding:0;color:inherit}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;
+ vertical-align:top}
+th{background:var(--bg3);color:#fff}
+tr:nth-child(even) td{background:var(--bg2)}
+.note,.warn,.danger{border-left:4px solid;border-radius:4px;
+ padding:10px 14px;margin:14px 0;background:var(--bg2)}
+.note{border-color:var(--accent)} .warn{border-color:var(--warn)}
+.danger{border-color:var(--err)}
+.tag{display:inline-block;background:var(--bg3);border:1px solid var(--border);
+ border-radius:10px;padding:0 8px;font-size:12px;color:var(--dim)}
+footer{margin-top:48px;padding-top:14px;border-top:1px solid var(--border);
+ color:var(--dim);font-size:13px}
+@media(max-width:860px){nav{position:static;width:auto;border-right:0;
+ border-bottom:1px solid var(--border)}main{margin-left:0;padding:20px}}
+</style>
+</head>
+<body>
+<nav>
+ <div class="appname">SSWT Traverse — WAGO 750</div>
+ <div class="ver">v1.3.0 · traverse_swt</div>
+ <a href="#overview">1 · Overview &amp; purpose</a>
+ <a href="#hardware">2 · Hardware &amp; connection</a>
+ <a href="#start">3 · Getting started</a>
+ <a href="#gui">4 · GUI guide</a>
+ <a href="#config">5 · Configuration reference</a>
+ <a href="#safety">6 · Safety &amp; interlocks</a>
+ <a href="#trouble">7 · Troubleshooting</a>
+ <a href="#history">8 · Version history</a>
+</nav>
+<main>
+
+<h1>SSWT Traverse — WAGO 750</h1>
+<p>User documentation for the <code>traverse_swt</code> package —
+standalone AeroVIS device driver + PyQt6 dark-mode GUI for the sub-sonic
+wind tunnel (SSWT) 3-axis probe traverse.</p>
+
+<h2 id="overview">1 · Overview &amp; purpose</h2>
+<p>The SSWT traverse is driven by a <b>WAGO 750 controller at
+192.168.1.21:502</b> (Modbus TCP, unit 1) with three <b>750-673 stepper
+modules</b> — X axial, Y lateral, Z vertical. This app replaces the
+deployed C# tool (<code>Tool_SSWT_Traverse</code>, FieldTalk Modbus) and
+was reverse-engineered 2026-07-07 from the CoDeSys 2.3 PLC source
+(<code>LVW_V3_2021.pro</code>) and the deployed C#.</p>
+<p>Improvements over the C#: one persistent Modbus connection (the C#
+reconnected before <i>every</i> operation), one 16-register block read
+per tick, change-only ControlWord writes, host-side calibrated
+positioning, a clean 1,000,000-count rollover unwrap into absolute
+position, host-side limit-switch reaction and host-side homing.</p>
+<div class="note"><b>Motion model.</b> The PLC runs the steppers in
+velocity mode at a fixed ±2000 steps/s (accel/decel baked into the PLC
+program). The host has <b>direction bits only</b> — no speed, no
+position mode. Positioning is a host-side bang-bang loop: command a
+direction, watch the counts, drop the bit inside the tolerance band
+(default 0.02&quot;).</div>
+
+<h2 id="hardware">2 · Hardware &amp; connection</h2>
+<h3>Register map (wire = 0-based, what pymodbus uses)</h3>
+<p>The C# FieldTalk library counts registers from <b>1</b>, so every C#
+address is +1 vs the wire.</p>
+<table>
+<tr><th>wire</th><th>%MW</th><th>C# addr</th><th>meaning</th></tr>
+<tr><td>12288</td><td>MW0</td><td>12289</td>
+    <td><b>ControlWord</b> — host writes (FC6)</td></tr>
+<tr><td>12289</td><td>MW1</td><td>12290*</td>
+    <td><b>StatusWord</b> — limit bits 0/1/2 = X/Y/Z</td></tr>
+<tr><td>12298</td><td>MW10</td><td>12299</td>
+    <td>X position, DINT <b>low-word-first</b> (FC3/FC4)</td></tr>
+<tr><td>12300</td><td>MW12</td><td>12301</td><td>Y position, DINT</td></tr>
+<tr><td>12302</td><td>MW14</td><td>12303</td><td>Z position, DINT</td></tr>
+</table>
+<p>* The C# declared 12290 as a &quot;home button&quot; register but
+never used it — and it lands on the StatusWord anyway. There is no
+homing in the PLC (<code>Homing := FALSE</code> everywhere); homing is
+host-side (see <a href="#safety">Safety</a>).</p>
+
+<h3>ControlWord bits (PLC source: <code>ControlWord AT %MW0</code>)</h3>
+<table>
+<tr><th>bit</th><th>PLC name</th><th>bit</th><th>PLC name</th>
+    <th>bit</th><th>PLC name</th></tr>
+<tr><td>0</td><td>AxialJogFwd</td><td>2</td><td>LateralJogFwd</td>
+    <td>4</td><td>VerticalJogFwd</td></tr>
+<tr><td>1</td><td>AxialJogRev</td><td>3</td><td>LateralJogRev</td>
+    <td>5</td><td>VerticalJogRev</td></tr>
+</table>
+<p>The &quot;Jog&quot; names are the PLC's — the host uses these
+direction bits for bang-bang <code>move_to</code>, not a software jog.
+Bits 6/7/8 were the per-axis stepper BasicReset; the reset pulse was
+removed as non-functional on the rig.</p>
+<div class="warn"><b>Swapped labels.</b> The C# labeled Y and Z with
+fwd/rev <b>swapped</b> vs the PLC names (C# &quot;Y forward&quot; = bit3
+= PLC LateralJog<b>Rev</b>; C# &quot;Z forward&quot; = bit5 = PLC
+VerticalJog<b>Rev</b>). The default masks reproduce the C# behavior —
+what operators knew; each axis has a <code>fwd_increases_counts</code>
+flag to flip the sense, and <code>move_to</code> has a wrong-way trip
+that stops the axis if the target error grows.</div>
+
+<h3>StatusWord limit bits</h3>
+<p>The limit switches were fixed (inverted at the module) in 2026-07 and
+are live again. The PLC copies them into StatusWord %MW1: bit0 =
+X/Axial, bit1 = Y/Lateral, bit2 = Z/Vertical — each the axis's
+<b>negative-direction</b> switch.
+<b>Polarity (rig-verified 2026-07-22): the bits are ACTIVE-LOW</b> — the
+NC chain drives each bit HIGH in the healthy state; the bit <b>clears
+when the switch is engaged</b> (<code>limit_active_low = True</code>,
+the default). <b>X/Axial's limit input is DISABLED</b>
+(<code>x.limit_enabled = False</code>, per the rig): its bit is ignored
+entirely — no runtime reaction and no homing on X.</p>
+
+<h3>Position counter — 1M rollover + absolute tracking</h3>
+<p>The 750-673 modules are configured to roll their position counter
+over cleanly at <b>1,000,000 counts</b> (unsigned 0…999,999) on all
+three axes, so the module never approaches the 24-bit counter limit
+where it used to silently stop stepping (observed live 2026-07-07). The
+driver unwraps the 1M ring into a continuous <b>absolute</b> position
+(shortest-path modular delta each 50 ms tick), so a single move can
+cross any number of wrap boundaries. A counter-jump guard
+(<code>max_counts_per_tick</code>, default 100,000) treats any larger
+raw delta as a counter event (module reset/power event): the position is
+held and the raw baseline re-based instead of integrating a phantom
+move.</p>
+<p><b>DINT word order:</b> CoDeSys stores the low word at the lower %MW;
+the C# FieldTalk default was also low-word-first, and
+<code>probe_traverse.py</code> verifies it live.</p>
+
+<h3>Calibration</h3>
+<p>C# two-point form, per axis, <b>signed</b> slope:
+<code>inches = inch_high − (counts_high − counts) / clicks_per_inch</code>.
+Default slopes derive from the rig's
+<code>sswtTraverseCalibrationFile.xml</code>:</p>
+<table>
+<tr><th>axis</th><th>clicks/inch (default)</th><th>soft limits (default)</th>
+    <th>homing</th></tr>
+<tr><td>X — Axial</td><td>+13&thinsp;705.6</td><td>−5&quot; … +5&quot;</td>
+    <td>none (limit input disabled)</td></tr>
+<tr><td>Y — Lateral</td><td>−14&thinsp;841.0</td><td>−18&quot; … +18&quot;</td>
+    <td>datum −18&quot; at the negative switch</td></tr>
+<tr><td>Z — Vertical</td><td>+986&thinsp;938.4</td><td>−25&quot; … +25&quot;</td>
+    <td>datum +18&quot; at the switch (sign convention set on the rig
+        2026-07-22)</td></tr>
+</table>
+<p>The 750-673 position counter <b>zeroes at PLC power-up</b>, so the
+offset is per-power-cycle: axes start <code>calibrated=False</code>.
+Homing Y/Z sets their offsets; any axis can also be re-zeroed against a
+known position (Calibration tab, routine 2). <i>Import legacy C# cal
+XML…</i> pulls signed slopes from the old file.</p>
+
+<h2 id="start">3 · Getting started</h2>
+<pre><code>python run_traverse_swt_app.py --sim   # plant sim, no hardware
+python run_traverse_swt_app.py         # real PLC (192.168.1.21)
+python -m traverse_swt.probe_traverse  # READ-ONLY live probe
+python -m pytest tests\test_traverse.py tests\test_traverse_homing.py</code></pre>
+<p>Simulation mode (<code>--sim</code> or the <i>Simulate</i> checkbox)
+swaps in <code>SimPlc</code>: a velocity-integrator plant model on the
+unsigned 1M ring at the fixed ~2000 counts/s PLC speed, with per-axis
+negative-end limit switches and an injectable stall fault — homing runs
+end-to-end in sim.</p>
+<h3>First live checklist (supervised)</h3>
+<ol>
+<li><code>probe_traverse.py</code> — verify the register map, word
+order, and FC3&nbsp;=&nbsp;FC4 <b>before any motion</b>.</li>
+<li>GUI, live, one axis: move the stage a known amount from the
+physical console and confirm the counts track it (and the direction).
+Counts falling as inches rise is just the signed slope — captured by
+calibration.</li>
+<li>Re-zero the calibration, then a short <code>move_to</code> — the
+wrong-way trip guards the first one.</li>
+<li>Homing: <i>verify the seek direction live on the first supervised
+run</i> — the seek jogs toward the negative limit at fixed PLC speed.</li>
+</ol>
+<div class="note"><b>Per-power-cycle:</b> the module counter zeroes at
+power-up, so the homing/calibration offset dies with it —
+<b>re-home each setup</b>. The offset persists only if saved
+(&quot;Set as Defaults&quot; / Save config).</div>
+<div class="warn"><b>TODO (rig):</b> the real travel of Y and Z from the
+−18&quot; datum is unknown — measure the real ranges from the datum on
+the rig and set them in Settings.</div>
+
+<h2 id="gui">4 · GUI guide</h2>
+<h3>Connection bar</h3>
+<p><b>WAGO PLC IP</b> · <b>Simulate</b> checkbox · status lamp
+(DISCONNECTED / SIMULATION / LIVE) · <b>Connect</b> /
+<b>Disconnect</b> · <b>Set as Defaults</b> (saves the CURRENT settings,
+live calibration included, as the startup defaults, auto-loaded at every
+launch — separate from File → Save/Load config files).</p>
+<h3>Motion tab</h3>
+<ul>
+<li><b>Axis cards (X | Y | Z)</b>: big readout (raw counts while
+uncalibrated — move the stage from the physical console; inches once
+calibrated), state label (idle / → target / HOME &lt;phase&gt; / LIMIT
+/ fault), target spin + <b>Move</b> (unlocked when calibrated),
+<b>Home</b> (Y/Z only), and an emphatic per-axis <b>■ STOP</b>. The card
+footer shows the homing state and the raw 750-673 module status bytes
+S1·S2·S3.</li>
+<li><b>All axes column</b>: <b>■ E-STOP</b> (dominant) and
+<b>Stop all</b> — both stop all three axes; either aborts a homing
+cycle at any point.</li>
+<li><b>Position history plot</b>: all enabled axes vs time; plots raw
+counts until every enabled axis is calibrated, then inches.</li>
+</ul>
+<h3>Diagnostics tab</h3>
+<p>Raw ControlWord echo (confirm the PLC receives the commanded bits),
+per-axis 750-673 module status bytes, and the module event log — every
+S1 transition is logged with time, position and direction. Bit meanings
+are undocumented in the extracted source; one faulting start on the rig
+identifies the error bit empirically.</p>
+<h3>Calibration tab</h3>
+<p>Routine 1: two-point calibration (slope + offset). Routine 2:
+offset-only re-zero against a known position. <i>Import legacy C# cal
+XML…</i> re-derives signed slopes from the old
+<code>sswtTraverseCalibrationFile.xml</code> (offsets are NOT imported —
+they are stale by design; re-home/re-zero on the rig instead).</p>
+<h3>Menus</h3>
+<p><b>File</b>: Settings… (Ctrl+,), Save/Load config, Set current as
+defaults, Quit. <b>Help</b>: Documentation (this page), About.</p>
+
+<h2 id="config">5 · Configuration reference</h2>
+<h3><code>TraverseConfig</code></h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>ip</code></td><td>192.168.1.21</td><td>WAGO PLC address</td></tr>
+<tr><td><code>port</code></td><td>502</td><td>Modbus TCP port</td></tr>
+<tr><td><code>unit_id</code></td><td>1</td><td>Modbus unit/slave id</td></tr>
+<tr><td><code>loop_ms</code></td><td>50</td><td>control/position poll period
+    (tightens to ~15 ms while a homing cycle runs)</td></tr>
+<tr><td><code>wrongway_ticks</code></td><td>6</td><td>consecutive ticks the
+    move_to error may grow before the move aborts</td></tr>
+<tr><td><code>stall_ticks</code></td><td>20</td><td>ticks with frozen counts
+    before the stall warning (~1 s)</td></tr>
+<tr><td><code>stall_abort_ticks</code></td><td>60</td><td>ticks before a
+    stalled command is aborted outright (~3 s)</td></tr>
+<tr><td><code>direction_dwell_ms</code></td><td>600</td><td>commanded-stop
+    dwell on any start/reversal (longer than the PLC's 250 ms
+    stop/disable sequence); stops themselves are never delayed</td></tr>
+<tr><td><code>max_reversals</code></td><td>3</td><td>re-reversals around the
+    target before the move aborts (tolerance too tight)</td></tr>
+<tr><td><code>read_module_status</code></td><td>True</td><td>read the
+    750-673 status bytes from the input image each tick</td></tr>
+<tr><td><code>limit_active_low</code></td><td>True</td><td>StatusWord limit
+    bit CLEAR = switch engaged (rig-verified 2026-07-22); escape hatch in
+    Settings ▸ Advanced</td></tr>
+<tr><td><code>home_backoff_margin_s</code></td><td>0.25</td><td>extra
+    jog-away time after the switch releases during backoff (bounds the
+    overshoot at the fixed PLC speed)</td></tr>
+<tr><td><code>home_seek_timeout_s</code></td><td>120</td><td>seek-phase
+    deadline; on breach the axis stops and homing faults cleanly</td></tr>
+<tr><td><code>home_backoff_timeout_s</code></td><td>20</td><td>backoff-phase
+    deadline</td></tr>
+<tr><td><code>max_counts_per_tick</code></td><td>100&thinsp;000</td>
+    <td>counter-jump guard threshold (≈50× the fastest axis)</td></tr>
+<tr><td><code>modbus_timeout_s</code></td><td>1.0</td><td>Modbus transaction
+    timeout</td></tr>
+<tr><td><code>max_consecutive_errors</code></td><td>5</td><td>comm watchdog:
+    stop all + disconnect on breach</td></tr>
+<tr><td><code>force_sim</code></td><td>False</td><td>use the plant simulator
+    instead of hardware</td></tr>
+<tr><td><code>plot_window_s</code></td><td>120</td><td>history plot
+    window</td></tr>
+</table>
+<h3><code>AxisConfig</code> (× X / Y / Z)</h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>name</code> / <code>label</code></td><td>X / Axial …</td>
+    <td>axis identity</td></tr>
+<tr><td><code>enabled</code></td><td>True</td><td>axis participates in the
+    control loop</td></tr>
+<tr><td><code>fwd_mask</code> / <code>rev_mask</code></td>
+    <td>X 0x01/0x02 · Y 0x08/0x04 · Z 0x20/0x10</td>
+    <td>ControlWord direction bits (C#-behavior defaults)</td></tr>
+<tr><td><code>position_addr</code></td><td>12298/12300/12302</td>
+    <td>wire address of the DINT low word</td></tr>
+<tr><td><code>fwd_increases_counts</code></td><td>True (Z: False)</td>
+    <td>whether the fwd_mask direction increases the counts (Z verified
+    live: the C#-&quot;forward&quot; bit decreases them)</td></tr>
+<tr><td><code>wrap_modulus</code></td><td>1&thinsp;000&thinsp;000</td>
+    <td>rollover unwrap modulus; 0 = raw passthrough</td></tr>
+<tr><td><code>limit_enabled</code></td><td>True (X: False)</td>
+    <td>honor this axis's StatusWord limit bit</td></tr>
+<tr><td><code>home_enabled</code></td><td>False (Y/Z: True)</td>
+    <td>axis may be homed to its limit switch;
+    <code>home_axis(&quot;x&quot;)</code> raises</td></tr>
+<tr><td><code>home_datum_in</code></td><td>−18.0 (Z: +18.0)</td>
+    <td>what the limit position reads after homing</td></tr>
+<tr><td><code>home_jog_fwd</code></td><td>True</td><td>explicit BIT-LEVEL
+    homing seek direction (True = seek jogs fwd_mask, backoff jogs
+    rev_mask) — deliberately independent of
+    <code>fwd_increases_counts</code>; position mode and homing proved to
+    need independent senses on the rig (2026-07-22)</td></tr>
+<tr><td><code>inch_high</code> / <code>counts_high</code></td><td>0 / 0</td>
+    <td>calibration anchor point</td></tr>
+<tr><td><code>clicks_per_inch</code></td><td>see table §2</td>
+    <td>signed calibration slope</td></tr>
+<tr><td><code>calibrated</code></td><td>False</td><td>offset valid
+    (per-power-cycle)</td></tr>
+<tr><td><code>min_in</code> / <code>max_in</code></td><td>see table §2</td>
+    <td>soft travel limits (inches)</td></tr>
+<tr><td><code>tolerance_in</code></td><td>0.02</td><td>move-complete band
+    (C# default)</td></tr>
+</table>
+<p>Defaults persist at <code>~/.traverse_swt/defaults.json</code>
+(override with the <code>TRAVERSE_DEFAULTS</code> env var); a corrupt
+file falls back to factory defaults at launch.</p>
+
+<h2 id="safety">6 · Safety &amp; interlocks</h2>
+<div class="danger"><b>The host is the only protection.</b> The module
+hardware-limit lockout has been UNLINKED
+(<code>Ptr_LimitSwitch = 0</code>): the 750-673 never hard-stops or
+latches on a limit by itself. The driver reads the StatusWord every
+control tick and reacts host-side.</div>
+<ul>
+<li><b>E-STOP / Stop all</b> — stops all axes immediately, issued from
+the calling thread; aborts any homing cycle and leaves the axes
+stopped. Per-axis ■ STOP does the same for one axis. Stops are always
+forced through (never deferred by the change-only write logic, never
+delayed by the direction dwell).</li>
+<li><b>Runtime limit trip</b> — if an axis's switch engages (bit
+clears) while the axis is commanded TOWARD the negative limit (outside
+homing), the host stops the axis within one control tick and flags a
+<code>LIMIT</code> fault. Commanding AWAY from a made switch is allowed
+— that is the recovery path — and the fault clears with the
+switch.</li>
+<li><b>Homing (Y/Z)</b> — host-side sequence: SEEK toward the negative
+limit polling the StatusWord bit every ~15 ms (reaction bound ≈2000
+steps/s × 15 ms ≈ 30 counts of overtravel) → stop → BACKOFF the
+opposite way until the bit clears + <code>home_backoff_margin_s</code>
+→ settle → <code>calibrate_offset(home_datum_in)</code>. Both phases
+have timeouts that fault cleanly (axis stopped, homed stays False).</li>
+<li><b>Soft limits</b> — calibrated <code>min_in</code>/<code>max_in</code>
+bound every <code>move_to</code>.</li>
+<li><b>Wrong-way trip</b> — a move whose error grows for
+<code>wrongway_ticks</code> consecutive ticks aborts (guards a wrong
+direction sense).</li>
+<li><b>Stall abort</b> — a commanded axis with frozen counts warns at
+~1 s and is aborted at ~3 s (a faulted module must not stay commanded —
+it would lurch when the fault clears).</li>
+<li><b>Direction-change dwell</b> — any start or reversal passes
+through a commanded stop ≥600 ms so a module is never hit with a
+conflicting command mid-sequence (the likely start/stop fault
+cause).</li>
+<li><b>Oscillation guard</b> — more than <code>max_reversals</code>
+re-reversals around the target aborts the move instead of ping-ponging
+the motor.</li>
+<li><b>Comm watchdog</b> — <code>max_consecutive_errors</code> failures
+→ stop all + disconnect. All transport exceptions are wrapped; the
+control loop has a catch-all that emergency-stops + disconnects
+instead of dying (hardening from a live crash).</li>
+</ul>
+
+<h2 id="trouble">7 · Troubleshooting</h2>
+<table>
+<tr><th>symptom</th><th>diagnosis / fix</th></tr>
+<tr><td>Y (lateral) does not move; STALL warning then abort</td>
+<td>Diagnosis order: ① Diagnostics tab → ControlWord echo: bits 2/3 must
+appear while a Y move runs (confirms the PLC received the command).
+② Frozen counts = the 750-673 module is not issuing steps (the counter
+is the module's own step count) → module faulted/disabled; check the
+module's error LEDs in the cabinet. ③ Counts moving but no physical
+motion = motor power/wiring (open-loop stepper — the module can count
+steps into a dead motor circuit). ④ If it does not clear, the lateral
+drive may need a PLC power cycle (the CoDeSys program has
+MC3_RestoreDefault plumbing for the lateral module, suggesting past
+trouble).</td></tr>
+<tr><td>Move aborts immediately with a wrong-way message</td>
+<td>The axis's <code>fwd_increases_counts</code> sense is wrong — flip
+it in Settings (this is exactly how Z was found:
+<code>move_to(z=+1&quot;)</code> wrong-way-tripped twice; the fix is now
+the default).</td></tr>
+<tr><td>LIMIT fault on an axis</td>
+<td>The negative-direction switch is engaged. Command AWAY from the
+switch to recover; the fault clears with the switch. If limits behave
+inverted, check <code>limit_active_low</code> (Settings ▸ Advanced) —
+but the rig-verified default is active-low.</td></tr>
+<tr><td>Position jumps / resets to zero</td>
+<td>Module power event — the 750-673 counter zeroes at power-up. The
+counter-jump guard re-bases instead of integrating the jump; the axis
+drops to uncalibrated. Re-home (Y/Z) or re-zero (X).</td></tr>
+<tr><td>Modbus timeouts / gateway errors</td>
+<td>The watchdog stops all axes and disconnects after 5 consecutive
+errors. Check the network path to 192.168.1.21; reconnect from the
+GUI.</td></tr>
+<tr><td>Module status bytes S1 (Diagnostics)</td>
+<td>Observed live: 0x00 idle, 0x03 starting, 0x1B running, 0x01
+stopping, 0x1F transient at start. No distinct code at the old
+counter-limit stop.</td></tr>
+<tr><td>Software jog / stepper-reset buttons missing</td>
+<td>Removed 2026-07 as non-functional on the rig; the retired PLC-side
+homing POUs live in <code>plc_homing_ARCHIVED/</code> (never
+downloaded).</td></tr>
+</table>
+
+<h2 id="history">8 · Version history</h2>
+<table>
+<tr><th>version</th><th>date</th><th>changes</th></tr>
+<tr><td>1.3.0</td><td>2026-07-22</td><td>Bit-level homing seek direction
+(<code>home_jog_fwd</code>) pinned independently of the position
+bookkeeping; Z sign convention settled on the rig; X limit input
+disabled per the rig.</td></tr>
+<tr><td>1.2.0</td><td>2026-07-21</td><td>Host-side homing (seek → backoff
+→ datum) and runtime limit reaction restored; limit-switch polarity
+rig-verified ACTIVE-LOW.</td></tr>
+<tr><td>1.1.0</td><td>2026-07</td><td>Clean 1,000,000-count rollover
+unwrap into absolute position with counter-jump guard; retired the
+24-bit counter-limit / MC3_SetPosition machinery.</td></tr>
+<tr><td>1.0.0</td><td>2026-07-07</td><td>Initial driver + GUI
+reverse-engineered from the CoDeSys PLC source and deployed C#:
+persistent connection, block reads, bang-bang positioning, wrong-way
+trip, stall abort, direction dwell, two-point calibration.</td></tr>
+</table>
+
+<footer>SSWT Traverse — WAGO 750 · traverse_swt v1.3.0 ·
+Author: C. Fagley — casey.fagley@afacademy.af.edu</footer>
+</main>
+</body>
+</html>

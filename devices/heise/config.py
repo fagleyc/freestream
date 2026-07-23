@@ -99,10 +99,13 @@ class HeiseConfig:
     max_consecutive_errors: int = 5
     force_sim: bool = False
 
+    # Default port layout matches the bench instrument (live 2026-07-23:
+    # '?' returned '73.61,11.43' — RTD temperature on the LEFT port,
+    # pressure on the RIGHT). Both ports are fully reconfigurable.
     left: HeisePortConfig = field(default_factory=lambda: HeisePortConfig(
-        name="Pressure", role="pressure", unit="psi"))
-    right: HeisePortConfig = field(default_factory=lambda: HeisePortConfig(
         name="Temperature", role="temperature", unit="F"))
+    right: HeisePortConfig = field(default_factory=lambda: HeisePortConfig(
+        name="Pressure", role="pressure", unit="psi"))
 
     def ports(self) -> List[HeisePortConfig]:
         return [self.left, self.right]
@@ -126,9 +129,10 @@ class HeiseConfig:
             return HeisePortConfig(**{k: v for k, v in p.items()
                                       if k in port_fields})
 
-        left = mk_port(d.pop("left", None), HeisePortConfig())
-        right = mk_port(d.pop("right", None), HeisePortConfig(
+        left = mk_port(d.pop("left", None), HeisePortConfig(
             name="Temperature", role="temperature", unit="F"))
+        right = mk_port(d.pop("right", None), HeisePortConfig(
+            name="Pressure", role="pressure", unit="psi"))
         return cls(left=left, right=right,
                    **{k: v for k, v in d.items()
                       if k in known and k not in ("left", "right")})

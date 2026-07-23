@@ -134,7 +134,7 @@ def dev():
 def test_connect_and_poll(dev):
     dev.connect()
     assert dev.connected and dev.sim_mode
-    assert dev.channel_names() == ["Pressure", "Temperature"]
+    assert dev.channel_names() == ["Temperature", "Pressure"]
     assert _wait(lambda: dev.frame_count() >= 5)
     latest = dev.latest()
     assert 14.0 < latest["Pressure"] < 15.5          # ~ambient psi
@@ -161,8 +161,8 @@ def test_set_pressure_unit_live(dev):
     before = dev.latest()["Pressure"]     # psi, ~14.7
     name = dev.set_pressure_unit("kPa")
     assert name == "kPa"
-    assert dev.config.left.unit == "kPa"
-    assert dev.get_unit_codes()[0] == 7
+    assert dev.config.right.unit == "kPa"
+    assert dev.get_unit_codes()[1] == 7
     n0 = dev.frame_count()
     assert _wait(lambda: dev.frame_count() > n0 + 2)
     after = dev.latest()["Pressure"]
@@ -193,16 +193,34 @@ def test_start_requires_connect(dev):
 
 
 def test_single_port_config():
+    """Disabling one driver-side port must not shift the other port's
+    value (the indicator still transmits both — map by position)."""
     cfg = HeiseConfig(force_sim=True, poll_s=0.05)
-    cfg.right.role = "off"
+    cfg.left.role = "off"                  # temperature off
     d = HeiseGauge(cfg)
     try:
         d.connect()
         assert d.channel_names() == ["Pressure"]
         assert _wait(lambda: d.frame_count() >= 2)
-        assert "Pressure" in d.latest()
+        latest = d.latest()
+        assert "Pressure" in latest
+        assert 14.0 < latest["Pressure"] < 15.5   # NOT the ~72F value
     finally:
         d.disconnect()
+
+
+def test_bench_wire_format_echo_and_cr():
+    """Exact live COM4 traffic (2026-07-23): command echoed back, bare
+    CR separator, CR-only EOM — '?\\r' '\\r' '73.614870,11.430730\\r'."""
+    p = HeiseProtocol(_Wire([b"?\r", b"\r", b"73.614870,11.430730\r"]))
+    assert p.read_values() == pytest.approx([73.614870, 11.430730])
+
+
+def test_bench_wire_glued_by_timeout():
+    """The same traffic arriving as ONE timeout-glued chunk must also
+    parse (this exact blob raised 'unparseable measurement' live)."""
+    p = HeiseProtocol(_Wire([b"?\r", b"\r73.614870,11.430730\r"]))
+    assert p.read_values() == pytest.approx([73.614870, 11.430730])
 
 
 # ── comscan ──────────────────────────────────────────────────────────────

@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSWT Tunnel — Red Lion G315 — User Documentation</title>
+<style>
+:root{--bg:#1e1e1e;--bg2:#252526;--bg3:#2d2d30;--text:#e0e0e0;--dim:#a0a0a0;
+ --accent:#0078d4;--accent2:#3399ff;--ok:#4caf50;--warn:#ff9800;--err:#f44336;
+ --border:#3f3f46;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+ font:15px/1.6 "Segoe UI",system-ui,sans-serif}
+nav{position:fixed;top:0;left:0;bottom:0;width:240px;background:var(--bg2);
+ border-right:1px solid var(--border);padding:18px 14px;overflow-y:auto}
+nav .appname{font-size:15px;font-weight:600;color:var(--accent2);margin:0 0 2px}
+nav .ver{font-family:Consolas,monospace;font-size:12px;color:var(--dim);
+ margin-bottom:14px}
+nav a{display:block;color:var(--dim);text-decoration:none;padding:4px 8px;
+ border-radius:4px;font-size:13.5px}
+nav a:hover{background:#3a3a3c;color:var(--text)}
+main{margin-left:240px;padding:28px 40px;max-width:920px}
+h1,h2,h3{color:#fff;line-height:1.3}
+h2{border-bottom:1px solid var(--border);padding-bottom:6px;margin-top:42px}
+code,pre{font-family:Consolas,"Cascadia Mono",monospace;font-size:13.5px}
+code{background:var(--bg3);padding:1px 5px;border-radius:3px;color:#9cdcfe}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+ padding:12px 14px;overflow-x:auto;color:#dcdcaa}
+pre code{background:none;padding:0;color:inherit}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;
+ vertical-align:top}
+th{background:var(--bg3);color:#fff}
+tr:nth-child(even) td{background:var(--bg2)}
+.note,.warn,.danger{border-left:4px solid;border-radius:4px;
+ padding:10px 14px;margin:14px 0;background:var(--bg2)}
+.note{border-color:var(--accent)} .warn{border-color:var(--warn)}
+.danger{border-color:var(--err)}
+footer{margin-top:48px;padding-top:14px;border-top:1px solid var(--border);
+ color:var(--dim);font-size:13px}
+@media(max-width:860px){nav{position:static;width:auto;border-right:0;
+ border-bottom:1px solid var(--border)}main{margin-left:0;padding:20px}}
+</style>
+</head>
+<body>
+<nav>
+ <div class="appname">SSWT Tunnel — Red Lion G315</div>
+ <div class="ver">v1.1.0 · tunnel_plc</div>
+ <a href="#overview">1 · Overview &amp; purpose</a>
+ <a href="#hardware">2 · Hardware &amp; connection</a>
+ <a href="#start">3 · Getting started</a>
+ <a href="#gui">4 · GUI guide</a>
+ <a href="#config">5 · Configuration reference</a>
+ <a href="#safety">6 · Safety &amp; interlocks</a>
+ <a href="#trouble">7 · Troubleshooting</a>
+ <a href="#history">8 · Version history</a>
+</nav>
+<main>
+
+<h1>SSWT Tunnel — Red Lion G315</h1>
+<p>User documentation for the <code>tunnel_plc</code> package —
+Freestream device driver + PyQt6 dark-mode GUI for the sub-sonic wind
+tunnel itself: fan speed and start/stop.</p>
+
+<h2 id="overview">1 · Overview &amp; purpose</h2>
+<p>The tunnel is run by a <b>Red Lion G315 HMI at 192.168.1.50</b>
+acting as a Modbus TCP slave (<b>port 502, unit 1</b>). The G315
+bridges a GE VersaMax PLC (fans, heater, status lights; Ethernet SRTP)
+and a GE FanDrive (RPM setpoint/actual; RS-485 SNP), re-exporting the
+PLC tags as Crimson 32-bit &quot;L4&quot; gateway blocks.</p>
+<pre><code>Freestream ── Modbus TCP :502 ──&gt; Red Lion G315 (.50)
+                                    ├─ GE SRTP :18245 ──&gt; VersaMax PLC (.31)
+                                    │    fans, heater, status lights
+                                    └─ RS-485 SNP ──&gt; GE FanDrive
+                                         RPM_Set (R00102), Actual_RPM (R00200)</code></pre>
+<div class="danger"><b>We talk ONLY to the G315.</b> The FanDrive has no
+network path (SNP is single-master — never attach a second serial
+master), and going SRTP-direct to the VersaMax would bypass the HMI's
+existing logic.</div>
+<p>The architecture is <b>two strictly separated classes</b>:
+<code>TunnelMonitor</code> (read-only poller — has <i>no write
+methods</i>, a test enforces this) and <code>TunnelControl</code> (the
+only write path — refuses to instantiate without
+<code>enable_writes=True</code>; in the GUI it does not even exist
+until the operator ARMS writes).</p>
+
+<h2 id="hardware">2 · Hardware &amp; connection</h2>
+<h3>Register map (authoritative: read_mappings.txt / write_mappings.txt)</h3>
+<p>Crimson L4 gateway blocks: each element = two 16-bit holding
+registers; element N lives at protocol address 2·(N−1).</p>
+<h4>Block1 — READ, elements 1–16 @ address 0 (32 registers, one atomic FC3 read)</h4>
+<table>
+<tr><th>#</th><th>tag</th><th>#</th><th>tag</th></tr>
+<tr><td>1</td><td>RPM_Set</td><td>9</td><td>Fan_Running_Light</td></tr>
+<tr><td>2</td><td>Actual_RPM</td><td>10</td><td>Console_Control_Light</td></tr>
+<tr><td>3</td><td>Tunnel_Fan_Stop_Button</td><td>11</td><td>Oil_Level_Low_Light</td></tr>
+<tr><td>4</td><td>Tunnel_Fan_Start_Button</td><td>12</td><td>Inverter_Fault_Light</td></tr>
+<tr><td>5</td><td>Cooling_Fan_Start_Button</td><td>13</td><td>Tunnel_Fan_Light_Start</td></tr>
+<tr><td>6</td><td>Cooling_Fan_Stop_Button</td><td>14</td><td>Tunnel_Fan_Light_Stop</td></tr>
+<tr><td>7</td><td>Bearing_Heater_On_Button</td><td>15</td><td>Cooling_Fan_Light_Start</td></tr>
+<tr><td>8</td><td>Bearing_Temp_Low_Light</td><td>16</td><td>Cooling_Fan_Light_Stop</td></tr>
+</table>
+<p><b>No analog channels are in the gateway</b> — pressures/temps stay
+with the DAQ devices; Mach/Reynolds are computed by Freestream from its
+own DAQ channels.</p>
+<h4>Block2 — WRITE, elements 101–105</h4>
+<table>
+<tr><th>element</th><th>protocol address</th><th>tag</th></tr>
+<tr><td>101</td><td>200</td><td>Tunnel_Fan_Start_Button</td></tr>
+<tr><td>102</td><td>202</td><td>Tunnel_Fan_Stop_Button</td></tr>
+<tr><td>103</td><td>204</td><td>Cooling_Fan_Start_Button</td></tr>
+<tr><td>104</td><td>206</td><td>Cooling_Fan_Stop_Button</td></tr>
+<tr><td>105</td><td>208</td><td>RPM_Set</td></tr>
+</table>
+<h4>Verified live 2026-07-07 (probe_tunnel.py, read-only)</h4>
+<ul>
+<li>Word order is <b>low_first</b> (RPM_Set=600 and three lit booleans
+all put the value in the low word); Actual_RPM read 0 at idle, all
+booleans clean 0/1.</li>
+<li><b>RPM registers are Crimson fixed-point ×10</b> (1 display
+decimal): register 600 = HMI display 60.0 RPM →
+<code>rpm_scale = 0.1</code>. <code>rpm_max</code> and all driver APIs
+are in true engineering RPM.</li>
+</ul>
+<h4>Bearing temperatures (opt-in Block1 extension — NOT yet in Crimson)</h4>
+<p>The analog bearing sensors are VersaMax <b>AI0007–AI0009</b>
+(<code>Analog_Feedback.B1/B2/B3</code>); today only the
+<code>Bearing_Temp_Low_Light</code> boolean reaches the gateway. To
+enable the analogs: ① in Crimson 3, extend the read gateway block with
+elements 17/18/19 mapped to <code>Analog_Feedback.B1/B2/B3</code>
+(direction 'Tag to Block', landing at protocol addresses 32/34/36) and
+re-download to the G315; ② enable <i>Bearing temperatures</i> in
+File → Settings. The Block1 poll then becomes ONE contiguous
+38-register FC3 read.</p>
+<div class="warn"><b>Unit not confirmed.</b> Scaling is linear per
+channel from <code>tunnel_tags.csv</code> (B1 raw 955–5035 → 0–150, B2
+969–4979 → 0–150, B3 930–4994 → 0–150). The unit label defaults to °C
+but the cal vintage/unit has not been confirmed on the rig — it could
+equally be °F. Verify against the bearing RTD spec before trusting
+absolute values; the label is editable in Settings.</div>
+
+<h2 id="start">3 · Getting started</h2>
+<pre><code>python run_tunnel_plc_app.py --sim   # plant sim, no hardware
+python run_tunnel_plc_app.py         # real gateway — read-only until ARMED
+python -m tunnel_plc.probe_tunnel    # READ-ONLY probe / word-order check
+python -m pytest tests\test_tunnel.py</code></pre>
+<p>Simulate mode swaps in <code>SimGateway</code>: fan spool-up, fault
+injection, comm-failure injection and a write history — the full GUI
+runs with no hardware.</p>
+<h3>Manual write-validation procedure (NOT yet performed)</h3>
+<p>The write path is sim-tested only. Before first operational use,
+with a person at the console and the test section clear:</p>
+<ol>
+<li><b>RPM setpoint, fan OFF</b>: set <code>rpm_max</code> (Settings),
+arm, command a small RPM (e.g. 100). Confirm the HMI's setpoint display
+follows and RPM_Set in Block1 reads back the same value — validates
+Block2 element 105 end-to-end without motion.</li>
+<li><b>Momentary pulse</b>: command <i>Cooling fan START</i> (the
+benign load) and watch the VersaMax/HMI: the button must latch the fan
+on from a single 250 ms pulse, exactly like a touchscreen press. If it
+needs a longer hold, raise <code>button_hold_ms</code>; when satisfied,
+set <code>momentary_verified</code> in Settings to silence the
+per-pulse warnings.</li>
+<li><b>Tunnel fan start/stop</b>: only after 1–2 pass, low RPM first,
+and verify <i>stop</i> works before anything else matters.</li>
+<li>Record the verified <code>rpm_max</code> in a saved config
+JSON.</li>
+</ol>
+
+<h2 id="gui">4 · GUI guide</h2>
+<h3>Connection bar</h3>
+<p><b>Gateway IP</b> · <b>Simulate</b> · data-age/staleness readout
+(<code>data 0.4s</code> turns to a red <code>STALE Ns</code>) · status
+lamp (DISCONNECTED / SIMULATION / LIVE (read-only) / LIVE + ARMED) ·
+<b>Connect</b> / <b>Disconnect</b>.</p>
+<h3>Dashboard</h3>
+<ul>
+<li><b>Fan speed</b>: RPM gauge (actual + setpoint marker against
+<code>rpm_max</code>) with an animated fan rotor.</li>
+<li><b>Status lights (VersaMax)</b>: Fan running, Console control,
+INVERTER FAULT, OIL LEVEL LOW, Bearing temp low, Bearing heater, and
+the four fan start/stop lights — fault lights render in the danger
+color when lit. Below them the three bearing-temperature readouts
+(&quot;—&quot; until the opt-in extension is enabled).</li>
+<li><b>RPM history</b>: Actual RPM (solid) and RPM set (dashed) vs
+time.</li>
+</ul>
+<h3>Control section (bottom)</h3>
+<p>Visibly <b>DISARMED</b> by default. <b>ARM WRITES</b> requires a
+connection, a configured <code>rpm_max</code> (&gt; 0) and a Yes on the
+confirm dialog; only then is a <code>TunnelControl</code> constructed.
+Armed controls: <b>RPM setpoint + Apply RPM</b> (spin box clamped to
+<code>rpm_max</code>), <b>Tunnel fan START/STOP</b>, <b>Cooling fan
+START/STOP</b>. Every write lands in the write-log table (Time, Tag,
+Old → New, Note). Disconnecting, a comm watchdog drop, or unchecking
+ARM destroys the control object again.</p>
+<h3>Menus</h3>
+<p><b>File</b>: Settings… (Ctrl+,), Save/Load config, Quit.
+<b>Help</b>: Documentation (this page), About.</p>
+
+<h2 id="config">5 · Configuration reference</h2>
+<h3><code>TunnelConfig</code></h3>
+<table>
+<tr><th>field</th><th>default</th><th>meaning</th></tr>
+<tr><td><code>ip</code></td><td>192.168.1.50</td><td>G315 gateway address</td></tr>
+<tr><td><code>port</code></td><td>502</td><td>Modbus TCP port</td></tr>
+<tr><td><code>unit_id</code></td><td>1</td><td>Modbus unit/slave id</td></tr>
+<tr><td><code>poll_s</code></td><td>0.5</td><td>Block1 poll period (2 Hz)</td></tr>
+<tr><td><code>stale_after_s</code></td><td>3.0</td><td>snapshot older than
+    this = stale (commands refused, stops excepted)</td></tr>
+<tr><td><code>backoff_min_s</code> / <code>backoff_max_s</code></td>
+    <td>1.0 / 30.0</td><td>reconnect backoff (doubles per failure)</td></tr>
+<tr><td><code>modbus_timeout_s</code></td><td>2.0</td><td>Modbus transaction
+    timeout</td></tr>
+<tr><td><code>word_order</code></td><td>low_first</td><td>32-bit register
+    pair order within an L4 element (VERIFIED LIVE 2026-07-07)</td></tr>
+<tr><td><code>word_order_verified</code></td><td>True</td><td>records that
+    the order was locked in from a live nonzero read</td></tr>
+<tr><td><code>rpm_scale</code></td><td>0.1</td><td>register→RPM scale
+    (Crimson fixed-point ×10; verified live)</td></tr>
+<tr><td><code>bearing_temps</code></td><td>False</td><td>opt-in extended
+    38-register Block1 read (needs the Crimson block extension
+    first)</td></tr>
+<tr><td><code>bearing_cal_b1/b2/b3</code></td>
+    <td>[955,5035,0,150] · [969,4979,0,150] · [930,4994,0,150]</td>
+    <td>per-channel linear scaling [raw_lo, raw_hi, eng_lo, eng_hi] from
+    tunnel_tags.csv</td></tr>
+<tr><td><code>bearing_unit</code></td><td>°C</td><td>display unit for scaled
+    values (vintage NOT confirmed — could be °F)</td></tr>
+<tr><td><code>rpm_max</code></td><td><b>0 = not configured</b></td>
+    <td>RPM clamp; ALL RPM writes are refused while 0</td></tr>
+<tr><td><code>button_hold_ms</code></td><td>250</td><td>momentary button
+    pulse width (write 1, hold, write 0)</td></tr>
+<tr><td><code>momentary_verified</code></td><td>False</td><td>records the
+    physical pulse test vs the HMI buttons (silences per-pulse
+    warnings)</td></tr>
+<tr><td><code>force_sim</code></td><td>False</td><td>use the plant
+    simulator</td></tr>
+<tr><td><code>plot_window_s</code></td><td>300</td><td>RPM history plot
+    window</td></tr>
+</table>
+
+<h2 id="safety">6 · Safety &amp; interlocks</h2>
+<ul>
+<li><b>Monitor/control separation</b> — <code>TunnelMonitor</code> has
+no write methods (test-enforced); <code>TunnelControl</code> refuses to
+instantiate without keyword-only <code>enable_writes=True</code>, and in
+the GUI no write-capable object exists until the operator ARMS.</li>
+<li><b>ARM gating</b> — arming requires a live connection, a configured
+<code>rpm_max</code> and an explicit confirmation dialog naming the real
+machinery.</li>
+<li><b>RPM clamp</b> — setpoints clamp to <code>rpm_max</code>; all RPM
+writes are refused while <code>rpm_max</code> is 0 (the shipped
+default).</li>
+<li><b>Fault/staleness interlock</b> — commands are refused while the
+snapshot is stale or <code>Inverter_Fault_Light</code> is set.
+<b>Deliberate exception:</b> the two <b>stop</b> buttons bypass those
+interlocks (stopping is the safe direction) and only require a live
+gateway.</li>
+<li><b>Momentary buttons</b> — fan buttons are momentary: write 1, hold
+250 ms, write 0 — mirroring a touchscreen press.</li>
+<li><b>Write audit</b> — every write is logged (timestamp, old, new) to
+<code>write_log</code> and the GUI table.</li>
+</ul>
+
+<h2 id="trouble">7 · Troubleshooting</h2>
+<table>
+<tr><th>symptom</th><th>diagnosis / fix</th></tr>
+<tr><td>Every control press raises
+<code>ExceptionResponse(function_code=144, exception_code=2)</code>
+(seen live 2026-07-07)</td>
+<td>FC16 write rejected, ILLEGAL DATA ADDRESS — the slave serves the
+registers for reading but refuses writes there. Fix on the Crimson side
+(open SSWT_Logger_G315_v2 in Crimson 3): ① Communications → Modbus TCP
+slave driver: <b>'Read Only' must be NO</b>; ② the Block2 gateway block
+(elements 101–105) must have direction <b>'Block to Tag'</b> (Block1
+stays 'Tag to Block'); ③ re-download to the G315. Then run
+<code>python tunnel_write_check.py --arm</code> — it writes the SAME
+retained RPM_Set value back (a plant no-op) and reports FC16/FC6
+acceptance + readback. The driver itself tries FC16 and falls back to
+FC6 automatically, and write rejections surface in the status bar with
+this diagnosis.</td></tr>
+<tr><td>STALE data / commands refused</td>
+<td>No successful Block1 poll within <code>stale_after_s</code>. The
+monitor reconnects with exponential backoff — check the network path to
+192.168.1.50. Stop buttons still work while connected.</td></tr>
+<tr><td>Cannot ARM</td>
+<td><code>rpm_max</code> is 0 (not configured) — set the real fan
+speed limit in File → Settings first; arming also requires a running
+monitor.</td></tr>
+<tr><td>Bearing temperatures show &quot;—&quot;</td>
+<td>The opt-in extension is off, or the Crimson block was never
+extended with elements 17–19 (see §2). Both are required.</td></tr>
+<tr><td>Fan button pulse doesn't latch the fan</td>
+<td>The 250 ms pulse may be too short for the VersaMax logic — raise
+<code>button_hold_ms</code> and repeat the supervised momentary test
+(§3, step 2).</td></tr>
+</table>
+
+<h2 id="history">8 · Version history</h2>
+<table>
+<tr><th>version</th><th>date</th><th>changes</th></tr>
+<tr><td>1.1.0</td><td>2026-07</td><td>FC16 writes with automatic FC6
+fallback + write-rejection diagnosis; opt-in bearing-temperature Block1
+extension (elements 17–19); transport-exception hardening in the poll
+loop.</td></tr>
+<tr><td>1.0.0</td><td>2026-07-07</td><td>Initial gateway driver + GUI:
+read-only TunnelMonitor / ARM-gated TunnelControl split, momentary fan
+buttons, rpm_max clamp with refuse-at-0 default; live-verified
+low-first word order and ×10 RPM scaling.</td></tr>
+</table>
+
+<footer>SSWT Tunnel — Red Lion G315 · tunnel_plc v1.1.0 ·
+Author: C. Fagley — casey.fagley@afacademy.af.edu</footer>
+</main>
+</body>
+</html>

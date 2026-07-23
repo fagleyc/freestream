@@ -20,12 +20,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
-from PyQt6.QtWidgets import (QComboBox, QDockWidget, QFileDialog,
+from PyQt6.QtWidgets import (QComboBox, QDialog, QDockWidget, QFileDialog,
                              QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-                             QPushButton, QSizePolicy, QTabWidget, QToolBar,
-                             QVBoxLayout, QWidget)
+                             QPushButton, QSizePolicy, QTabWidget,
+                             QTextBrowser, QToolBar, QVBoxLayout, QWidget)
 
-from .. import theme
+from .. import about, theme
 from ..config import FreestreamConfig
 from ..hal import Streaming, capabilities
 from ..manager import DeviceManager
@@ -190,6 +190,59 @@ class PaneHandle(QPushButton):
             self.setText("◀" if open_ else "▶")        # collapse | expand
         else:
             self.setText("▶" if open_ else "◀")
+
+
+class AboutDialog(QDialog):
+    """Shared-template About dialog: name + version prominent, one-
+    paragraph summary, author/contact line, compact version-history
+    table. Dark theme comes from the app stylesheet."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        import html as _html
+        self.setWindowTitle(f"About {about.APP_NAME}")
+        self.setFixedSize(560, 520)
+
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        title = QLabel(about.APP_NAME)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 20pt; font-weight: bold;")
+        v.addWidget(title)
+
+        ver = QLabel(f"Version {about.__version__}")
+        ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ver.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        v.addWidget(ver)
+
+        summary = QLabel(about.SUMMARY)
+        summary.setWordWrap(True)
+        v.addWidget(summary)
+
+        author = QLabel(f"Author: {about.AUTHOR} — {about.CONTACT}")
+        author.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        author.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        v.addWidget(author)
+
+        rows = "".join(
+            "<tr>"
+            f"<td style='padding:2px 10px 2px 0; white-space:nowrap;'>"
+            f"<b>{_html.escape(version)}</b></td>"
+            f"<td style='padding:2px 10px 2px 0; white-space:nowrap;"
+            f" color:{theme.TEXT_DIM};'>{_html.escape(iso_date)}</td>"
+            f"<td style='padding:2px 0;'>{_html.escape(note)}</td>"
+            "</tr>"
+            for version, iso_date, note in about.VERSION_HISTORY
+        )
+        hist = QTextBrowser()
+        hist.setHtml("<table cellspacing='0' cellpadding='0'>"
+                     + rows + "</table>")
+        v.addWidget(hist, 1)
+
+        btn = QPushButton("Close")
+        btn.clicked.connect(self.accept)
+        v.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
 
 class FreestreamMainWindow(QMainWindow):
@@ -514,6 +567,31 @@ class FreestreamMainWindow(QMainWindow):
                        "Freestream is connected; standalone otherwise.")
         act.triggered.connect(self._open_balance_cal)
         adv_menu.addAction(act)
+
+        # Help — always the LAST menu in the bar
+        help_menu = self.menuBar().addMenu("&Help")
+        act = QAction("&Documentation", self)
+        act.triggered.connect(self._open_documentation)
+        help_menu.addAction(act)
+        help_menu.addSeparator()
+        act = QAction(f"&About {about.APP_NAME}", self)
+        act.triggered.connect(self._show_about)
+        help_menu.addAction(act)
+
+    def _open_documentation(self) -> None:
+        """Help ▸ Documentation — open docs/index.html in the browser."""
+        import webbrowser
+        docs = Path(__file__).resolve().parents[2] / "docs" / "index.html"
+        if not docs.is_file():
+            QMessageBox.warning(self, "Not Found",
+                                f"Documentation not found at:\n{docs}")
+            return
+        webbrowser.open(docs.as_uri())
+
+    def _show_about(self) -> None:
+        """Help ▸ About — shared-template About dialog."""
+        dlg = AboutDialog(self)
+        dlg.exec()
 
     def _open_balance_cal(self) -> None:
         """Advanced ▸ Balance Calibration — the balcal_gui window.

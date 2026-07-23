@@ -100,13 +100,13 @@ def probe_port(port: PortInfo, bauds=(9600,), timeout_s: float = 0.8,
                 pass
             sp.write(b"?\r")
             lines = []
-            for _ in range(2):
-                raw = sp.read_until(b"\n")
+            for _ in range(4):      # echo + blank(s) + data (CR EOM)
+                raw = sp.read_until(b"\r")
                 if not raw:
                     break
                 line = raw.strip(b"\r\n \t").decode("ascii",
                                                     errors="replace")
-                if line:
+                if line and line != "?":
                     lines.append(line)
             if lines:
                 result.lines = lines

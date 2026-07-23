@@ -13,7 +13,7 @@ Layers
 ``app``       — standalone PyQt6 GUI (``python -m lswt_sting.app``)
 """
 
-__version__ = "0.1.0"
+from .about import __version__                        # noqa: F401
 
 from .config import StingAxisConfig, StingConfig      # noqa: F401
 from .datamodel import ScanRingBuffer                 # noqa: F401
