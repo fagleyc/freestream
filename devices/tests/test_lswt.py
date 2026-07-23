@@ -448,3 +448,34 @@ def test_gui_refresh_and_ring_plot_path(qapp):
     finally:
         panel.shutdown()
         win.close()
+
+
+def test_gui_embedded_panel_shares_injected_drive(qapp):
+    """Embedding contract (host suites): ``device=`` + ``embedded=True``
+    binds the panel to the INJECTED live drive (never a second
+    connection), hides the Connection row, leaves the host's on_status
+    wiring alone, and the panel comes alive on its refresh timer when
+    the HOST connects — arming stays the operator's explicit act."""
+    from lswt.app.main_window import LswtPanel
+    dev = LswtDrive(_sim_config())
+    panel = LswtPanel(device=dev, embedded=True)
+    try:
+        assert panel.device is dev                 # ONE drive ever
+        assert panel.config is dev.config
+        assert not panel.conn_group.isVisibleTo(panel)
+        assert dev.on_status is None               # host keeps the slot
+        assert not panel.arm_btn.isEnabled()
+
+        dev.connect()                              # the HOST connects
+        panel._refresh_ui()                        # UI-timer tick
+        assert panel.arm_btn.isEnabled(), \
+            "panel did not come alive on the host's connect"
+        assert "SIM" in panel.lamp.text()
+        assert not panel.start_btn.isEnabled()     # still DISARMED
+
+        dev.disconnect()                           # host disconnects…
+        panel._refresh_ui()
+        assert not panel.arm_btn.isEnabled()
+    finally:
+        panel._ui_timer.stop()
+        dev.disconnect()

@@ -87,3 +87,34 @@ def test_unit_switch_disconnected_updates_config(win):
     panel.unit_combo.setCurrentText("mbar")
     assert panel.config.left.unit == "mbar"
     assert panel.tiles["Pressure"].unit_lbl.text() == "mbar"
+
+
+def test_embedded_panel_follows_external_connect(app):
+    """Embedding contract (host suites): ``device=`` + ``embedded=True``
+    binds the panel to the INJECTED live gauge (never a second serial
+    connection), hides the Connection row, leaves the host's on_status
+    wiring alone, and the lamp/tiles follow a connect made OUTSIDE the
+    panel's own buttons via the refresh timer."""
+    from heise.app.main_window import HeisePanel
+    from heise.device import HeiseGauge
+    dev = HeiseGauge(HeiseConfig(force_sim=True, poll_s=0.05))
+    panel = HeisePanel(device=dev, embedded=True)
+    try:
+        assert panel.device is dev                 # ONE gauge ever
+        assert panel.config is dev.config
+        assert not panel.conn_group.isVisibleTo(panel)
+        assert dev.on_status is None               # host keeps the slot
+
+        dev.connect()                              # the HOST connects
+        _pump(app, 0.4)
+        panel._refresh_ui()                        # UI-timer tick
+        assert panel.lamp.text() == "SIMULATION", \
+            "panel did not come alive on the host's connect"
+        assert "14." in panel.tiles["Pressure"].value_lbl.text()
+
+        dev.disconnect()                           # host disconnects…
+        panel._refresh_ui()
+        assert panel.lamp.text() == "DISCONNECTED"
+    finally:
+        panel._ui_timer.stop()
+        dev.disconnect()

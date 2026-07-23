@@ -99,7 +99,8 @@ class HeisePanel(QWidget):
         self._ui_timer.setInterval(250)
         self._ui_timer.timeout.connect(self._refresh_ui)
         self._ui_timer.start()
-        self._set_connected_ui(self.device.connected)
+        self._last_connected = self.device.connected
+        self._set_connected_ui(self._last_connected)
 
     # ── UI construction ──────────────────────────────────────────────────
     def _build_ui(self) -> None:
@@ -293,11 +294,13 @@ class HeisePanel(QWidget):
             self.statusSignal.emit(f"Connect failed: {exc}")
             log.exception("connect failed")
             return
+        self._last_connected = True
         self._set_connected_ui(True)
         self._refresh_battery()
 
     def _handle_disconnect(self) -> None:
         self.device.disconnect()
+        self._last_connected = False
         self._set_connected_ui(False)
 
     def _unit_changed(self, unit: str) -> None:
@@ -368,7 +371,16 @@ class HeisePanel(QWidget):
                                     f"font-weight: bold;")
 
     def _refresh_ui(self) -> None:
-        if not self.device.connected or self.device.ring is None:
+        # track connection changes made OUTSIDE the panel's own buttons
+        # (embedded hosts) so the lamp/controls come alive / lock down
+        # without a Connect click.
+        connected = self.device.connected
+        if connected != self._last_connected:
+            self._last_connected = connected
+            self._set_connected_ui(connected)
+            if connected:
+                self._refresh_battery()
+        if not connected or self.device.ring is None:
             return
         latest = self.device.latest()
         if latest:

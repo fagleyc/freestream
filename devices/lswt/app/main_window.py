@@ -54,20 +54,44 @@ def _envelope(x: np.ndarray, y: np.ndarray, max_bins: int = _MAX_PLOT_BINS):
 
 
 class LswtPanel(QWidget):
-    """The complete LSWT fan GUI for one tunnel."""
+    """The complete LSWT fan GUI for one tunnel (also embeddable).
+
+    ``device``/``embedded`` support hosting the EXACT same panel inside
+    Freestream: pass the host's live :class:`LswtDrive` so only ONE
+    Modbus connection ever exists, and ``embedded=True`` to hide the
+    Connection row (the host owns connect/disconnect — the panel comes
+    alive on its refresh timer when the host connects). The arming
+    safety is untouched: Start/Stop/Apply stay disabled until the
+    operator ARMS fan control in the panel. With the defaults the
+    standalone app behaviour is unchanged — the panel builds and owns
+    its own drive.
+    """
 
     statusSignal = pyqtSignal(str)
     tunnelChanged = pyqtSignal(str)      # new window-title label
 
-    def __init__(self, cfg: Optional[LswtConfig] = None, parent=None):
+    def __init__(self, cfg: Optional[LswtConfig] = None, parent=None,
+                 *, device: Optional[LswtDrive] = None,
+                 embedded: bool = False):
         super().__init__(parent)
         self.setObjectName("root")
-        self.config = cfg or LswtConfig.for_tunnel("north")
-        self.device = LswtDrive(self.config)
+        self._embedded = bool(embedded)
+        if device is not None:
+            self.device = device
+            self.config = cfg if cfg is not None else device.config
+        else:
+            self.config = cfg or LswtConfig.for_tunnel("north")
+            self.device = LswtDrive(self.config)
         self._armed = False
 
         self._build_ui()
-        self.device.on_status = self.statusSignal.emit
+        if not self._embedded:
+            # standalone: pipe driver status (poll thread!) through the
+            # signal so it lands on the GUI thread. Embedded hosts keep
+            # their own on_status wiring — grabbing it here would leave a
+            # dangling callback into a deleted panel after the host
+            # closes the containing dialog.
+            self.device.on_status = self.statusSignal.emit
 
         self._ui_timer = QTimer(self)
         self._ui_timer.setInterval(100)
@@ -84,7 +108,8 @@ class LswtPanel(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        conn = QGroupBox("Connection — ABB ACS530 fan drive (Modbus TCP)")
+        conn = self.conn_group = QGroupBox(
+            "Connection — ABB ACS530 fan drive (Modbus TCP)")
         cl = QHBoxLayout(conn)
         cl.setSpacing(8)
         cl.addWidget(QLabel("Tunnel"))
@@ -129,6 +154,8 @@ class LswtPanel(QWidget):
         self.defaults_btn.clicked.connect(self.save_defaults)
         cl.addWidget(self.defaults_btn)
         root.addWidget(conn)
+        if self._embedded:              # host owns connect/disconnect
+            conn.hide()
 
         # ── dashboard ──
         mid = QHBoxLayout()

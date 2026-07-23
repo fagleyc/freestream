@@ -35,7 +35,17 @@ mirrors the device's standalone ``run_<device>`` app, assembled from
   - daqbook → DaqbookPanel (channel tiles, history, Channels table);
   - ate → AteBalancePanel (live loads, motion drives, run/dwell — the
     device's single-slot callbacks are CHAINED so the adapter's own
-    hooks keep firing, and restored on dialog close via detach()).
+    hooks keep firing, and restored on dialog close via detach());
+  - lswt → LswtPanel (Hz gauge + rotor, flow tiles, strip charts, and
+    the ARM-gated fan control — the arming safety is IDENTICAL to the
+    standalone app: Start/Stop/Apply stay disabled until the operator
+    arms fan control, and the E-STOP is always live);
+  - lswt_sting → StingPanel (Alpha/Beta axis boxes with absolute Go /
+    step jog / zeroing, Go Both, STOP ALL, angle history, Limits tab);
+  - ni_daq → NiDaqPanel (bridge tiles, history, the Forces load-limit
+    monitor, Channels table, Output & Trigger tab);
+  - heise → HeisePanel (Ptot/Temp big-number tiles, live pressure-unit
+    selector, zero/damping controls, stacked history plots).
 
   Panel widgets that would fork suite-owned policy are disabled inside
   the embedded panel (the DAQ scan-rate spins sit in the hidden
@@ -220,6 +230,88 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
         # one calibration editor now (a second live editor risked
         # clobbering a fresh cal)
         device_panel="traverse_swt.app.main_window:TraversePanel",
+    ),
+    "lswt": _spec(
+        sections=(
+            ("Communication", ("ip", "port", "unit_id",
+                               "modbus_timeout_s")),
+            ("Control", ("max_hz", "ramp_hz_per_s", "reference_sign")),
+            ("Monitor", ("poll_s", "stale_after_s")),
+            ("Display", ("plot_window_s",)),
+            ("Simulation", ("sim_tau_s",)),
+        ),
+        # tunnel/label are the adapter's IDENTITY, fixed when the mode
+        # manifest builds it (North vs South) — never a per-session
+        # dialog field (and "tunnel" is validated only in __post_init__,
+        # which a raw form setattr would bypass)
+        skip=("tunnel", "label"),
+        # the standalone app's complete panel (Hz gauge + rotor + flow
+        # tiles + strip charts + the ARM-gated fan control) as the
+        # primary tab; the arming safety is untouched — Start/Stop/Apply
+        # stay disabled until the operator arms fan control in the panel
+        device_panel="lswt.app.main_window:LswtPanel",
+        device_kwarg="device", device_tab="Monitor && Control",
+    ),
+    "lswt_sting": _spec(
+        sections=(
+            ("Communication", ("com_port", "baud", "serial_timeout_s")),
+            ("Control loop", ("move_timeout_margin",
+                              "max_consecutive_errors")),
+            ("Position persistence", ("restore_position", "state_path")),
+            ("Display", ("plot_window_s",)),
+        ),
+        # the embedded panel's Limits tab is the single live editor for
+        # the soft travel limits, park behaviour, poll period and the
+        # connect-time Z reset — a second Settings-form editor would
+        # clobber it on Apply (and no Axis tabs: the per-axis zero
+        # reference is the open-loop calibration, operator-set via the
+        # panel's "Set Current Angle…" only)
+        skip=("poll_ms", "park_on_disconnect", "park_alpha_deg",
+              "init_reset"),
+        # the standalone app's complete panel (Alpha/Beta axis boxes +
+        # step jog + Go Both + STOP ALL + history + Limits) as the
+        # primary tab
+        device_panel="lswt_sting.app.main_window:StingPanel",
+        device_kwarg="device", device_tab="Motion && Limits",
+    ),
+    "ni_daq": _spec(
+        sections=(
+            ("Communication", ("device_name",)),
+            ("Buffering", ("buffer_seconds", "poll_ms")),
+            ("Analog output", ("ao_update_hz",)),
+            ("Balance identity", ("balance_type", "balance_serial")),
+            ("Display", ("plot_window_s", "tile_avg_ms")),
+        ),
+        # scan_hz follows the suite-wide sample rate (Measurement Setup);
+        # the .vol/fit/layout pointers are edited in the embedded panel's
+        # Forces tab — the single editor, exactly like the strainbook
+        # (trigger/AO channel setup lives in the embedded panel's
+        # Output & Trigger tab — nested dataclasses never reach this form)
+        skip=("scan_hz", "vol_path", "cal_type", "balance_config",
+              "warn_utilization"),
+        # the standalone app's complete panel (live tiles + bridge history
+        # + Forces load-limit monitor + Channels table + Output & Trigger)
+        # as the primary tab
+        device_panel="ni_usb_6351.app.main_window:NiDaqPanel",
+        device_kwarg="device", device_tab="Live && Channels",
+    ),
+    "heise": _spec(
+        sections=(
+            ("Communication", ("com_port", "baud", "timeout_s")),
+            ("Polling", ("poll_s", "buffer_seconds",
+                         "max_consecutive_errors")),
+            ("Protocol", ("apply_units_on_connect",)),
+        ),
+        # poll_s stays editable: it IS the indicator's honest sample rate
+        # (a slow serial instrument — the adapter deliberately has no
+        # set_sample_rate, same honesty rule as the ATE); the pressure
+        # unit is edited live in the embedded panel's unit combo (the
+        # port objects are nested and never reach this form, and the
+        # adapter re-asserts the canonical Ptot/Temp names)
+        # the standalone app's complete panel (Ptot/Temp tiles + unit
+        # selector + zero/damping + stacked history) as the primary tab
+        device_panel="heise.app.main_window:HeisePanel",
+        device_kwarg="device", device_tab="Live && History",
     ),
 }
 

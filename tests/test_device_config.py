@@ -99,6 +99,10 @@ EXPECTED_TABS = {
     "traverse": ["Motion && Calibration", "Settings", "X axis", "Y axis",
                  "Z axis"],
     "ate": ["Live && Motion && Run", "Settings"],
+    "lswt": ["Monitor && Control", "Settings"],
+    "lswt_sting": ["Motion && Limits", "Settings"],
+    "ni_daq": ["Live && Channels", "Settings"],
+    "heise": ["Live && History", "Settings"],
 }
 
 
@@ -108,7 +112,7 @@ def test_every_device_has_a_spec():
 
 def test_dialog_tabs_per_device(app, all_manifest):
     seen = {}
-    for mode in ("mode1", "mode2"):
+    for mode in ("mode1", "mode2", "LSWT-LSWTSting-NI"):
         mgr = DeviceManager(mode, sim=True, manifest_path=all_manifest)
         for dev_id, dev in mgr.devices.items():
             if dev_id in seen:
