@@ -71,17 +71,32 @@ ROLES = ("pressure", "temperature", "off")
 
 
 def unit_code(unit: Union[int, str]) -> int:
-    """Pressure unit name or code → EUNIT code."""
+    """Pressure unit name or code → EUNIT code.
+
+    Any non-negative INT is passed through verbatim — the instrument
+    validates the code, and firmware may expose engineering units
+    beyond the documented 0-12 (live 2026-07-23: a rig indicator was
+    set to code 16). ``unit_name`` renders an unknown code as
+    ``"code16"``; this MUST round-trip back to 16 so a saved/echoed
+    config unit can be re-applied without an ``Unknown pressure unit``
+    crash (the freestream device_configs bundle stores the string).
+    """
     if isinstance(unit, int):
-        if unit not in PRESSURE_UNITS:
+        if unit < 0:
             raise ValueError(f"Unknown EUNIT code {unit}")
         return unit
-    try:
-        return _UNIT_CODES[unit.strip().lower()]
-    except KeyError:
-        raise ValueError(
-            f"Unknown pressure unit {unit!r} — one of "
-            f"{sorted(_UNIT_CODES)}") from None
+    s = unit.strip()
+    if s.lower() in _UNIT_CODES:
+        return _UNIT_CODES[s.lower()]
+    if s.lower().startswith("code"):            # "code16" → 16 (round-trip)
+        try:
+            return int(s[4:])
+        except ValueError:
+            pass
+    raise ValueError(
+        f"Unknown pressure unit {unit!r} — one of "
+        f"{sorted(_UNIT_CODES)} (or an EUNIT code the instrument "
+        f"accepts, e.g. 'code16')")
 
 
 def unit_name(code: int) -> str:

@@ -34,7 +34,34 @@ def test_unit_code_mapping():
     with pytest.raises(ValueError):
         unit_code("furlongs")
     with pytest.raises(ValueError):
-        unit_code(99)
+        unit_code(-1)                     # negatives are never valid
+
+
+def test_undocumented_unit_code_round_trips():
+    """A firmware unit beyond the documented 0-12 (live 2026-07-23: a
+    rig indicator was set to code 16) renders as 'code16' and MUST
+    round-trip back — otherwise the string echoed in a saved config
+    crashes the next connect with 'Unknown pressure unit code16'."""
+    assert unit_name(16) == "code16"
+    assert unit_code("code16") == 16
+    assert unit_code(16) == 16            # undocumented code passes through
+    assert unit_code(unit_name(16)) == 16
+
+
+def test_connect_tolerates_stale_code_unit():
+    """A config whose pressure port carries the 'code16' fallback string
+    (as freestream's device_configs bundle stored it) must still connect
+    in sim — _apply_units degrades instead of raising."""
+    cfg = HeiseConfig(force_sim=True, poll_s=0.05)
+    cfg.right.role = "pressure"
+    cfg.right.unit = "code16"
+    cfg.left.role = "temperature"
+    d = HeiseGauge(cfg)
+    d.connect()
+    try:
+        assert d.connected
+    finally:
+        d.disconnect()
 
 
 def test_config_round_trip(tmp_path):

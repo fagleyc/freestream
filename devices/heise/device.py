@@ -179,7 +179,17 @@ class HeiseGauge:
         desired = list(current)
         for idx, p in enumerate(cfg.ports()):
             if p.role == "pressure" and idx < 2:
-                desired[idx] = unit_code(p.unit)
+                # A bad configured unit must NEVER kill the connection —
+                # skip it and keep the instrument's current code (live
+                # 2026-07-23: a stale "code16" bundle value raised here
+                # and failed every freestream connect).
+                try:
+                    desired[idx] = unit_code(p.unit)
+                except ValueError as exc:
+                    self._status(f"Configured unit {p.unit!r} not "
+                                 f"applicable ({exc}) — keeping the "
+                                 f"instrument's {unit_name(current[idx])}")
+                    p.unit = unit_name(current[idx])
         if desired == current:
             return
         try:
