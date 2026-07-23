@@ -28,7 +28,11 @@ class SimSerial:
         self._buf = bytearray()
         self._rx = bytearray()
         self._t0 = time.time()
-        self._units = [0, 0]            # EUNIT codes (left, right)
+        #: EUNIT codes (left, right). Left is an RTD port (live bench):
+        #: it reports its own temperature-unit code and REJECTS any
+        #: attempt to write a different code (Err02, seen 2026-07-23).
+        self._units = [15, 0]
+        self._rtd_left_code = 15
         self._tare = [0, 0]
         self._zero_off = [0.0, 0.0]
         self._rng = random.Random(0x4E15E)
@@ -62,8 +66,13 @@ class SimSerial:
             self._respond(f"{self._units[0]},{self._units[1]}")
         elif u.startswith("EUNIT"):
             vals = [int(v) for v in c[5:].replace(",", " ").split()]
-            self._units = [vals[0], vals[1] if len(vals) > 1 else vals[0]]
-            self._respond("OK")
+            left = vals[0]
+            right = vals[1] if len(vals) > 1 else vals[0]
+            if left != self._rtd_left_code:
+                self._respond("Err02")      # RTD port: code locked
+            else:
+                self._units = [left, right]
+                self._respond("OK")
         elif u.startswith("ZERO"):
             self._zero_off[0] = self._pressure_psi() + self._zero_off[0]
             self._respond("OK")

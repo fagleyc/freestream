@@ -209,6 +209,36 @@ def test_single_port_config():
         d.disconnect()
 
 
+def test_connect_with_rtd_port_survives_eunit(dev):
+    """Live 2026-07-23: the RTD (left) port rejects pressure unit
+    codes — 'EUNIT 0, 0' answered Err02 and killed the connect. Units
+    must be read-modify-write and non-fatal."""
+    dev.connect()                       # raised HeiseError before fix
+    assert dev.connected
+    codes = dev.get_unit_codes()
+    assert codes[0] == 15               # RTD code untouched
+    assert codes[1] == 0                # configured psi applied
+
+
+def test_wrong_pressure_role_on_rtd_port_falls_back():
+    """Misconfigured session (pressure role on the RTD port): connect
+    must still succeed, with the unit label reflecting the instrument."""
+    cfg = HeiseConfig(force_sim=True, poll_s=0.05)
+    cfg.left.role = "pressure"          # wrong — the port is an RTD
+    cfg.left.unit = "kPa"
+    d = HeiseGauge(cfg)
+    msgs = []
+    d.on_status = msgs.append
+    try:
+        d.connect()
+        assert d.connected
+        assert any("Could not set the pressure unit" in m
+                   for m in msgs)
+        assert cfg.left.unit == "code15"    # instrument's actual code
+    finally:
+        d.disconnect()
+
+
 def test_bench_wire_format_echo_and_cr():
     """Exact live COM4 traffic (2026-07-23): command echoed back, bare
     CR separator, CR-only EOM — '?\\r' '\\r' '73.614870,11.430730\\r'."""

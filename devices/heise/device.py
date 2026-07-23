@@ -148,16 +148,38 @@ class HeiseGauge:
 
     # ── units ────────────────────────────────────────────────────────────
     def _apply_units(self) -> None:
-        """Push the configured pressure units via EUNIT (both ports —
-        RTD/temperature ports ignore the pressure code)."""
+        """Push the configured pressure unit via EUNIT.
+
+        Read-modify-write: an RTD (temperature) port REJECTS pressure
+        unit codes — live 2026-07-23, 'EUNIT 0, 0' answered Err02
+        because the left port is an RTD. Only the pressure port's code
+        is changed; the other port keeps whatever the instrument
+        reports. A units failure must never kill the connection —
+        warn and fall back to the instrument's current setting.
+        """
         cfg = self.config
-        codes = []
-        for p in cfg.ports():
-            if p.role == "pressure":
-                codes.append(unit_code(p.unit))
-            else:
-                codes.append(0)         # don't care for RTD/off ports
-        self._proto.set_units(codes[0], codes[1])
+        try:
+            current = self._proto.get_units()
+        except HeiseError as exc:
+            self._status(f"Could not read engineering units ({exc}) — "
+                         f"leaving the instrument as-is")
+            return
+        while len(current) < 2:
+            current.append(0)
+        desired = list(current)
+        for idx, p in enumerate(cfg.ports()):
+            if p.role == "pressure" and idx < 2:
+                desired[idx] = unit_code(p.unit)
+        if desired == current:
+            return
+        try:
+            self._proto.set_units(desired[0], desired[1])
+        except HeiseError as exc:
+            self._status(f"Could not set the pressure unit ({exc}) — "
+                         f"using the instrument's setting instead")
+            for idx, p in enumerate(cfg.ports()):
+                if p.role == "pressure" and idx < len(current):
+                    p.unit = unit_name(current[idx])
 
     def set_pressure_unit(self, unit: Union[int, str],
                           port: str = "both") -> str:
