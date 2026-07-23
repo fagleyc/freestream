@@ -32,24 +32,54 @@ class HeiseProtocol:
     def __init__(self, port: Optional[object] = None):
         self._sp = port
         self._lock = threading.RLock()
+        #: set by the owner before closing: in-flight reads abort at
+        #: the next timeout boundary instead of retrying, so the port
+        #: handle is never closed underneath a blocked ReadFile (which
+        #: leaks the handle on Windows → 'Access is denied' forever)
+        self.closing = threading.Event()
 
     # ── transport ────────────────────────────────────────────────────────
     @classmethod
     def open(cls, com_port: str, baud: int = 9600,
-             timeout_s: float = 1.0) -> "HeiseProtocol":
-        try:
-            import serial
-        except ImportError as exc:              # pragma: no cover
-            raise HeiseError("pyserial is not installed — "
-                             "pip install pyserial") from exc
-        try:
-            sp = serial.Serial(port=com_port, baudrate=baud,
-                               bytesize=serial.EIGHTBITS,
-                               parity=serial.PARITY_NONE,
-                               stopbits=serial.STOPBITS_ONE,
-                               timeout=timeout_s, write_timeout=timeout_s)
-        except Exception as exc:
-            raise HeiseError(f"Cannot open {com_port}: {exc}") from exc
+             timeout_s: float = 1.0,
+             _serial_factory=None) -> "HeiseProtocol":
+        if _serial_factory is None:
+            try:
+                import serial
+            except ImportError as exc:          # pragma: no cover
+                raise HeiseError("pyserial is not installed — "
+                                 "pip install pyserial") from exc
+
+            def _serial_factory():
+                return serial.Serial(
+                    port=com_port, baudrate=baud,
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                    timeout=timeout_s, write_timeout=timeout_s)
+
+        # 'Access is denied' right after a close is common on Windows
+        # USB-serial drivers (the handle takes a moment to release) —
+        # retry briefly before declaring the port taken
+        last_exc = None
+        for attempt in range(4):
+            try:
+                sp = _serial_factory()
+                break
+            except Exception as exc:            # noqa: BLE001
+                last_exc = exc
+                if "denied" not in str(exc).lower() or attempt == 3:
+                    raise HeiseError(
+                        f"Cannot open {com_port}: {exc}"
+                        + (" — the port is held by another program, "
+                           "or a previous session is still releasing "
+                           "it. Close other software using the port "
+                           "and retry."
+                           if "denied" in str(exc).lower() else "")
+                    ) from exc
+                time.sleep(0.4)
+        else:                                   # pragma: no cover
+            raise HeiseError(f"Cannot open {com_port}: {last_exc}")
         try:
             sp.dtr = True
             sp.rts = True
@@ -62,13 +92,25 @@ class HeiseProtocol:
         return self._sp is not None
 
     def close(self) -> None:
+        self.closing.set()
         with self._lock:
-            if self._sp is not None:
+            if self._sp is None:
+                return
+            sp, self._sp = self._sp, None
+            try:
+                sp.close()
+            except Exception as exc:            # noqa: BLE001
+                # a failed close leaks the OS handle → the next open
+                # gets 'Access is denied' for the process lifetime.
+                # Retry once after letting any in-flight read drain.
+                log.warning("serial close failed (%s) — retrying", exc)
+                time.sleep(0.3)
                 try:
-                    self._sp.close()
-                except Exception:               # noqa: BLE001
-                    pass
-                self._sp = None
+                    sp.close()
+                except Exception as exc2:       # noqa: BLE001
+                    log.error("serial close FAILED again (%s) — the "
+                              "port may stay locked until this "
+                              "process exits", exc2)
 
     def clear_input(self) -> None:
         with self._lock:
@@ -107,6 +149,8 @@ class HeiseProtocol:
             raise HeiseError("port not open")
         buf = b""
         for _ in range(3):
+            if self.closing.is_set():
+                raise HeiseError("port closing")
             try:
                 raw = self._sp.read_until(b"\r")
             except Exception as exc:

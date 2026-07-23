@@ -239,6 +239,120 @@ def test_wrong_pressure_role_on_rtd_port_falls_back():
         d.disconnect()
 
 
+class _SlowSilentWire:
+    """Device gone quiet: every read blocks the full timeout and
+    returns nothing (worst case for disconnect-while-reading)."""
+
+    def __init__(self, read_s=0.4):
+        self.read_s = read_s
+        self.closed = False
+        self.close_calls = 0
+
+    def write(self, data):
+        return len(data)
+
+    def read_until(self, expected=b"\r"):
+        time.sleep(self.read_s)
+        return b""
+
+    def reset_input_buffer(self):
+        pass
+
+    def close(self):
+        self.close_calls += 1
+        self.closed = True
+
+
+def test_disconnect_closes_port_even_when_device_silent(monkeypatch):
+    """Live 2026-07-23: second connect got 'Access is denied' — the
+    port handle survived a disconnect that raced a blocked read. The
+    orderly shutdown must exit the poll thread AND close the handle
+    quickly."""
+    import heise.device as heise_device
+    from heise.protocol import HeiseProtocol
+
+    good = _SlowSilentWire()
+    # respond once for the connect probe, then go silent
+    responses = [b"?\r", b"\r", b"73.6,11.4\r", b"?\r", b"\r",
+                 b"15,0\r"]
+
+    def read_until(expected=b"\r"):
+        if responses:
+            return responses.pop(0)
+        time.sleep(0.4)
+        return b""
+
+    good.read_until = read_until
+    monkeypatch.setattr(
+        HeiseProtocol, "open",
+        classmethod(lambda cls, *a, **k: HeiseProtocol(good)))
+    cfg = HeiseConfig(com_port="COM3", poll_s=0.05,
+                      apply_units_on_connect=False)
+    dev = HeiseGauge(cfg)
+    dev.connect()
+    assert dev.connected
+    time.sleep(0.3)                     # poll thread now blocked reading
+    t0 = time.perf_counter()
+    dev.disconnect()
+    took = time.perf_counter() - t0
+    assert good.closed, "port handle was NOT closed on disconnect"
+    assert took < 5.0, f"disconnect took {took:.1f}s"
+    assert not dev.connected
+
+
+def test_open_retries_on_access_denied():
+    """A just-released Windows USB-serial port briefly answers
+    'Access is denied' — open must retry before giving up."""
+    from heise.protocol import HeiseProtocol
+    attempts = []
+
+    def factory():
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise OSError("could not open port 'COM3': "
+                          "PermissionError(13, 'Access is denied.')")
+        return _SlowSilentWire(read_s=0.0)
+
+    p = HeiseProtocol.open("COM3", _serial_factory=factory)
+    assert p.is_open and len(attempts) == 3
+
+
+def test_open_gives_helpful_error_when_port_truly_held():
+    from heise.protocol import HeiseProtocol
+
+    def factory():
+        raise OSError("could not open port 'COM3': "
+                      "PermissionError(13, 'Access is denied.')")
+
+    with pytest.raises(HeiseError, match="held by another program"):
+        HeiseProtocol.open("COM3", _serial_factory=factory)
+
+
+def test_closing_flag_aborts_reads_fast():
+    from heise.protocol import HeiseProtocol
+    wire = _SlowSilentWire(read_s=0.2)
+    p = HeiseProtocol(wire)
+    p.closing.set()
+    t0 = time.perf_counter()
+    with pytest.raises(HeiseError, match="closing"):
+        p._read_line()
+    assert time.perf_counter() - t0 < 0.1
+
+
+def test_reconnect_cycle_sim():
+    """connect → disconnect → connect on the same gauge object."""
+    d = HeiseGauge(HeiseConfig(force_sim=True, poll_s=0.05))
+    try:
+        for _ in range(2):
+            d.connect()
+            assert d.connected
+            assert _wait(lambda: d.frame_count() >= 2)
+            d.disconnect()
+            assert not d.connected
+    finally:
+        d.disconnect()
+
+
 def test_bench_wire_format_echo_and_cr():
     """Exact live COM4 traffic (2026-07-23): command echoed back, bare
     CR separator, CR-only EOM — '?\\r' '\\r' '73.614870,11.430730\\r'."""

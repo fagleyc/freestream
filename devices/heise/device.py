@@ -128,13 +128,23 @@ class HeiseGauge:
     def disconnect(self) -> None:
         if not self._connected:
             return
+        # order matters (Windows handle-leak avoidance): flag the
+        # protocol as closing so any in-flight read aborts at its next
+        # timeout boundary, let the poll thread exit, and only THEN
+        # close the port — never underneath a blocked ReadFile.
         self._stop_evt.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
         if self._proto is not None:
-            self._proto.close()
-            self._proto = None
+            self._proto.closing.set()
+        if self._thread is not None:
+            self._thread.join(timeout=6.0)
+            if self._thread.is_alive():
+                log.warning("poll thread did not exit in time — "
+                            "closing the port anyway")
+            self._thread = None
+        with self._cmd_lock:
+            if self._proto is not None:
+                self._proto.close()
+                self._proto = None
         self._connected = False
         self._status("Disconnected")
 
@@ -278,6 +288,8 @@ class HeiseGauge:
                     except Exception:               # noqa: BLE001
                         log.exception("on_block callback failed")
             except HeiseError as exc:
+                if self._stop_evt.is_set() or "closing" in str(exc):
+                    break               # orderly shutdown, not an error
                 self._errors += 1
                 self._status(f"Serial error ({self._errors}/"
                              f"{cfg.max_consecutive_errors}): {exc}")
