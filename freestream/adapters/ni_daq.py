@@ -191,9 +191,28 @@ class NiDaqAdapter(ConfigurableAdapter):
         return float(self._dev.actual_hz or self._cfg.scan_hz)
 
     def set_sample_rate(self, hz: float) -> None:
-        """Adopt the suite-wide sample rate (the driver reads ``scan_hz``
-        when acquisition starts, so this applies at the next connect)."""
-        self._cfg.scan_hz = float(hz)
+        """Adopt the suite-wide sample rate.
+
+        The driver reads ``scan_hz`` when acquisition starts; unlike the
+        DaqX devices a DAQmx task restart is cheap, so when the device is
+        already connected the acquisition is bounced immediately — a rate
+        change made mid-session takes effect on the spot instead of
+        silently waiting for the next connect. The drain cursor resets
+        with the driver's frame counter so ``drain_block`` stays coherent.
+        """
+        hz = float(hz)
+        if hz == self._cfg.scan_hz and (
+                not self._dev.connected or self._dev.actual_hz == hz):
+            self._cfg.scan_hz = hz
+            return
+        self._cfg.scan_hz = hz
+        if self._dev.connected:
+            was_running = self._dev.running
+            self._dev.disconnect()
+            self._dev.connect()
+            self._cursor = self._dev.frame_count()
+            if was_running:
+                self._dev.start()
 
     def channels(self) -> List[ChannelSpec]:
         # Recorded values are the raw ADC volts (``_V`` ring fields).

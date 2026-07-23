@@ -1345,8 +1345,7 @@ class FreestreamMainWindow(QMainWindow):
         config (samples/rate + test-info + reference dims). Rebuild the
         recorder and re-push the sample rate so the change takes effect."""
         self.recorder = self._make_recorder()
-        if not self._connected:
-            self._push_sample_rate()
+        self._push_sample_rate()      # live-capable devices apply at once
         self.console.log(
             f"run sheet applied → test={self.config.test_name or '—'}, "
             f"model={self.config.model_name or '—'}, "
@@ -1360,11 +1359,14 @@ class FreestreamMainWindow(QMainWindow):
         if dlg.exec():
             dlg.apply_to(self.config)
             self.recorder = self._make_recorder()
-            if self._connected:                        # rate applies at next
-                self.console.log("sample rate change applies at the next "
-                                 "connect")
-            else:
-                self._push_sample_rate()
+            # Push even while connected: adapters that support a live
+            # rate change (NI DAQ — cheap DAQmx task restart) apply it on
+            # the spot; the DaqX devices stage it for the next connect.
+            self._push_sample_rate()
+            if self._connected:
+                self.console.log("sample rate pushed — live-capable "
+                                 "devices restarted; DaqX devices apply "
+                                 "at the next connect")
             # (the balance .vol is DEVICE-owned: the Forces page inherits
             # it from the StrainBook panel each tick — nothing to push here)
             outputs = "." + str(getattr(self.config, "output_format", "h5")

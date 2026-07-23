@@ -80,9 +80,16 @@ class HeiseAdapter(ConfigurableAdapter):
         if config_path is None:
             # factory defaults: declare the units the derived chain
             # expects (psia total pressure; RTD set to Celsius on the
-            # instrument — the config unit is the display label)
-            cfg.left.unit = "psi"
-            cfg.right.unit = "C"
+            # instrument — the config unit is the display label). Assign
+            # by ROLE — the driver's default port order is Temperature
+            # (port 1) / Pressure (port 2), so keying on left/right put
+            # "C" on the pressure port and connect() rejected it as an
+            # unknown pressure unit.
+            for port in cfg.ports():
+                if port.role == "pressure":
+                    port.unit = "psi"
+                elif port.role == "temperature":
+                    port.unit = "C"
         _canonicalise_port_names(cfg)
         self._cfg = cfg
         self._dev = HeiseGauge(cfg)
@@ -139,12 +146,20 @@ class HeiseAdapter(ConfigurableAdapter):
         return float(self._dev.actual_hz
                      or 1.0 / max(self._cfg.poll_s, 0.05))
 
+    #: canonical channel order — Ptot before Temp, regardless of the
+    #: driver's own port order (the stock driver lists Temperature on
+    #: port 1). Consumers key by NAME, but the declared order is what
+    #: tables/recorded groups show — keep the historical Ptot, Temp.
+    _ROLE_ORDER = {"pressure": 0, "temperature": 1}
+
     def channels(self) -> List[ChannelSpec]:
         # engineering values are streamed AND recorded (the indicator
         # transmits calibrated readings; there is no raw-volts layer)
+        ports = sorted(self._cfg.enabled_ports(),
+                       key=lambda p: self._ROLE_ORDER.get(p.role, 2))
         return [ChannelSpec(name=p.name, unit=p.unit, group=GROUP,
                             kind="tunnel", device_id=self.id)
-                for p in self._cfg.enabled_ports()]
+                for p in ports]
 
     def latest(self) -> Dict[str, float]:
         """Engineering units (configured pressure unit / RTD unit)."""
