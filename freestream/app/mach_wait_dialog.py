@@ -32,7 +32,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QVBoxLayout)
 
-from .. import theme
+from .. import speed, theme
 from ..sweep import ABORT_SWEEP, PROCEED, SKIP_POINT, OperatorWaitRequest
 
 POLL_MS = 250                      # ~4 Hz live update
@@ -56,7 +56,11 @@ class MachWaitDialog(QDialog):
         self._decided = False
         self._hold_t0: Optional[float] = None
 
-        unit = "RPM" if request.is_rpm else "Mach"
+        # captions/formats speak the request's DISPLAY unit (the unit
+        # the operator planned in — freestream.speed); rpm overrides
+        # and plain mach points render exactly as they always did
+        disp = request.display_unit
+        unit = speed.LABELS.get(disp, disp)
         self.setWindowTitle(f"Set Tunnel Condition — {request.describe()}")
         self.setMinimumWidth(520)
         self.setStyleSheet(theme.get_stylesheet())
@@ -80,8 +84,7 @@ class MachWaitDialog(QDialog):
             cap.setStyleSheet(f"color: {theme.TEXT_DIM};")
             grid.addWidget(cap, 0, col,
                            alignment=Qt.AlignmentFlag.AlignHCenter)
-        self.target_lbl = QLabel(self._fmt(
-            request.target_rpm if request.is_rpm else request.target_mach))
+        self.target_lbl = QLabel(self._fmt(request.display_target))
         self.target_lbl.setStyleSheet(_BIG + f"color: {theme.ACCENT_LIGHT};")
         grid.addWidget(self.target_lbl, 1, 0,
                        alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -147,7 +150,8 @@ class MachWaitDialog(QDialog):
     def _fmt(self, value: Optional[float]) -> str:
         if value is None or (isinstance(value, float) and math.isnan(value)):
             return "—"
-        return f"{value:,.0f}" if self.request.is_rpm else f"{value:.3f}"
+        fmt = speed.FORMATS.get(self.request.display_unit, "{:.3f}")
+        return fmt.format(value)
 
     def _tick(self) -> None:
         try:
@@ -155,20 +159,36 @@ class MachWaitDialog(QDialog):
         except Exception:                              # noqa: BLE001
             mach, rpm = math.nan, math.nan
         req = self.request
+        disp = req.display_unit
         if req.is_rpm:
             value, target = rpm, req.target_rpm
             self.readback_lbl.setText(
                 "measured Mach —" if math.isnan(mach)
                 else f"measured Mach {mach:.3f}")
+        elif disp != "mach" and req.measure_value is not None:
+            # velocity/rpm entry unit: the LIVE in-unit measure is the
+            # primary number; the canonical Mach + fan RPM readback
+            # stay visible on the secondary line
+            try:
+                mv = req.measure_value()
+            except Exception:                          # noqa: BLE001
+                mv = None
+            value = math.nan if mv is None else float(mv)
+            target = req.target_value
+            mach_txt = ("Mach —" if math.isnan(mach)
+                        else f"Mach {mach:.3f}")
+            rpm_txt = ("— RPM" if math.isnan(rpm)
+                       else f"{rpm:,.0f} RPM")
+            self.readback_lbl.setText(f"{mach_txt} · {rpm_txt}")
         else:
             value, target = mach, req.target_mach
             self.readback_lbl.setText(
                 "fan — RPM" if math.isnan(rpm) else f"fan {rpm:,.0f} RPM")
         self.measured_lbl.setText(self._fmt(value))
 
-        within = (not math.isnan(value)
+        within = (target is not None and not math.isnan(value)
                   and abs(value - target) <= req.tolerance)
-        if math.isnan(value):
+        if math.isnan(value) or target is None:
             self.delta_lbl.setText("Δ — NO MEASUREMENT")
             self.delta_lbl.setStyleSheet(self._delta_style(theme.ERROR))
         else:
@@ -178,6 +198,10 @@ class MachWaitDialog(QDialog):
             if req.is_rpm:
                 txt = (f"Δ {delta:+,.0f} RPM — {state} "
                        f"(±{req.tolerance:,.0f} RPM)")
+            elif disp != "mach":
+                u = speed.LABELS.get(disp, disp)
+                txt = (f"Δ {delta:+.1f} {u} — {state} "
+                       f"(±{req.tolerance:g} {u})")
             else:
                 txt = f"Δ {delta:+.3f} — {state} (±{req.tolerance:g})"
             self.delta_lbl.setText(txt)

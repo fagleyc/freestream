@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (QFileDialog, QFrame, QGridLayout, QHBoxLayout,
                              QTableWidget, QTableWidgetItem, QVBoxLayout,
                              QWidget)
 
-from .. import sweepgrammar, theme
+from .. import speed, sweepgrammar, theme
 from ..config import FreestreamConfig
 from ..runbook import RunBook, RunRow, is_runbook_workbook, load_runbook
 from ..runsheet import (SweepPoint, build_grid, load_runsheet,
@@ -76,6 +76,7 @@ class PlannerPanel(QWidget):
         #: True while the main window runs a sweep — Clear Grid is locked
         self._sweep_running = False
         self._axis_edits: dict = {}   # field name → QLineEdit
+        self._axis_labels: dict = {}  # field name → QLabel (row labels)
         #: loaded run-book context (None until a run sheet is imported)
         self._runbook: Optional[RunBook] = None
         self._run_row: Optional[RunRow] = None
@@ -152,8 +153,44 @@ class PlannerPanel(QWidget):
         self._update_indicator()
 
     def set_config(self, config: FreestreamConfig) -> None:
-        """Adopt a freshly loaded config (source of dwell/samples)."""
+        """Adopt a freshly loaded config (source of dwell/samples).
+        The loaded config may carry a different speed unit — refresh
+        the unit-facing chrome so the speed row matches it."""
         self.config = config
+        self._refresh_speed_unit()
+
+    # ── speed units (freestream.speed; canonical axis stays Mach) ────────
+    def _speed_unit(self) -> str:
+        """The configured entry/display unit, defended to a known one."""
+        unit = getattr(self.config, "speed_unit", "mach")
+        return unit if unit in speed.SPEED_UNITS else "mach"
+
+    def set_speed_unit(self, unit: str) -> None:
+        """Measurement Setup accepted a (possibly new) speed unit:
+        adopt it on the SHARED config and refresh the unit-facing
+        chrome (speed-row label + placeholder, table header, indicator
+        symbol). Planned points are kept — their canonical mach and
+        stamped entered-unit meta stay valid."""
+        if unit not in speed.SPEED_UNITS:
+            unit = "mach"
+        self.config.speed_unit = unit
+        self._refresh_speed_unit()
+
+    def _speed_row_label(self) -> str:
+        return f"speed [{speed.LABELS[self._speed_unit()]}]"
+
+    def _refresh_speed_unit(self) -> None:
+        """Re-skin everything that names the speed unit (no rebuild)."""
+        if self.axis_mode == "aero":
+            unit = self._speed_unit()
+            lbl = self._axis_labels.get("mach")
+            if lbl is not None:
+                lbl.setText(self._speed_row_label())
+            edit = self._axis_edits.get("mach")
+            if edit is not None:
+                edit.setPlaceholderText(speed.PLANNER_HINTS[unit])
+        self.table.setHorizontalHeaderLabels(self._table_cols())
+        self._update_indicator()
 
     # legacy accessors (pre-axis-mode API); only valid in "aero" mode
     @property
@@ -173,7 +210,17 @@ class PlannerPanel(QWidget):
         return _AXIS_SETS[self.axis_mode]
 
     def _table_cols(self):
-        return ("#", *(f[0] for f in self._axis_fields()), "status")
+        cols = []
+        for f in self._axis_fields():
+            name = f[0]
+            # the mach column header shows the ENTERED unit (the cells
+            # display what the operator typed); canonical mach keeps
+            # the historical plain header
+            if name == "mach" and self.axis_mode == "aero" \
+                    and self._speed_unit() != "mach":
+                name = self._speed_row_label()
+            cols.append(name)
+        return ("#", *cols, "status")
 
     def _populate_axis_rows(self) -> None:
         while self._axis_grid.count():
@@ -182,7 +229,13 @@ class PlannerPanel(QWidget):
             if w is not None:
                 w.deleteLater()
         self._axis_edits.clear()
+        self._axis_labels.clear()
         for row, (field_name, label, hint) in enumerate(self._axis_fields()):
+            if field_name == "mach" and self.axis_mode == "aero":
+                # the tunnel row speaks the CONFIGURED speed unit
+                # (freestream.speed); the canonical axis stays Mach
+                label = self._speed_row_label()
+                hint = speed.PLANNER_HINTS[self._speed_unit()]
             edit = QLineEdit()
             edit.setPlaceholderText(hint)
             edit.setToolTip("Axis vector: start:delta:end range (the MIDDLE "
@@ -191,7 +244,9 @@ class PlannerPanel(QWidget):
                             "sweep (hysteresis). Blank = axis omitted.")
             edit.textChanged.connect(self._update_indicator)
             self._axis_edits[field_name] = edit
-            self._axis_grid.addWidget(QLabel(label), row, 0)
+            lbl = QLabel(label)
+            self._axis_labels[field_name] = lbl
+            self._axis_grid.addWidget(lbl, row, 0)
             self._axis_grid.addWidget(edit, row, 1)
 
     def set_axis_mode(self, mode: str) -> None:
@@ -232,15 +287,34 @@ class PlannerPanel(QWidget):
         # mode the mach axis gets the auto-prepended air-off 0 (workbook
         # grammar), so a manual Build Grid matches what a run sheet would.
         specs: dict = {}
+        unit = self._speed_unit() if self.axis_mode == "aero" else "mach"
+        value_by_mach = None          # canonical mach → entered value
         for name, edit in self._axis_edits.items():
             spec = self._spec(edit)
             if (name == "mach" and self.axis_mode == "aero" and spec):
                 try:
-                    spec = sweepgrammar.expand(
+                    entered = sweepgrammar.expand(
                         spec, named=self._named, ensure_zero_for_mach=True)
                 except sweepgrammar.GrammarError as exc:
                     self.message.emit(f"grid build failed: {exc}")
                     return
+                if unit == "mach":
+                    spec = entered
+                else:
+                    # the operator typed the ENTERED unit — convert to
+                    # the canonical Mach axis (speed.py nominal maps),
+                    # remembering the typed values for display/metadata.
+                    # 0 stays 0 in every unit, so the auto-prepended
+                    # air-off point survives the conversion.
+                    try:
+                        spec = [speed.mach_from(v, unit,
+                                                self.config.rpm_per_mach)
+                                for v in entered]
+                    except ValueError as exc:
+                        self.message.emit(f"grid build failed: {exc}")
+                        return
+                    value_by_mach = dict(
+                        zip(spec, (float(v) for v in entered)))
             specs[f"{name}_spec"] = spec
         try:
             points = build_grid(dwell_s=self.config.dwell_s,
@@ -249,11 +323,32 @@ class PlannerPanel(QWidget):
         except ValueError as exc:
             self.message.emit(f"grid build failed: {exc}")
             return
+        if value_by_mach is not None:
+            self._stamp_speed_meta(points, unit, value_by_mach)
         for i, p in enumerate(points):     # row_index == table row for grids
             p.row_index = i
         self.set_points(points)
         self._update_indicator()
         self.message.emit("grid built: " + points_summary(points))
+
+    @staticmethod
+    def _stamp_speed_meta(points, unit: str, value_by_mach: dict) -> None:
+        """Non-mach entry units: every built point keeps the value the
+        operator TYPED (meta["speed_value"]/["speed_unit"]) next to the
+        canonical SweepPoint.mach — the engine/dialog display it and
+        the recorder stamps it into the file attrs. The rpm unit
+        additionally rides the engine's documented direct-RPM override
+        (meta["rpm"]) so the fan is commanded verbatim."""
+        for p in points:
+            if p.mach is None:
+                continue
+            value = value_by_mach.get(p.mach)
+            if value is None:                # defensive; never expected
+                continue
+            p.meta["speed_value"] = value
+            p.meta["speed_unit"] = unit
+            if unit == "rpm":
+                p.meta["rpm"] = value
 
     def clear_grid(self) -> None:
         """Full sweep-planner reset (the Clear Grid side of the toggle):
@@ -475,6 +570,10 @@ class PlannerPanel(QWidget):
             except sweepgrammar.GrammarError:
                 return f"invalid {name} cell: {cell!r}"
             symbol = _AXIS_SYMBOL.get(name, name)
+            if is_mach and self.axis_mode == "aero":
+                # the tunnel-axis symbol follows the entry unit
+                # (M / V / N — freestream.speed)
+                symbol = speed.AXIS_SYMBOLS.get(self._speed_unit(), "M")
             if is_mach and vals:
                 shown = ", ".join(f"{v:g}" for v in vals)
             else:
@@ -495,7 +594,16 @@ class PlannerPanel(QWidget):
         self.table.setRowCount(len(points))
         axis_names = [f[0] for f in self._axis_fields()]
         for row, p in enumerate(points):
-            values = [row] + [getattr(p, n) for n in axis_names] + [p.status]
+            values = [row]
+            for n in axis_names:
+                val = getattr(p, n)
+                # the speed column shows the ENTERED-unit value the
+                # operator typed (header names the unit); the canonical
+                # mach still drives the sweep underneath
+                if n == "mach" and "speed_value" in p.meta:
+                    val = p.meta["speed_value"]
+                values.append(val)
+            values.append(p.status)
             for col, val in enumerate(values):
                 text = "—" if val is None else (
                     f"{val:g}" if isinstance(val, float) else str(val))

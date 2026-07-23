@@ -29,7 +29,7 @@ from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (QFrame, QGridLayout, QGroupBox, QHBoxLayout,
                              QLabel, QSizePolicy, QVBoxLayout, QWidget)
 
-from .. import theme
+from .. import speed, theme
 from ..derived import (TUNNEL_CONDITION_CHANNELS, read_tunnel_conditions,
                        tunnel_state)
 from ..hal import SetpointDevice
@@ -325,13 +325,16 @@ class AttitudePad(QWidget):
 class TunnelDashboard(QWidget):
     """Gauge + tiles + status lights over the Mach/q/RPM strip charts."""
 
-    def __init__(self, manager, parent=None):
+    def __init__(self, manager, config=None, parent=None):
         super().__init__(parent)
         theme.apply_pyqtgraph_theme()
         import pyqtgraph as pg
         self._pg = pg
 
         self.manager = manager
+        #: shared FreestreamConfig (optional — the velocity tile follows
+        #: config.speed_unit when it is ft/s; None keeps plain m/s)
+        self.config = config
         self.active = False
         self._t0 = time.monotonic()
         self._hist: Dict[str, deque] = {}
@@ -593,7 +596,17 @@ class TunnelDashboard(QWidget):
         self.tiles["q"].set_value(q)
         self.tiles["ptot"].set_value(ptot)
         self.tiles["temp"].set_value(temp)
-        self.tiles["vel"].set_value(vel)
+        # velocity tile follows the configured speed unit when it is
+        # ft/s (LSWT operators think in ft/s); everything else keeps
+        # the derived chain's native m/s
+        if getattr(self.config, "speed_unit", None) == "ft/s":
+            self.tiles["vel"].set_unit("ft/s")
+            self.tiles["vel"].set_value(
+                None if vel is None
+                else speed.convert_velocity_ms(vel, "ft/s"))
+        else:
+            self.tiles["vel"].set_unit("m/s")
+            self.tiles["vel"].set_value(vel)
 
         rpm = rpm_set = None
         sp = self.manager.setpoint

@@ -69,6 +69,15 @@ class FreestreamConfig:
     #: max RPM commands per point (initial + corrections) before FAULT.
     mach_max_iterations: int = 3
 
+    # ── operator speed units (freestream.speed) ─────────────────────────
+    #: entry/display unit for the tunnel-speed axis (one of
+    #: speed.SPEED_UNITS) — what the operator TYPES and READS in the
+    #: planner/dialogs; SweepPoint.mach and recorded data stay canonical.
+    speed_unit: str = "mach"
+    #: |measured − target| band in ``speed_unit`` for "at target" waits.
+    #: Mirrors mach_tolerance while the unit is mach (one knob).
+    speed_tolerance: float = 0.01
+
     # ── calibration POINTERS (recorded in metadata, never applied) ──────
     cal_files: Dict[str, str] = field(default_factory=dict)
 
@@ -134,6 +143,15 @@ class FreestreamConfig:
         # predating the intuitive names) to the current manifest names
         from .manager import LEGACY_MODE_ALIASES       # lazy: keep light
         cfg.mode = LEGACY_MODE_ALIASES.get(cfg.mode, cfg.mode)
+        # speed-unit migration: an unknown unit falls back to canonical
+        # mach, and a config predating the unit selector (no
+        # speed_tolerance key) inherits ITS OWN mach band so the
+        # effective tolerance never silently changes on load
+        from .speed import SPEED_UNITS                 # lazy: keep light
+        if cfg.speed_unit not in SPEED_UNITS:
+            cfg.speed_unit = "mach"
+        if "speed_tolerance" not in d:
+            cfg.speed_tolerance = cfg.mach_tolerance
         return cfg
 
     def save(self, path) -> None:

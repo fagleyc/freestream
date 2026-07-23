@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QGridLayout, QGroupBox, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QSpinBox, QVBoxLayout)
 
-from .. import theme
+from .. import speed, theme
 from ..config import FreestreamConfig
 
 
@@ -142,14 +142,35 @@ class MeasurementSetupDialog(QDialog):
             "Measured Mach must hold within tolerance this long before "
             "the operator-wait dialog auto-proceeds")
         tun.addRow("Mach settle", self.mach_settle_spin)
+        # ONE entry/display unit for the tunnel-speed axis: the sweep
+        # planner's speed row, the tolerance below and the operator-wait
+        # dialog all speak it; recorded data stays canonical Mach.
+        self.speed_unit_combo = QComboBox()
+        for u in speed.SPEED_UNITS:
+            self.speed_unit_combo.addItem(speed.LABELS[u], u)
+        unit = getattr(config, "speed_unit", "mach")
+        if unit not in speed.SPEED_UNITS:
+            unit = "mach"
+        self.speed_unit_combo.setCurrentIndex(
+            self.speed_unit_combo.findData(unit))
+        self.speed_unit_combo.setToolTip(
+            "How tunnel speed is ENTERED and DISPLAYED (planner speed "
+            "row, tolerance, operator-wait dialog). The canonical axis "
+            "and the recorded Mach_cmd stay Mach regardless.")
+        tun.addRow("Speed unit", self.speed_unit_combo)
+        self.speed_tol_label = QLabel()
         self.mach_tol_spin = QDoubleSpinBox()
-        self.mach_tol_spin.setRange(0.001, 0.5)
-        self.mach_tol_spin.setDecimals(3)
-        self.mach_tol_spin.setSingleStep(0.005)
-        self.mach_tol_spin.setValue(config.mach_tolerance)
         self.mach_tol_spin.setToolTip(
-            "|measured − target| Mach band counted as 'at target'")
-        tun.addRow("Mach tolerance", self.mach_tol_spin)
+            "|measured − target| band counted as 'at target', in the "
+            "selected speed unit")
+        self._range_tolerance_spin(unit)
+        # the LOADED tolerance survives opening the dialog — only a
+        # USER unit change (signal connected below) seeds the per-unit
+        # default band
+        self.mach_tol_spin.setValue(config.speed_tolerance)
+        tun.addRow(self.speed_tol_label, self.mach_tol_spin)
+        self.speed_unit_combo.currentIndexChanged.connect(
+            self._speed_unit_changed)
         self.tunnel_ctl_chk = QCheckBox(
             "Tunnel RPM control (needs writable Block2)")
         self.tunnel_ctl_chk.setChecked(config.tunnel_control_enabled)
@@ -265,6 +286,26 @@ class MeasurementSetupDialog(QDialog):
             lambda: setattr(self, "defaults_requested", True))
         lay.addWidget(buttons)
 
+    # ── speed unit / tolerance (freestream.speed hint tables) ────────────
+    def _range_tolerance_spin(self, unit: str) -> None:
+        """Re-range/relabel the ONE tolerance spin from the per-unit GUI
+        hints — a Mach band (0.001…0.5) and an RPM band (1…500) need
+        very different ranges, decimals and steps."""
+        lo, hi, decimals, step = speed.SPIN_HINTS[unit]
+        self.speed_tol_label.setText(
+            f"Speed tolerance [{speed.LABELS[unit]}]")
+        self.mach_tol_spin.setDecimals(decimals)
+        self.mach_tol_spin.setRange(lo, hi)
+        self.mach_tol_spin.setSingleStep(step)
+
+    def _speed_unit_changed(self) -> None:
+        """USER changed the unit: re-range the spin and seed that
+        unit's sensible default band (deliberately NOT done on plain
+        dialog open, so a loaded tolerance is never clobbered)."""
+        unit = str(self.speed_unit_combo.currentData() or "mach")
+        self._range_tolerance_spin(unit)
+        self.mach_tol_spin.setValue(speed.DEFAULT_TOLERANCES[unit])
+
     @staticmethod
     def _ref_dims_text(config: FreestreamConfig) -> str:
         if not any((config.Sref, config.cref, config.bref)):
@@ -300,7 +341,15 @@ class MeasurementSetupDialog(QDialog):
         config.filename_template = self.template_edit.text().strip()
         config.tunnel_timeout_s = self.tunnel_to_spin.value()
         config.mach_settle_s = self.mach_settle_spin.value()
-        config.mach_tolerance = self.mach_tol_spin.value()
+        unit = str(self.speed_unit_combo.currentData() or "mach")
+        config.speed_unit = unit
+        config.speed_tolerance = self.mach_tol_spin.value()
+        if unit == "mach":
+            # the mach unit's speed band IS the Mach band — keep the
+            # two knobs mirrored; any other unit leaves mach_tolerance
+            # alone so a temporary unit switch never clobbers the
+            # tuned Mach band
+            config.mach_tolerance = self.mach_tol_spin.value()
         config.tunnel_control_enabled = self.tunnel_ctl_chk.isChecked()
         config.mach_check_enabled = self.mach_check_chk.isChecked()
         # config.vol_path is DEVICE-OWNED (StrainBook panel → Forces tab);

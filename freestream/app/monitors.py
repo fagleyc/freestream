@@ -96,7 +96,7 @@ class MonitorPanel(QTabWidget):
         from .forces import ForcesPanel
         from .results import ResultsPanel
         from .tunnel_dashboard import TunnelDashboard
-        self.tunnel_dash = TunnelDashboard(self.manager)
+        self.tunnel_dash = TunnelDashboard(self.manager, self.config)
         self.insertTab(0, self.tunnel_dash, "Tunnel")
         self.forces = ForcesPanel(self.manager, self.config)
         self.addTab(self.forces, "Forces")

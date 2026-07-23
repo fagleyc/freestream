@@ -1358,6 +1358,9 @@ class FreestreamMainWindow(QMainWindow):
                                      list(self.manager.devices), self)
         if dlg.exec():
             dlg.apply_to(self.config)
+            # the (possibly new) speed unit re-skins the planner's
+            # speed row / table header / indicator symbol
+            self.planner.set_speed_unit(self.config.speed_unit)
             self.recorder = self._make_recorder()
             # Push even while connected: adapters that support a live
             # rate change (NI DAQ — cheap DAQmx task restart) apply it on

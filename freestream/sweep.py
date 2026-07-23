@@ -44,6 +44,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from . import speed
 from .config import FreestreamConfig
 from .derived import TUNNEL_CONDITION_CHANNELS, tunnel_state
 from .hal import Positioner, SetpointDevice, Streaming, Zeroable
@@ -80,20 +81,52 @@ class OperatorWaitRequest:
     the live ``(measured_mach, rpm_meas)`` — isentropic Mach from the
     registry's tunnel-condition streams (NaN when unavailable) +
     setpoint RPM readback; reads only, never a command. ``tolerance`` is
-    the ± band on the target quantity (Mach band for mach points, RPM
-    band for rpm overrides)."""
+    the ± band on the target quantity IN the request's display unit.
+
+    The request also speaks the configured ENTRY/DISPLAY unit
+    (:mod:`freestream.speed`): ``unit`` names it, ``target_value`` is
+    the target in that unit and ``measure_value()`` (velocity units)
+    returns the live in-unit measurement — so the wait dialog can talk
+    to the operator in the unit they planned in, while ``target_mach``
+    keeps the canonical number for recording/air-state."""
     target_mach: Optional[float]
     tolerance: float
     measure: Callable[[], Tuple[float, float]]
     target_rpm: Optional[float] = None
+    #: entry/display unit of this request (one of speed.SPEED_UNITS)
+    unit: str = "mach"
+    #: the target expressed in ``unit`` (None on plain mach requests)
+    target_value: Optional[float] = None
+    #: live measured speed in ``unit`` (None-returning callable when
+    #: unavailable); only set for velocity/rpm display units
+    measure_value: Optional[Callable[[], Optional[float]]] = None
 
     @property
     def is_rpm(self) -> bool:
         return self.target_mach is None
 
+    @property
+    def display_unit(self) -> str:
+        """The unit the GUI should format in — rpm overrides always
+        display RPM regardless of the configured entry unit."""
+        return "rpm" if self.is_rpm else (self.unit or "mach")
+
+    @property
+    def display_target(self) -> Optional[float]:
+        """The target number in :attr:`display_unit`."""
+        if self.is_rpm:
+            return self.target_rpm
+        if self.display_unit == "mach":
+            return self.target_mach
+        return self.target_value
+
     def describe(self) -> str:
-        return (f"{self.target_rpm:g} RPM" if self.is_rpm
-                else f"Mach {self.target_mach:g}")
+        if self.is_rpm:
+            return f"{self.target_rpm:g} RPM"
+        if self.display_unit == "mach":
+            return f"Mach {self.target_mach:g}"
+        return (f"{self.target_value:g} "
+                f"{speed.LABELS.get(self.display_unit, self.display_unit)}")
 
 
 @dataclass
@@ -320,6 +353,13 @@ class SweepEngine:
             # sets the console; we wait/prompt, then record honestly.
             self._operator_wait(point, rpm_override, dev)
             return
+        if rpm_override is None and self.config.speed_unit in ("ft/s",
+                                                               "m/s"):
+            # velocity entry unit + control enabled: adapters that speak
+            # velocity natively (LSWT fan drive) take the entered value
+            # verbatim; others fall through to the MachLoop below.
+            if self._command_velocity(point, dev, self.config.speed_unit):
+                return
         if rpm_override is not None:
             # documented direct-RPM override (run-sheet "rpm" column) —
             # commands the fan verbatim, BYPASSING the Mach loop.
@@ -337,22 +377,93 @@ class SweepEngine:
         self._tunnel_cmd = {"rpm_cmd": result.rpm_cmd,
                             "mach_cmd": result.mach_target}
 
+    def _command_velocity(self, point: SweepPoint, dev: SetpointDevice,
+                          unit: str) -> bool:
+        """Velocity-unit fast path (control ENABLED): when the tunnel
+        adapter itself speaks velocity — its readback carries a
+        ``velocity_fps`` key (the LSWT fan drive) — command the
+        operator's entered velocity verbatim in ft/s instead of
+        round-tripping it through the nominal Mach→RPM map. Returns
+        False when the adapter has no velocity readback; the caller
+        falls back to the MachLoop with the point's canonical Mach, so
+        recording/air-state stay unit-agnostic either way."""
+        try:
+            rb = dev.readback() or {}
+        except Exception:                              # noqa: BLE001
+            rb = {}
+        if "velocity_fps" not in rb:
+            return False
+        entered = point.meta.get("speed_value")
+        if entered is None:
+            # run-sheet mach point: honest target via the nominal map
+            fps = speed.value_from_mach(float(point.mach), "ft/s",
+                                        self.config.rpm_per_mach)
+        elif unit == "m/s":
+            fps = speed.convert_velocity_ms(float(entered), "ft/s")
+        else:
+            fps = float(entered)
+        self._event(f"tunnel → {fps:g} ft/s (adapter speaks velocity — "
+                    f"Mach loop bypassed)")
+        dev.set_target(velocity=fps)
+        self._wait(dev.at_target, self.config.tunnel_timeout_s,
+                   f"tunnel never reached {fps:g} ft/s")
+        self._tunnel_cmd = {"rpm_cmd": None,
+                            "mach_cmd": float(point.mach)}
+        return True
+
     def _operator_wait(self, point: SweepPoint, rpm_override,
                        dev: SetpointDevice) -> None:
         """Monitor-only tunnel stage: prompt the operator (or, headless,
         log + proceed) instead of commanding the fan. NO writes here —
-        only DAQ/readback reads via the request's measure()."""
+        only DAQ/readback reads via the request's measure()/
+        measure_value().
+
+        The request speaks the CONFIGURED entry unit (freestream.speed):
+        mach points under the mach unit keep the historical Mach band
+        exactly; rpm-unit GRID points carry the configured
+        speed_tolerance while run-sheet rpm overrides under any other
+        unit keep the legacy ±1 % (≥1 RPM) band (old sheets unchanged);
+        velocity/rpm entry units get the planner's entered target plus
+        a LIVE in-unit measure so "at target" is judged honestly."""
+        cfg = self.config
+        unit = getattr(cfg, "speed_unit", "mach")
+        if unit not in speed.SPEED_UNITS:
+            unit = "mach"
+        measure = make_tunnel_measure(self.manager, dev)
         if rpm_override is not None:
-            target_mach: Optional[float] = None
-            target_rpm: Optional[float] = float(rpm_override)
-            tol = max(abs(target_rpm) * 0.01, 1.0)     # ±1 % (≥1 RPM) band
+            target_rpm = float(rpm_override)
+            if unit == "rpm" and point.meta.get("speed_unit") == "rpm":
+                tol = float(cfg.speed_tolerance)   # rpm-unit grid band
+            else:
+                tol = max(abs(target_rpm) * 0.01, 1.0)  # legacy ±1 %/≥1
+            req = OperatorWaitRequest(
+                target_mach=None, tolerance=tol, measure=measure,
+                target_rpm=target_rpm, unit="rpm",
+                target_value=target_rpm)
+        elif unit == "mach":
+            # byte-for-byte the historical mach-point behavior
+            req = OperatorWaitRequest(
+                target_mach=float(point.mach),
+                tolerance=float(cfg.mach_tolerance), measure=measure)
         else:
+            # velocity (or rpm-display) entry unit: entered value when
+            # the planner stamped one, else the canonical Mach through
+            # the NOMINAL map — a run-sheet mach point still gets an
+            # honest in-unit target
             target_mach = float(point.mach)
-            target_rpm = None
-            tol = float(self.config.mach_tolerance)
-        req = OperatorWaitRequest(
-            target_mach=target_mach, tolerance=tol, target_rpm=target_rpm,
-            measure=make_tunnel_measure(self.manager, dev))
+            entered = point.meta.get("speed_value")
+            target_value = (float(entered) if entered is not None else
+                            speed.value_from_mach(target_mach, unit,
+                                                  cfg.rpm_per_mach))
+            manager = self.manager
+            req = OperatorWaitRequest(
+                target_mach=target_mach,
+                tolerance=float(cfg.speed_tolerance), measure=measure,
+                unit=unit, target_value=target_value,
+                measure_value=lambda: speed.measured_value(manager, dev,
+                                                           unit))
+        target_mach = req.target_mach
+        target_rpm = req.target_rpm
         if self._abort.is_set():
             raise SweepAborted()
         if self.cb.on_operator_wait is None:

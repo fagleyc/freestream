@@ -27,7 +27,10 @@ from freestream.adapters.traverse import TraverseAdapter      # noqa: E402
 from freestream.adapters.tunnel import TunnelAdapter          # noqa: E402
 
 
-def _wait_settled(adapter, timeout=20.0):
+def _wait_settled(adapter, timeout=45.0):
+    # 45 s: the sim traverse settles in ~24 s wall-clock (real emulator
+    # motion, not a stub) — the old 20 s budget made this test flaky on
+    # a loaded machine and consistently red on a slow filesystem.
     deadline = time.time() + timeout
     while time.time() < deadline:
         if adapter.settled():
@@ -123,7 +126,7 @@ def test_crescent_positioner():
         assert names == {"alpha", "beta"}
         handle = a.move_to(alpha=0.5, beta=-0.5)
         assert handle.targets == {"alpha": 0.5, "beta": -0.5}
-        assert _wait_settled(a), "crescent move did not settle in 20 s"
+        assert _wait_settled(a), "crescent move did not settle in time"
         pos = a.positions()
         assert pos["alpha"] == pytest.approx(0.5, abs=0.2)
         assert pos["beta"] == pytest.approx(-0.5, abs=0.2)
@@ -143,7 +146,7 @@ def test_traverse_positioner():
         # the −18" homing datum; spans are placeholders — see the
         # traverse README TODO)
         a.move_to(x=0.3, y=-17.5, z=-17.9)
-        assert _wait_settled(a), "traverse move did not settle in 20 s"
+        assert _wait_settled(a), "traverse move did not settle in time"
         pos = a.positions()
         assert pos["x"] == pytest.approx(0.3, abs=0.1)
         assert pos["y"] == pytest.approx(-17.5, abs=0.1)
@@ -162,7 +165,7 @@ def test_ate_positioner_and_zero():
         assert names == {"alpha", "beta"}
         a.move_to(alpha=5.0, beta=10.0)
         assert not a.settled()            # MOVING until *_COMPLETE
-        assert _wait_settled(a), "ate move did not settle in 20 s"
+        assert _wait_settled(a), "ate move did not settle in time"
         pos = a.positions()
         assert pos["alpha"] == pytest.approx(5.0, abs=0.05)
         assert pos["beta"] == pytest.approx(10.0, abs=0.05)
