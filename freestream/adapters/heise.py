@@ -128,9 +128,23 @@ class HeiseAdapter(ConfigurableAdapter):
 
     # ── ConfigurableAdapter ──────────────────────────────────────────────
     def apply_config_dict(self, data) -> None:
-        """Generic apply (force_sim preserved by the mixin), then
-        re-assert the canonical Ptot/Temp names — a saved bundle must
-        never rename the channels the derived chain keys on."""
+        """Apply a saved freestream bundle, but NEVER let it override the
+        Heise PORT LAYOUT (which sensor is on which port, and the RTD unit).
+
+        The port layout is a PHYSICAL property of the instrument — owned by
+        the device's own defaults / the standalone app — not the freestream
+        bundle (the round-16c rule: fields another layer owns are excluded
+        from bundle restore). A stale bundle once stored SWAPPED ports
+        (left=pressure/right=temperature) + a wrong RTD unit; honoring it made
+        freestream read temperature as pressure and vice versa while the
+        standalone driver stayed correct. So the incoming ``left``/``right``
+        port entries are DROPPED here — the device's correct port config is
+        kept — while every other field (com_port, baud, poll_s, ...) applies
+        normally. Live port edits still go through the embedded device panel,
+        which mutates the config directly (not via this restore path).
+        """
+        if isinstance(data, dict) and ("left" in data or "right" in data):
+            data = {k: v for k, v in data.items() if k not in ("left", "right")}
         super().apply_config_dict(data)
         _canonicalise_port_names(self._cfg)
 

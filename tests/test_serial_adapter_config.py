@@ -161,6 +161,29 @@ def test_freestream_bundle_overrides_device_defaults(isolated_defaults):
     assert a.config.force_sim is False     # session still owns SIM/LIVE
 
 
+def test_heise_bundle_cannot_swap_ports(isolated_defaults):
+    """A STALE freestream bundle with SWAPPED Heise ports (left=pressure/
+    right=temperature) + a wrong RTD unit must NOT flip the Ptot/Temp mapping
+    — the port layout is device-owned (Casey: through freestream the Heise
+    read temp as pressure while standalone was correct; the bundle had the
+    stale swap). Non-port fields still apply."""
+    a = HeiseAdapter(sim=True)
+    a.apply_config_dict({
+        "com_port": "COM9", "poll_s": 0.5,
+        "left":  {"name": "Ptot", "role": "pressure", "unit": "psi"},
+        "right": {"name": "Temp", "role": "temperature", "unit": "C"},
+    })
+    # ports stay CORRECT (bundle's swapped left/right ignored)
+    assert a.config.left.role == "temperature" and a.config.left.unit == "F"
+    assert a.config.right.role == "pressure" and a.config.right.unit == "psi"
+    # other bundle fields still applied
+    assert a.config.com_port == "COM9" and a.config.poll_s == 0.5
+    # canonical channel mapping + identity cal units correct
+    assert [c.name for c in a.channels()] == ["Ptot", "Temp"]
+    cal = a.tunnel_cal()
+    assert cal["Temp"]["unit"] == "degF" and cal["Ptot"]["unit"] == "psia"
+
+
 # ── blank COM port at LIVE connect → one scan ────────────────────────────
 def test_heise_blank_port_connect_runs_scan_and_adopts_hit(
         isolated_defaults, monkeypatch):
