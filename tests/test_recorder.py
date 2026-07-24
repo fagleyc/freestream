@@ -108,6 +108,67 @@ def test_filename_rpm_override_not_in_name(rec):
     assert read_point(p)["attrs"]["rpm"] == 600.0
 
 
+# ── selected-speed-unit filename token (Casey's Hz sweep) ────────────────
+def test_filename_hz_speed_token(rec):
+    # a non-mach entry unit drives the speed token: {TAG}_{value}, in the
+    # alpha, beta, speed slot — NOT a degenerate mach_0.0X
+    p = write_default(rec, point_meta={
+        "alpha": 0.0, "beta": 0.0, "mach": 0.0413, "t_start": T_START,
+        "speed_value": 30.0, "speed_unit": "hz"})
+    assert p.name == "run_0001_alpha_0.0_beta_0.0_Hz_30.0.h5"
+
+
+def test_filename_hz_airoff_token(rec):
+    p = write_default(rec, point_meta={
+        "alpha": 0.0, "beta": 0.0, "mach": 0.0, "t_start": T_START,
+        "speed_value": 0.0, "speed_unit": "hz"})
+    assert p.name == "run_0001_alpha_0.0_beta_0.0_Hz_0.0.h5"
+
+
+def test_filename_ftps_token(rec):
+    p = write_default(rec, point_meta={
+        "alpha": -2.0, "beta": 0.0, "mach": 0.15, "t_start": T_START,
+        "speed_value": 50.0, "speed_unit": "ft/s"})
+    assert p.name == "run_0001_alpha_-2.0_beta_0.0_ftps_50.0.h5"
+
+
+def test_filename_rpm_unit_token_whole_number(rec):
+    p = write_default(rec, point_meta={
+        "alpha": 0.0, "beta": 0.0, "mach": 0.4, "t_start": T_START,
+        "speed_value": 600.0, "speed_unit": "rpm"})
+    assert p.name == "run_0001_alpha_0.0_beta_0.0_RPM_600.h5"
+
+
+def test_filename_mach_unit_unchanged(rec):
+    # speed_unit == "mach" keeps the historic mach token verbatim
+    p = write_default(rec, point_meta={
+        "alpha": -2.0, "beta": 0.0, "mach": 0.30, "t_start": T_START,
+        "speed_value": 0.30, "speed_unit": "mach"})
+    assert p.name == "run_0001_alpha_-2.0_beta_0.0_mach_0.30.h5"
+
+
+def test_filename_speed_token_order_alpha_beta_speed(rec):
+    # the speed token sits in the SAME slot the mach token used to (after
+    # alpha and beta) — order is alpha, beta, speed
+    p = write_default(rec, point_meta={
+        "alpha": 3.0, "beta": 1.0, "mach": 0.06, "t_start": T_START,
+        "speed_value": 20.0, "speed_unit": "hz"})
+    tokens = p.stem.split("_")
+    assert tokens.index("alpha") < tokens.index("beta") < tokens.index("Hz")
+
+
+def test_filename_speed_token_in_template(rec_dir_tmpl):
+    p = rec_dir_tmpl.filename_for(1, {"mach": 0.06, "speed_value": 30.0,
+                                      "speed_unit": "hz"})
+    assert p == "run_0001_Hz_30.0.h5"
+
+
+@pytest.fixture
+def rec_dir_tmpl(tmp_path):
+    return Hdf5Recorder(tmp_path, config_name="tmpl",
+                        filename_template="run_{run}_{speed}")
+
+
 def test_filename_omits_missing_alpha_beta(rec):
     p = write_default(rec, point_meta={"t_start": T_START})
     assert p.name == "run_0001.h5"

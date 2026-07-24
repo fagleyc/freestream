@@ -75,10 +75,41 @@ import numpy as np
 __all__ = ["Hdf5Recorder", "read_point"]
 
 # keys of point_meta that participate in the filename, in this order
-# (aero attitude axes first, then the Mode-3 traverse position axes)
+# (aero attitude axes first, then the Mode-3 traverse position axes). The
+# "mach" slot is the SPEED slot: it renders the SELECTED speed unit's token
+# (mach_/Hz_/ftps_/…) — see _speed_token — so the velocity dimension is
+# never invisible in a non-Mach (e.g. Hz) sweep.
 _FILENAME_KEYS = ("alpha", "beta", "mach", "x", "y", "z")
 # per-key filename formatting overrides (default is _fmt_value)
 _KEY_FMT = {"mach": lambda v: f"{float(v):.2f}"}
+
+
+def _speed_token(point_meta: Mapping[str, Any]) -> Optional[str]:
+    """The filename SPEED token for one point, or None when the point
+    carries no tunnel speed.
+
+    When the point carries a ``speed_unit`` that is NOT mach/None (a
+    non-Mach entry unit — Hz/ft·s/m·s/RPM), emit ``{TAG}_{value}`` from
+    :data:`freestream.speed.SPEED_UNIT_FILE_TAG` /
+    :data:`~freestream.speed.SPEED_UNIT_FILE_FMT` — e.g. an Hz-30 point →
+    ``Hz_30.0`` (air-off 0 Hz → ``Hz_0.0``). Otherwise fall back to the
+    historic ``mach_{m:.2f}`` token (mode-1/2 SWT filenames unchanged).
+    """
+    from .speed import SPEED_UNIT_FILE_FMT, SPEED_UNIT_FILE_TAG
+    unit = point_meta.get("speed_unit")
+    value = point_meta.get("speed_value")
+    u = str(unit).lower() if unit is not None else ""
+    if u and u not in ("mach", "none") and value is not None:
+        tag = SPEED_UNIT_FILE_TAG.get(u) or _BAD_FS_CHARS.sub("-", u)
+        fmt = SPEED_UNIT_FILE_FMT.get(u, "{:g}")
+        try:
+            return f"{tag}_{fmt.format(float(value))}"
+        except (TypeError, ValueError):
+            return None
+    mach = point_meta.get("mach")
+    if mach is not None:
+        return f"mach_{float(mach):.2f}"
+    return None
 _RUN_RE = re.compile(r"^run_(\d+)", re.IGNORECASE)
 # characters illegal (or unpleasant) in Windows/posix filenames
 _BAD_FS_CHARS = re.compile(r'[<>:"/\\|?*\s]+')
@@ -318,6 +349,13 @@ class Hdf5Recorder:
                                         direction)
         parts = [f"run_{run_number:04d}"]
         for key in _FILENAME_KEYS:
+            if key == "mach":
+                # the SPEED slot: the SELECTED unit drives the token
+                # (mach_/Hz_/ftps_/…), keeping alpha, beta, speed order.
+                token = _speed_token(point_meta)
+                if token:
+                    parts.append(token)
+                continue
             if key in point_meta and point_meta[key] is not None:
                 fmt = _KEY_FMT.get(key, _fmt_value)
                 parts.append(f"{key}_{fmt(point_meta[key])}")
@@ -336,6 +374,11 @@ class Hdf5Recorder:
             "air_state": air_state,
             "dir": direction,
             "config_name": self.config_name,
+            # the SELECTED-speed token (mach_/Hz_/ftps_/…) and its parts,
+            # so a template can place the velocity dimension explicitly.
+            "speed": _speed_token(point_meta) or "",
+            "speed_unit": point_meta.get("speed_unit", ""),
+            "speed_value": point_meta.get("speed_value", ""),
         }
         for key, val in point_meta.items():
             fields[key] = _fmt_value(val) if isinstance(val, float) else val

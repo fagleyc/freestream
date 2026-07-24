@@ -73,6 +73,21 @@ PLANNER_HINTS = {
 AXIS_SYMBOLS = {"mach": "M", "ft/s": "V", "m/s": "V", "rpm": "N",
                 "hz": "f"}
 
+#: filesystem-SAFE unit label for the per-point filename speed token
+#: (recorder ``_default_name``): the selected speed unit → the token TAG,
+#: so an Hz sweep writes ``…_Hz_30.0`` and an ft/s sweep ``…_ftps_50.0``
+#: instead of a near-degenerate ``mach_0.0X``. ``mach`` keeps its historic
+#: ``mach`` tag (mode-1/2 SWT filenames unchanged). Streamlined consumes
+#: this map verbatim to parse the velocity dimension back out.
+SPEED_UNIT_FILE_TAG = {"mach": "mach", "ft/s": "ftps", "m/s": "mps",
+                       "rpm": "RPM", "hz": "Hz"}
+
+#: per-unit VALUE formatting for that filename token (Mach 2 decimals for
+#: backward-compat; the velocity units 1 decimal; RPM a whole number —
+#: all filesystem-safe, no thousands separators).
+SPEED_UNIT_FILE_FMT = {"mach": "{:.2f}", "ft/s": "{:.1f}", "m/s": "{:.1f}",
+                       "rpm": "{:.0f}", "hz": "{:.1f}"}
+
 FT_PER_M = 1.0 / 0.3048            # exact international foot
 
 #: FIXED standard-day speed of sound (T = 288.15 K) for PLANNING-TIME

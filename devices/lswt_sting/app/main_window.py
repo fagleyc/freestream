@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Optional
 
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    QBoxLayout, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
     QLabel, QMainWindow, QMessageBox, QPushButton, QSpinBox, QStatusBar,
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
@@ -50,10 +50,15 @@ class _AxisBox(QGroupBox):
     ("Set Current Angle…" → ``PZ``).
     """
 
+    #: usable minimum width for one axis box — the reflow container sums
+    #: the two boxes' minimums (+ a margin) for its stack threshold.
+    MIN_WIDTH = 240
+
     def __init__(self, name: str, color: str, parent=None):
         super().__init__(f"{name} axis", parent)
         self.axis_name = name
         self._zeroed = False
+        self.setMinimumWidth(self.MIN_WIDTH)
         g = QGridLayout(self)
 
         chip = QLabel()
@@ -148,6 +153,71 @@ class _AxisBox(QGroupBox):
 
     def set_limits(self, lo: float, hi: float):
         self.target.setRange(lo, hi)
+
+
+class _ReflowAxes(QWidget):
+    """Holds the Alpha and Beta axis boxes and REFLOWS between side-by-side
+    (wide) and stacked (narrow) as the panel is resized.
+
+    A single :class:`QBoxLayout` flips direction in :meth:`resizeEvent` at
+    ``threshold`` (the two boxes' combined minimum width + a margin) — no
+    reparenting, so both boxes stay fully functional (jog, Go, zero, STOP)
+    in either orientation. The device dialog is resizable/maximizable, so
+    shrinking the window below the threshold stacks the axes vertically.
+    """
+
+    _MARGIN = 24
+
+    def __init__(self, first: QWidget, second: QWidget, parent=None):
+        super().__init__(parent)
+        self._first = first
+        self._second = second
+        self._lay = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(8)
+        self._lay.addWidget(first, 1)
+        self._lay.addWidget(second, 1)
+        self._horizontal = True
+
+    @property
+    def threshold(self) -> int:
+        """Width below which the axes stack: the two boxes' combined
+        (usable) minimum width + a small margin. Uses the explicit
+        minimumWidth (falling back to the size hint) so the flip happens
+        when the boxes would genuinely be squished, not at their roomy
+        natural width."""
+        def _minw(w):
+            return w.minimumWidth() or w.minimumSizeHint().width()
+        return _minw(self._first) + _minw(self._second) + self._MARGIN
+
+    @property
+    def stacked(self) -> bool:
+        """True while the axes are stacked vertically (narrow layout)."""
+        return not self._horizontal
+
+    def minimumSizeHint(self):                         # noqa: N802
+        """Report a ONE-box minimum width so the panel/window can be
+        shrunk BELOW the two-box width — that shrink is exactly what drives
+        the reflow to the stacked layout (without this, the side-by-side
+        layout's own two-box minimum would hold the window open and the
+        stack could never trigger)."""
+        hint = super().minimumSizeHint()
+        w = max(self._first.minimumWidth(), self._second.minimumWidth(), 1)
+        return QSize(w, hint.height())
+
+    def reflow(self, width: int) -> None:
+        """Pick the orientation for *width* (also the tests' entry point)."""
+        horizontal = width >= self.threshold
+        if horizontal == self._horizontal:
+            return
+        self._horizontal = horizontal
+        self._lay.setDirection(
+            QBoxLayout.Direction.LeftToRight if horizontal
+            else QBoxLayout.Direction.TopToBottom)
+
+    def resizeEvent(self, event):                      # noqa: N802
+        super().resizeEvent(event)
+        self.reflow(self.width())
 
 
 class StingPanel(QWidget):
@@ -289,7 +359,9 @@ class StingPanel(QWidget):
                 lambda _=False, b=box: self._step(b, -1))
             box.zero_btn.clicked.connect(
                 lambda _=False, n=name: self._ask_zero(n))
-            boxes.addWidget(box, 2)
+        # the two axis boxes reflow (side-by-side ↔ stacked) with width
+        self.axes_container = _ReflowAxes(self.alpha_box, self.beta_box)
+        boxes.addWidget(self.axes_container, 2)
 
         side = QVBoxLayout()
         both = QGroupBox("Go Both")

@@ -139,6 +139,7 @@ class RecordingLswtFanTunnel(RecordingLswtTunnel):
         self._running = False
         self._arms = bool(arms)
         self.fan_start_calls = 0
+        self.fan_stop_calls = 0
 
     def fan_start(self):
         self.fan_start_calls += 1
@@ -146,6 +147,7 @@ class RecordingLswtFanTunnel(RecordingLswtTunnel):
             self._running = True
 
     def fan_stop(self):
+        self.fan_stop_calls += 1
         self._running = False
 
     def snapshot(self):
@@ -501,6 +503,106 @@ def test_auto_swt_no_fan_start_is_clean_noop(tmp_path):
     out = SweepEngine(mgr, rec, cfg).run([_mach_point(0.3)])[0]
     assert out.status == DONE
     assert tun.calls == [{"rpm": pytest.approx(0.3 * cfg.rpm_per_mach)}]
+
+
+# ═══ fan STOP after an automatic run (LSWT ACS530 shutdown) ══════════════
+def _hz_point(hz, **meta):
+    from freestream import speed
+    m = 0.0 if hz == 0 else speed.mach_from(hz, "hz")
+    meta.setdefault("speed_value", float(hz))
+    meta.setdefault("speed_unit", "hz")
+    return SweepPoint(alpha=0.0, mach=m, dwell_s=0.05, samples=50, meta=meta)
+
+
+@pytest.mark.parametrize("mode", ["auto", "regulate"])
+def test_auto_run_end_stops_fan_once(tmp_path, mode):
+    """auto/regulate normal run end → fan_stop() called exactly once, with
+    the 'run complete' log line."""
+    tun = RecordingLswtFanTunnel(sim=False, max_hz=60.0, arms=True)
+    daq = FixedMachDaq(mach=0.137, sim=False)
+    mgr, rec, cfg = _rig(tmp_path, tunnel=tun, daq=daq,
+                         tunnel_control_mode=mode, speed_unit="hz")
+    events = []
+    engine = SweepEngine(mgr, rec, cfg,
+                         SweepCallbacks(on_event=events.append))
+    out = engine.run([_hz_point(30.0)])[0]
+    assert out.status == DONE
+    assert tun.fan_stop_calls == 1
+    assert any("fan stopped (run complete)" in e for e in events)
+
+
+def test_abort_still_stops_fan_once(tmp_path):
+    """A graceful abort() mid-run still fires the run-end fan_stop once."""
+    tun = RecordingLswtFanTunnel(sim=False, max_hz=60.0, arms=True)
+    daq = FixedMachDaq(mach=0.137, sim=False)
+    mgr, rec, cfg = _rig(tmp_path, tunnel=tun, daq=daq,
+                         tunnel_control_mode="auto", speed_unit="hz")
+    engine = SweepEngine(mgr, rec, cfg)
+
+    # abort at the first point boundary → the loop skips + finish; the
+    # finally-hook still shuts the fan down.
+    engine.abort()
+    engine.run([_hz_point(30.0), _hz_point(20.0)])
+    assert tun.fan_stop_calls == 1
+
+
+def test_manual_never_stops_fan(tmp_path):
+    """Manual is monitor-only: the fan is never stopped by Freestream."""
+    tun = RecordingLswtFanTunnel(sim=False, max_hz=60.0, arms=True)
+    mgr, rec, cfg = _rig(tmp_path, tunnel=tun, speed_unit="hz")  # manual
+    assert cfg.tunnel_control_mode == "manual"
+    engine = SweepEngine(mgr, rec, cfg, SweepCallbacks(
+        on_operator_wait=lambda r: "proceed"))
+    out = engine.run([_hz_point(30.0)])[0]
+    assert out.status == DONE
+    assert tun.fan_stop_calls == 0
+
+
+def test_auto_swt_no_fan_stop_is_clean_noop(tmp_path):
+    """An SWT-style drive has no fan_stop (operator/console-run fan) — the
+    shutdown hook is a clean no-op and the run completes normally."""
+    tun = RecordingSwtTunnel(sim=False, rpm_max=2000.0)
+    daq = FixedMachDaq(mach=0.3, sim=False)
+    assert not hasattr(tun, "fan_stop")
+    mgr, rec, cfg = _rig(tmp_path, tunnel=tun, daq=daq,
+                         tunnel_control_mode="auto")
+    out = SweepEngine(mgr, rec, cfg).run([_mach_point(0.3)])[0]
+    assert out.status == DONE                         # no crash on no-op
+
+
+# ═══ metadata: the run swept multiple velocities (Feature 2) ═════════════
+def test_hz_sweep_records_speed_meta_and_setpoints(tmp_path):
+    """A recorded Hz-sweep file's root attrs carry speed_unit='hz', this
+    point's speed_value, AND the run's full speed_setpoints list — a single
+    file read can tell both the point's speed and that the run was
+    multi-velocity."""
+    tun = RecordingLswtFanTunnel(sim=False, max_hz=60.0, arms=True)
+    daq = FixedMachDaq(mach=0.137, sim=False)
+    mgr, rec, cfg = _rig(tmp_path, tunnel=tun, daq=daq,
+                         tunnel_control_mode="auto", speed_unit="hz")
+    engine = SweepEngine(mgr, rec, cfg)
+    pts = [_hz_point(0.0), _hz_point(10.0), _hz_point(30.0)]
+    outs = engine.run(pts)
+    assert all(o.status == DONE for o in outs)
+    with h5py.File(outs[2].path, "r") as f:
+        assert f.attrs["speed_unit"] == "hz"
+        assert float(f.attrs["speed_value"]) == pytest.approx(30.0)
+        setpoints = [float(v) for v in f.attrs["speed_setpoints"]]
+        assert setpoints == [0.0, 10.0, 30.0]
+
+
+def test_mach_sweep_has_no_spurious_speed_keys(tmp_path):
+    """A plain mach sweep still carries mach and writes NO speed_setpoints /
+    speed_value (nothing spurious)."""
+    tun = RecordingSwtTunnel(sim=False, rpm_max=2000.0)
+    daq = FixedMachDaq(mach=0.3, sim=False)
+    mgr, rec, cfg = _rig(tmp_path, tunnel=tun, daq=daq,
+                         tunnel_control_mode="auto")   # speed_unit=mach
+    out = SweepEngine(mgr, rec, cfg).run([_mach_point(0.3)])[0]
+    with h5py.File(out.path, "r") as f:
+        assert "speed_setpoints" not in f.attrs
+        assert "speed_value" not in f.attrs
+        assert f["Tunnel/Mach_cmd"][0] == pytest.approx(0.3)
 
 
 # ═══ setup dialog: the 3-way selector ════════════════════════════════════

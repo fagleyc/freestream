@@ -176,6 +176,15 @@ class SweepEngine:
         self._pause = threading.Event()      # requested (checked at boundary)
         self._holding = False                # actually holding right now
         self._running = False
+        #: True once estop() (not a graceful abort()) fired — the E-STOP
+        #: path is its own hard stop, so the run-end fan_stop hook is
+        #: skipped for it (a normal end and a graceful abort still fire it).
+        self._estopped = False
+        #: run-level speed-sweep marker threaded into every point's root
+        #: attrs so a single-file read shows the FULL set of setpoints —
+        #: (unit, sorted-unique speed_values). None on a mach/no-speed run.
+        self._run_speed_unit: Optional[str] = None
+        self._run_speed_setpoints: Optional[List[float]] = None
         #: what the tunnel was actually commanded for the CURRENT point —
         #: {"rpm_cmd": float|None, "mach_cmd": float|None}; recorded into
         #: the /Tunnel group (RPM_cmd / Mach_cmd).
@@ -223,6 +232,7 @@ class SweepEngine:
     def estop(self) -> None:
         """Immediate: stop all motion NOW, then abort the sweep."""
         self._abort.set()
+        self._estopped = True
         self.manager.stop_all_motion()
         self._event("E-STOP: all motion stopped, sweep aborted")
 
@@ -230,7 +240,12 @@ class SweepEngine:
     def run(self, points: List[SweepPoint]) -> List[PointOutcome]:
         self._abort.clear()
         self._pause.clear()
+        self._estopped = False
         self._running = True
+        # capture the run's full speed-setpoint set ONCE (multi-velocity
+        # marker written into every point file's root attrs — Feature 2).
+        self._run_speed_unit, self._run_speed_setpoints = \
+            self._collect_speed_setpoints(points)
         outcomes: List[PointOutcome] = []
         try:
             # arm/run the tunnel fan ONCE before commanding any point (only
@@ -268,7 +283,33 @@ class SweepEngine:
                     break
         finally:
             self._running = False
+            # finally-style hook: a normal end, a graceful abort, OR an
+            # exhausted/faulted loop all shut the fan down here (E-STOP is
+            # its own hard stop and is skipped — see _shutdown_tunnel_control).
+            self._shutdown_tunnel_control()
         return self._finish(outcomes)
+
+    @staticmethod
+    def _collect_speed_setpoints(points: List[SweepPoint]):
+        """The run's (unit, sorted-unique speed_values) across every point
+        that carries a NON-mach ``speed_unit`` + ``speed_value`` (the
+        planner stamps these for Hz/ft·s/m·s/RPM sweeps). Returns
+        ``(None, None)`` for a mach / no-speed run so nothing spurious is
+        written."""
+        unit: Optional[str] = None
+        values: set = set()
+        for p in points:
+            u = p.meta.get("speed_unit")
+            sv = p.meta.get("speed_value")
+            if u and str(u).lower() not in ("mach", "none") and sv is not None:
+                unit = str(u)
+                try:
+                    values.add(float(sv))
+                except (TypeError, ValueError):
+                    continue
+        if not values:
+            return None, None
+        return unit, sorted(values)
 
     def _finish(self, outcomes: List[PointOutcome]) -> List[PointOutcome]:
         self._running = False
@@ -317,6 +358,34 @@ class SweepEngine:
                 "start the fan (LSWT ACS530) before an automatic velocity "
                 "sweep")
         self._event("tunnel: fan armed and running (auto control)")
+
+    def _shutdown_tunnel_control(self) -> None:
+        """Once, AFTER the point loop ends (success, abort, or exhausted):
+        on an AUTOMATIC tier (``tunnel_control_mode`` in {"auto","regulate"})
+        stop the tunnel fan if the adapter supports it (LSWT ACS530
+        ``fan_stop`` = STOP word + zero reference), so an automatic run
+        leaves the tunnel shut down. Capability-gated (NOT mode-name-gated):
+        the SWT Red Lion has no ``fan_stop`` (operator/console-run fan) and
+        is a clean no-op, as is manual mode. Skipped after an E-STOP — that
+        path is its own hard stop; a normal end and a graceful abort BOTH
+        fire it exactly once (called from the run() finally)."""
+        if self._estopped:
+            return                                     # E-STOP handles itself
+        if self._control_mode() not in ("auto", "regulate"):
+            return                                     # manual never stops fan
+        dev = self.manager.setpoint
+        if dev is None:
+            return
+        fan_stop = getattr(dev, "fan_stop", None)
+        if not callable(fan_stop):
+            return             # SWT Red Lion etc. — operator-run fan, no-op
+        try:
+            fan_stop()
+        except Exception as exc:                       # noqa: BLE001
+            log.exception("tunnel fan stop failed")
+            self._event(f"tunnel: fan stop failed at run end ({exc})")
+            return
+        self._event("tunnel: fan stopped (run complete)")
 
     def _has_running_fan_point(self, points: List[SweepPoint]) -> bool:
         """True when at least one point commands a NON-air-off tunnel speed
@@ -965,6 +1034,15 @@ class SweepEngine:
         span = getattr(pos, "span_config", None)
         if isinstance(span, str) and span:
             extra_attrs["span_config"] = span
+        # run-level speed-sweep marker (Feature 2): the FULL set of speed
+        # setpoints + the entry unit, so a single-file read shows the run
+        # swept multiple velocities. Per-point speed_unit/speed_value already
+        # ride point.meta → root attrs; this adds the run-wide list. Only on
+        # a non-mach speed sweep — nothing spurious on a mach/no-speed run.
+        if self._run_speed_setpoints:
+            extra_attrs["speed_setpoints"] = list(self._run_speed_setpoints)
+            if self._run_speed_unit:
+                extra_attrs["speed_unit"] = self._run_speed_unit
         return self.recorder.write_point(
             point_meta={k: v for k, v in meta.items() if v is not None},
             blocks=blocks, rates=rates, channel_units=units,

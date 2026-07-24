@@ -28,6 +28,12 @@ STRAINBOOK_CHANNELS = ["N1", "N2", "Y1", "Y2", "Axial", "Roll", "Excitation"]
 DAQBOOK_CHANNELS = ["Pdiff", "Ptot", "Temp"]
 POSITIONER_CHANNELS = ["Alpha", "Beta"]
 TUNNEL_CHANNELS = ["Mach_cmd", "Mach_meas", "q_meas"]
+# Channels the Streamlined reader surfaces that have NO counterpart in the
+# historical TDMS layout: the Tunnel group plus the reader-derived "Speed"
+# dimension (data_io promotes the selected-speed axis — Hz/ftps/…/mach — to
+# a first-class channel from the file's speed_value/speed_unit or the mach
+# filename token). Set aside from the TDMS channel-parity comparisons.
+H5_ONLY_CHANNELS = TUNNEL_CHANNELS + ["Speed"]
 
 ROOT_ATTRS = {
     "run_number": 7,
@@ -155,7 +161,7 @@ def test_channel_names_match_tdms_layout(h5_run):
     raw, _ = read_hdf5_file(str(path))
 
     expected = set(STRAINBOOK_CHANNELS + DAQBOOK_CHANNELS
-                   + POSITIONER_CHANNELS + TUNNEL_CHANNELS)
+                   + POSITIONER_CHANNELS + H5_ONLY_CHANNELS)
     assert set(raw.data.keys()) == expected
     # Time group is skipped (TDMS parity); meta groups don't leak
     assert "Time" not in raw.data
@@ -308,9 +314,10 @@ def test_structure_matches_real_tdms_fixture(h5_run):
     assert type(h5_raw.time) is type(tdms_raw.time)
     assert type(h5_raw.data) is type(tdms_raw.data)
 
-    # Same channel keys once the HDF5-only Tunnel group is set aside
+    # Same channel keys once the HDF5-only channels (Tunnel group + the
+    # reader-derived Speed dimension) are set aside
     tdms_keys = set(tdms_raw.data.keys())
-    h5_keys = set(h5_raw.data.keys()) - set(TUNNEL_CHANNELS)
+    h5_keys = set(h5_raw.data.keys()) - set(H5_ONLY_CHANNELS)
     assert h5_keys == tdms_keys
 
     # Per-channel data accessible identically
