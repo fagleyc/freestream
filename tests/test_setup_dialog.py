@@ -130,14 +130,16 @@ def test_dialog_apply_roundtrip(app):
     dlg.samples_spin.setValue(1234)
     dlg.mach_settle_spin.setValue(3.5)
     dlg.mach_tol_spin.setValue(0.02)
-    dlg.tunnel_ctl_chk.setChecked(True)
+    dlg.control_mode_combo.setCurrentIndex(
+        dlg.control_mode_combo.findData("regulate"))
     dlg.apply_to(cfg)
     assert cfg.operator == "casey"
     assert cfg.sample_rate_hz == 500.0
     assert cfg.samples == 1234
     assert cfg.mach_settle_s == 3.5
     assert cfg.mach_tolerance == 0.02
-    assert cfg.tunnel_control_enabled is True
+    assert cfg.tunnel_control_mode == "regulate"
+    assert cfg.tunnel_control_enabled is True          # legacy kept in sync
     # untouched fields keep their defaults (nothing writes zero/cal)
     assert cfg.zero_each_point is False
     assert cfg.cal_files == {}

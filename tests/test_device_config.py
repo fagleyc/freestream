@@ -100,7 +100,8 @@ EXPECTED_TABS = {
                  "Z axis"],
     "ate": ["Live && Motion && Run", "Settings"],
     "lswt": ["Monitor && Control", "Settings"],
-    "lswt_sting": ["Motion && Limits", "Settings"],
+    "lswt_sting": ["Motion && Limits", "Settings", "Alpha axis",
+                   "Beta axis"],
     "ni_daq": ["Live && Channels", "Settings"],
     "heise": ["Live && History", "Settings"],
 }
@@ -186,6 +187,107 @@ def test_calibration_pump_with_connected_drive(app, manager):
 def test_driver_property_exposed(app, manager):
     for dev in manager.devices.values():
         assert dev.driver is not None
+
+
+# ── lswt_sting axis tabs: the indexer motion limits (Feature 2) ──────────
+def _axis_form(dlg, field):
+    """The ConfigForm in dlg carrying `field` (skips the main Settings
+    form / device panel)."""
+    for form in dlg._forms:
+        if field in form.fields():
+            return form
+    raise AssertionError(f"no form exposes {field!r}")
+
+
+def test_lswt_sting_has_axis_tabs_with_motion_limits(app):
+    """The sting dialog now grows Alpha/Beta axis tabs whose ONLY editors
+    are the indexer velocity/accel/decel motion limits (rendered as line
+    edits — the values are indexer command strings)."""
+    from PyQt6.QtWidgets import QLineEdit
+    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    sting = mgr.devices["lswt_sting"]
+    dlg = DeviceConfigDialog(sting)
+    try:
+        titles = [dlg.tabs.tabText(i) for i in range(dlg.tabs.count())]
+        assert "Alpha axis" in titles and "Beta axis" in titles
+        alpha_form = _axis_form(dlg, "velocity")
+        # exactly the three motion tokens — NO travel-limit/cal duplicates
+        assert set(alpha_form.fields()) == {
+            "velocity", "acceleration", "deceleration"}
+        # indexer strings → line edits (no float coercion of the tokens)
+        w, _g, _s = alpha_form._editors["velocity"]
+        assert isinstance(w, QLineEdit)
+    finally:
+        dlg._pump.stop()
+        dlg._stop_device_panel()
+
+
+def test_lswt_sting_axis_edit_applies_to_driver_config(app):
+    """Editing an axis's velocity/acceleration and Apply writes the exact
+    string tokens back to the adapter's driver config (and rebinds)."""
+    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    sting = mgr.devices["lswt_sting"]
+    dlg = DeviceConfigDialog(sting)
+    try:
+        # find the Alpha vs Beta forms by their live object identity
+        forms = {id(f._obj): f for f in dlg._forms}
+        alpha_form = forms[id(sting.config.alpha)]
+        beta_form = forms[id(sting.config.beta)]
+        alpha_form._editors["velocity"][2](".200")     # setter
+        alpha_form._editors["acceleration"][2]("12.5")
+        beta_form._editors["deceleration"][2]("3.3")
+        dlg._apply()
+        # round-trips to the DRIVER's config object (driver.config is the
+        # same live StingConfig the adapter holds)
+        assert sting.driver.config.alpha.velocity == ".200"
+        assert sting.driver.config.alpha.acceleration == "12.5"
+        assert sting.driver.config.beta.deceleration == "3.3"
+        # still strings — the indexer wants the exact tokens
+        assert isinstance(sting.driver.config.alpha.velocity, str)
+    finally:
+        dlg._pump.stop()
+        dlg._stop_device_panel()
+
+
+def test_modbus_axis_sections_unchanged_regression(app, all_manifest):
+    """crescent/traverse axis tabs keep rendering the default Modbus-shaped
+    AXIS_SECTIONS (per-spec override is opt-in; they fall back to it)."""
+    from freestream.app.device_config import AXIS_SECTIONS
+    for dev_id in ("crescent", "traverse"):
+        spec = DEVICE_SPECS[dev_id]
+        assert spec["axis_sections"] is AXIS_SECTIONS   # default, untouched
+
+    mgr = DeviceManager("mode1", sim=True, manifest_path=all_manifest)
+    cres = mgr.devices["crescent"]
+    dlg = DeviceConfigDialog(cres)
+    try:
+        alpha = _axis_form(dlg, "ip")                   # a Modbus axis field
+        # the crescent's Communication section (Modbus ip/port) still shows
+        assert {"ip", "port", "unit_id"} <= set(alpha.fields())
+    finally:
+        dlg._pump.stop()
+        dlg._stop_device_panel()
+
+
+def test_lswt_sting_dialog_motion_tabs_screenshot(app, tmp_path):
+    """Render the sting dialog offscreen, confirm the Motion tabs, and save
+    a screenshot to disk (path returned by the harness)."""
+    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    sting = mgr.devices["lswt_sting"]
+    dlg = DeviceConfigDialog(sting)
+    try:
+        dlg.resize(900, 640)
+        # select the Alpha axis tab so the Motion limits show in the grab
+        idx = next(i for i in range(dlg.tabs.count())
+                   if dlg.tabs.tabText(i) == "Alpha axis")
+        dlg.tabs.setCurrentIndex(idx)
+        app.processEvents()
+        out = Path(tmp_path) / "lswt_sting_motion_tab.png"
+        assert dlg.grab().save(str(out))
+        assert out.exists() and out.stat().st_size > 0
+    finally:
+        dlg._pump.stop()
+        dlg._stop_device_panel()
 
 
 # ── per-device connect from the rail ─────────────────────────────────────

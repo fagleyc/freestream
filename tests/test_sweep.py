@@ -118,8 +118,9 @@ def test_tunnel_mach_point_and_derived_channels(tmp_path):
     pt = SweepPoint(alpha=0.0, mach=0.3, dwell_s=0.05, samples=50)
     out = engine.run([pt])[0]
     assert out.status == DONE
-    # sim: measured Mach can't close the loop → RPM proxy, clearly logged
-    assert any("sim: Mach loop proxied by RPM" in e for e in events)
+    # sim: measured flow can't close the loop → open-loop command, logged
+    assert any("sim plant" in e and "regulation skipped" in e
+               for e in events)
     # filename carries the mach token, not rpm
     assert "mach_0.30" in Path(out.path).name
     with h5py.File(out.path, "r") as f:

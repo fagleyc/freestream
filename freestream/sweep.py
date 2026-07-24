@@ -4,20 +4,30 @@ Plain Python, no Qt: the GUI runs :meth:`SweepEngine.run` on a worker
 thread and receives progress via callbacks; tests drive it directly in
 sim. Per-point cycle::
 
-    [refuse-to-record check] → set tunnel Mach (MachLoop → RPM command;
-    meta["rpm"] = direct-RPM override bypass) → wait at_target →
-    move positioner(alpha, beta) → wait settled → (optional zero) →
+    [refuse-to-record check] → set tunnel speed (one of the 3 tiers below)
+    → move positioner(alpha, beta) → wait settled → (optional zero) →
     drain stale → dwell → acquire → write .h5 → advance
 
-MONITOR-ONLY (``config.tunnel_control_enabled = False``, the default —
-the Red Lion rejects Block2 writes until the Crimson fix): the "set
-tunnel" stage NEVER touches the SetpointDevice. Instead the engine
-raises an :class:`OperatorWaitRequest` through
-``callbacks.on_operator_wait`` — the OPERATOR brings the console to the
-target Mach (or RPM for a run-sheet ``rpm`` override) and the callback
-answers "proceed" | "skip" | "abort". Headless (no callback): a clear
-event is logged and the point proceeds immediately, still recording the
-honest measured Mach/RPM.
+THREE explicit tunnel-speed control tiers (``config.tunnel_control_mode``),
+each keyed off the SELECTED speed unit (``config.speed_unit``) and the
+adapter's NATIVE command parameter — never forced through Mach/RPM:
+
+* ``"manual"`` (monitor-only, the default): the "set tunnel" stage NEVER
+  writes the fan — the OPERATOR brings the console to the target. With
+  ``mach_check_enabled`` the engine raises an :class:`OperatorWaitRequest`
+  through ``callbacks.on_operator_wait`` (proceed | skip | abort; headless
+  → log + proceed); without it, the point records immediately.
+* ``"auto"``: command the drive ONCE in its native kwarg (LSWT → hz= /
+  velocity=, SWT → rpm=), wait the DRIVE's own setpoint-settle, record.
+  No measured-flow closure, no fault on a measured mismatch.
+* ``"regulate"``: auto, THEN a measured-feedback correction loop in the
+  selected unit (:func:`freestream.speed.measured_value`); non-convergence
+  WARNs + records by default (``tunnel_regulate_fault`` re-arms a fault).
+
+AIR-OFF (target 0 in any unit) short-circuits every tier: manual records
+immediately; auto/regulate command the fan to 0 and settle — the
+measured-feedback loop NEVER runs toward 0. A run-sheet ``rpm`` override
+is always commanded verbatim (open-loop), bypassing regulation.
 
 Every wait has a timeout → the point FAULTs and the sweep pauses (spec:
 recording must refuse, visibly, rather than write bad data). A failed
@@ -48,7 +58,7 @@ from . import speed
 from .config import FreestreamConfig
 from .derived import TUNNEL_CONDITION_CHANNELS, tunnel_state
 from .hal import Positioner, SetpointDevice, Streaming, Zeroable
-from .machloop import MachLoop, make_tunnel_measure
+from .machloop import (clamp_command, command_kwarg_for, make_tunnel_measure)
 from .manager import DeviceManager
 from .recorder import Hdf5Recorder
 from .runsheet import SweepPoint
@@ -223,6 +233,22 @@ class SweepEngine:
         self._running = True
         outcomes: List[PointOutcome] = []
         try:
+            # arm/run the tunnel fan ONCE before commanding any point (only
+            # when an automatic tier will actually drive a non-air-off
+            # speed and the adapter supports it — see the method). A failure
+            # here FAULTs the sweep before point 0.
+            try:
+                self._prepare_tunnel_control(points)
+            except Exception as exc:                   # noqa: BLE001
+                log.exception("tunnel control preparation failed")
+                self._event(f"point 0 FAILED — sweep paused ({exc}); "
+                            f"re-run after fixing the cause")
+                if points:
+                    points[0].status = FAILED
+                    outcomes.append(PointOutcome(0, FAILED, error=str(exc)))
+                    for later in points[1:]:
+                        later.status = QUEUED
+                return self._finish(outcomes)
             for i, point in enumerate(points):
                 # PAUSE boundary: checked right before starting the next
                 # point (never mid-point) — hold until resume()/abort().
@@ -242,9 +268,90 @@ class SweepEngine:
                     break
         finally:
             self._running = False
+        return self._finish(outcomes)
+
+    def _finish(self, outcomes: List[PointOutcome]) -> List[PointOutcome]:
+        self._running = False
         if self.cb.on_finished:
             self.cb.on_finished(outcomes)
         return outcomes
+
+    # ── tunnel-fan arming (auto/regulate velocity sweeps) ────────────────
+    def _prepare_tunnel_control(self, points: List[SweepPoint]) -> None:
+        """Once, before the point loop commands the tunnel: on an AUTOMATIC
+        tier (``tunnel_control_mode`` in {"auto","regulate"}) with at least
+        one non-air-off speed point, arm+run the fan if the adapter supports
+        it (LSWT ACS530). The ABB drive only ramps its reference while the
+        fan is RUNNING (START word), so an automatic Hz/velocity sweep would
+        otherwise command a reference the fan never chases → at_target never
+        true → timeout. Capability-gated (NOT mode-name-gated): the SWT Red
+        Lion fan has no ``fan_start`` (operator/console-run) and is a clean
+        no-op here, as is manual mode and an all-air-off sweep."""
+        if self._control_mode() not in ("auto", "regulate"):
+            return                                     # manual never writes
+        if not self._has_running_fan_point(points):
+            return                                     # all air-off: no fan
+        dev = self.manager.setpoint
+        if dev is None:
+            return
+        fan_start = getattr(dev, "fan_start", None)
+        if not callable(fan_start):
+            return             # SWT Red Lion etc. — operator-run fan, no-op
+        running = self._fan_running(dev)
+        if running is True:
+            self._event("tunnel: fan armed and running (auto control)")
+            return
+        fan_start()
+        if running is None:
+            # no running indicator to confirm against — a successful
+            # fan_start is treated as sufficient (idempotent in SIM)
+            self._event("tunnel: fan armed and running (auto control)")
+            return
+        try:
+            self._wait(lambda: self._fan_running(dev) is True,
+                       self.config.tunnel_timeout_s,
+                       "fan never reported running")
+        except TimeoutError:
+            raise RuntimeError(
+                "tunnel fan did not start/arm — enable fan control and "
+                "start the fan (LSWT ACS530) before an automatic velocity "
+                "sweep")
+        self._event("tunnel: fan armed and running (auto control)")
+
+    def _has_running_fan_point(self, points: List[SweepPoint]) -> bool:
+        """True when at least one point commands a NON-air-off tunnel speed
+        (a canonical Mach / RPM override / entered value > 0) — an all
+        air-off sweep needs no running fan."""
+        for p in points:
+            rpm_override = p.meta.get("rpm")
+            if rpm_override is None and p.mach is None:
+                continue                               # commands no speed
+            if not self._is_air_off(p, rpm_override):
+                return True
+        return False
+
+    @staticmethod
+    def _fan_running(dev: SetpointDevice) -> Optional[bool]:
+        """The running indicator: ``snapshot().fan_running`` when available,
+        else ``state()["running"]``, else None (no indicator — the caller
+        treats a successful ``fan_start`` as sufficient)."""
+        snap = getattr(dev, "snapshot", None)
+        if callable(snap):
+            try:
+                s = snap()
+            except Exception:                          # noqa: BLE001
+                s = None
+            if s is not None and hasattr(s, "fan_running"):
+                return bool(s.fan_running)
+        state = getattr(dev, "state", None)
+        if callable(state):
+            try:
+                st = state()
+            except Exception:                          # noqa: BLE001
+                st = None
+            if isinstance(st, dict) and "running" in st:
+                return bool(st["running"])
+        return None
 
     def _hold_if_paused(self, index: int, total: int) -> None:
         """Point-boundary pause hold: while pause is requested (and no
@@ -320,6 +427,48 @@ class SweepEngine:
             raise RuntimeError("REFUSING TO RECORD — " +
                                "; ".join(blockers))
 
+    # ── tunnel-speed control (3 tiers: manual / auto / regulate) ─────────
+    def _control_mode(self) -> str:
+        """The configured control tier, resolved for back-compat: an
+        explicit ``tunnel_control_mode`` wins; otherwise the legacy
+        ``tunnel_control_enabled`` boolean (True → regulate, False →
+        manual). ``FreestreamConfig.__post_init__`` already resolves this,
+        but the fallback keeps hand-built configs sane."""
+        mode = str(getattr(self.config, "tunnel_control_mode", "") or "")
+        mode = mode.strip().lower()
+        if mode in ("manual", "auto", "regulate"):
+            return mode
+        return "regulate" if self.config.tunnel_control_enabled else "manual"
+
+    def _speed_unit(self) -> str:
+        unit = getattr(self.config, "speed_unit", "mach")
+        return unit if unit in speed.SPEED_UNITS else "mach"
+
+    @staticmethod
+    def _is_air_off(point: SweepPoint, rpm_override) -> bool:
+        """A target of 0 in ANY unit = air off (Mach 0 ⟺ 0 in every unit).
+        Checked across the canonical Mach, a run-sheet RPM override and the
+        planner's entered speed value so the short-circuit fires regardless
+        of which the point carries."""
+        if point.mach is not None and abs(float(point.mach)) < 1e-6:
+            return True
+        if rpm_override is not None and abs(float(rpm_override)) < 1e-6:
+            return True
+        sv = point.meta.get("speed_value")
+        if sv is not None and abs(float(sv)) < 1e-6:
+            return True
+        return False
+
+    def _record_requested(self, point: SweepPoint, rpm_override) -> None:
+        """Stamp /Tunnel Mach_cmd/RPM_cmd from the REQUESTED target (no
+        write). An RPM override records RPM_cmd only (no Mach was
+        commanded), mirroring the historical monitor-only behavior."""
+        target_rpm = None if rpm_override is None else float(rpm_override)
+        target_mach = (float(point.mach)
+                       if rpm_override is None and point.mach is not None
+                       else None)
+        self._tunnel_cmd = {"rpm_cmd": target_rpm, "mach_cmd": target_mach}
+
     def _set_tunnel(self, point: SweepPoint) -> None:
         self._tunnel_cmd = {"rpm_cmd": None, "mach_cmd": None}
         rpm_override = point.meta.get("rpm")
@@ -331,85 +480,200 @@ class SweepEngine:
                 "point requests a tunnel condition (Mach/RPM) but this "
                 "device set has no tunnel SetpointDevice — add a tunnel "
                 "device or remove the Mach/RPM column from these points")
-        if not self.config.tunnel_control_enabled:
-            if not self.config.mach_check_enabled:
-                # Mach verification DISABLED: skip the per-point gate
-                # entirely — no operator dialog, no settle wait. Record
-                # immediately after positioning; the requested condition
-                # still lands in /Tunnel (Mach_cmd/RPM_cmd) alongside the
-                # honest measured channels.
-                target_rpm = (None if rpm_override is None
-                              else float(rpm_override))
-                target_mach = (float(point.mach)
-                               if rpm_override is None else None)
-                self._tunnel_cmd = {"rpm_cmd": target_rpm,
-                                    "mach_cmd": target_mach}
-                self._event(
-                    "tunnel: Mach verification disabled — recording "
-                    "immediately without waiting for tunnel conditions")
-                return
-            # MONITOR-ONLY (Red Lion rejects Block2 writes until the
-            # Crimson fix): NEVER touch the SetpointDevice — the OPERATOR
-            # sets the console; we wait/prompt, then record honestly.
-            self._operator_wait(point, rpm_override, dev)
+        mode = self._control_mode()
+        if mode == "manual":
+            self._tunnel_manual(point, rpm_override, dev)
+        else:
+            self._tunnel_command(point, rpm_override, dev,
+                                 regulate=(mode == "regulate"))
+
+    # ── Tier A: MANUAL (monitor-only, never writes the fan) ──────────────
+    def _tunnel_manual(self, point: SweepPoint, rpm_override,
+                       dev: SetpointDevice) -> None:
+        """The OPERATOR brings the tunnel to the target; Freestream only
+        monitors. ``mach_check_enabled`` is the sub-toggle: True = wait
+        (operator dialog) until the measured value holds in tolerance, then
+        auto-proceed; False = record immediately. Air-off (target 0)
+        records immediately either way — there is nothing to wait for."""
+        if self._is_air_off(point, rpm_override):
+            self._record_requested(point, rpm_override)
+            self._event("tunnel: air-off (target 0) — recording "
+                        "immediately (manual, no verify wait)")
             return
-        if rpm_override is None and self.config.speed_unit in ("ft/s",
-                                                               "m/s"):
-            # velocity entry unit + control enabled: adapters that speak
-            # velocity natively (LSWT fan drive) take the entered value
-            # verbatim; others fall through to the MachLoop below.
-            if self._command_velocity(point, dev, self.config.speed_unit):
-                return
+        if not self.config.mach_check_enabled:
+            # per-point speed gate DISABLED: no dialog, no settle wait —
+            # record immediately with the requested condition in /Tunnel.
+            self._record_requested(point, rpm_override)
+            self._event(
+                "tunnel: Mach verification disabled — recording "
+                "immediately without waiting for tunnel conditions")
+            return
+        # verify-and-wait: the OPERATOR sets the console; we wait/prompt.
+        self._operator_wait(point, rpm_override, dev)
+
+    # ── Tiers B/C: AUTO (open-loop) + REGULATE (closed-loop to tol) ──────
+    def _tunnel_command(self, point: SweepPoint, rpm_override,
+                        dev: SetpointDevice, regulate: bool) -> None:
+        """Command the tunnel in the adapter's NATIVE parameter (never
+        forced through Mach/RPM). AUTO commands once and waits the DRIVE's
+        own setpoint-settle; REGULATE then adds a measured-feedback
+        correction loop in the SELECTED speed unit."""
+        # AIR-OFF short-circuit (all command tiers): command the drive to
+        # 0 (fan off), wait it to settle, record — NEVER run the measured
+        # loop toward 0 (you cannot regulate a garbage measured Mach down
+        # to 0 by nudging an already-off fan; that is exactly Casey's
+        # fault).
+        if self._is_air_off(point, rpm_override):
+            self._command_air_off(point, rpm_override, dev)
+            return
         if rpm_override is not None:
             # documented direct-RPM override (run-sheet "rpm" column) —
-            # commands the fan verbatim, BYPASSING the Mach loop.
+            # commands the fan verbatim, open-loop, BYPASSING regulation.
             rpm = float(rpm_override)
             self._event(f"tunnel → {rpm:g} RPM (direct override, "
                         f"Mach loop bypassed)")
             dev.set_target(rpm=rpm)
             self._wait(dev.at_target, self.config.tunnel_timeout_s,
                        f"tunnel never reached {rpm:g} RPM")
-            self._tunnel_cmd["rpm_cmd"] = rpm
+            self._tunnel_cmd = {"rpm_cmd": rpm, "mach_cmd": None}
             return
-        loop = MachLoop(dev, self.config, manager=self.manager,
-                        event=self._event)
-        result = loop.run(float(point.mach), self._wait)
-        self._tunnel_cmd = {"rpm_cmd": result.rpm_cmd,
-                            "mach_cmd": result.mach_target}
+        unit = self._speed_unit()
+        entered = point.meta.get("speed_value")
+        kwarg, value = command_kwarg_for(dev, float(point.mach), entered,
+                                         unit, self.config)
+        value = clamp_command(dev, kwarg, value)
+        # Tier B: command once, wait the drive's OWN setpoint-settle
+        self._event(f"tunnel → {value:g} {kwarg} (auto command "
+                    f"[{unit}], canonical Mach {float(point.mach):g})")
+        dev.set_target(**{kwarg: value})
+        self._wait(dev.at_target, self.config.tunnel_timeout_s,
+                   f"tunnel never settled at {value:g} {kwarg}")
+        value = self._record_command(point, kwarg, value)
+        if not regulate:
+            return
+        # Tier C: closed-loop correction in the SELECTED unit
+        if self._sim_measurement(dev):
+            # sim plant: the sim DAQ pressures do not respond to the fan,
+            # so measured-feedback can't close — degrade to the open-loop
+            # command (clearly logged), never fault.
+            self._event("tunnel: sim plant — measured-feedback regulation "
+                        "skipped (open-loop command holds)")
+            return
+        self._regulate(point, dev, unit, kwarg, value)
 
-    def _command_velocity(self, point: SweepPoint, dev: SetpointDevice,
-                          unit: str) -> bool:
-        """Velocity-unit fast path (control ENABLED): when the tunnel
-        adapter itself speaks velocity — its readback carries a
-        ``velocity_fps`` key (the LSWT fan drive) — command the
-        operator's entered velocity verbatim in ft/s instead of
-        round-tripping it through the nominal Mach→RPM map. Returns
-        False when the adapter has no velocity readback; the caller
-        falls back to the MachLoop with the point's canonical Mach, so
-        recording/air-state stay unit-agnostic either way."""
+    def _command_air_off(self, point: SweepPoint, rpm_override,
+                         dev: SetpointDevice) -> None:
+        """Air-off in a command tier: drive the fan to 0 and wait it to
+        settle at 0 — no measured-feedback loop toward 0."""
+        kwarg = "rpm"
+        rb = {}
         try:
             rb = dev.readback() or {}
         except Exception:                              # noqa: BLE001
             rb = {}
-        if "velocity_fps" not in rb:
-            return False
-        entered = point.meta.get("speed_value")
-        if entered is None:
-            # run-sheet mach point: honest target via the nominal map
-            fps = speed.value_from_mach(float(point.mach), "ft/s",
-                                        self.config.rpm_per_mach)
-        elif unit == "m/s":
-            fps = speed.convert_velocity_ms(float(entered), "ft/s")
+        if ("hz" in rb) or ("velocity_fps" in rb):
+            kwarg = "hz"                               # LSWT drive: 0 Hz
+        self._event(f"tunnel: air-off — commanding {kwarg}=0 (fan off), "
+                    f"no measured-feedback toward 0")
+        try:
+            dev.set_target(**{kwarg: 0.0})
+        except Exception as exc:                       # noqa: BLE001
+            self._event(f"tunnel: air-off command warning ({exc}); "
+                        "recording air-off regardless")
         else:
-            fps = float(entered)
-        self._event(f"tunnel → {fps:g} ft/s (adapter speaks velocity — "
-                    f"Mach loop bypassed)")
-        dev.set_target(velocity=fps)
-        self._wait(dev.at_target, self.config.tunnel_timeout_s,
-                   f"tunnel never reached {fps:g} ft/s")
-        self._tunnel_cmd = {"rpm_cmd": None,
-                            "mach_cmd": float(point.mach)}
-        return True
+            self._wait(dev.at_target, self.config.tunnel_timeout_s,
+                       "tunnel never settled at 0 (air off)")
+        self._record_requested(point, rpm_override)
+
+    def _record_command(self, point: SweepPoint, kwarg: str,
+                         value: float):
+        """Record the commanded NATIVE value + the canonical Mach into
+        /Tunnel. Hz/RPM commands land in RPM_cmd (Hz≡RPM 1:1 on the LSWT
+        drive); a velocity command leaves RPM_cmd to the readback. Returns
+        the value actually stored (unchanged) for the regulate loop."""
+        rpm_cmd = value if kwarg in ("rpm", "hz") else None
+        mach_cmd = float(point.mach) if point.mach is not None else None
+        self._tunnel_cmd = {"rpm_cmd": rpm_cmd, "mach_cmd": mach_cmd}
+        return value
+
+    def _sim_measurement(self, dev: SetpointDevice) -> bool:
+        """True when measured-feedback closure is impossible because the
+        drive or the tunnel-condition source(s) are simulated (the sim
+        plant's pressures don't respond to the fan)."""
+        if getattr(dev, "sim", True):
+            return True
+        for s in getattr(self.manager, "streaming", []):
+            names = set()
+            try:
+                names = {ch.name for ch in s.channels()}
+            except Exception:                          # noqa: BLE001
+                continue
+            if "Pdiff" in names and getattr(s, "sim", True):
+                return True
+        return False
+
+    def _regulate(self, point: SweepPoint, dev: SetpointDevice, unit: str,
+                  kwarg: str, value: float) -> None:
+        """Measured-feedback correction IN THE SELECTED UNIT: measure via
+        speed.measured_value; within speed_tolerance → done; else nudge the
+        NATIVE command proportionally (clamped to the adapter limit) and
+        retry up to mach_max_iterations. On non-convergence DO NOT fault by
+        default — WARN and RECORD the best command (config
+        ``tunnel_regulate_fault`` re-arms the historical hard fault)."""
+        target = speed.value_from_mach(float(point.mach), unit,
+                                       self.config.rpm_per_mach)
+        tol = float(self.config.speed_tolerance)
+        max_iter = max(int(self.config.mach_max_iterations), 1)
+        timeout = float(self.config.tunnel_timeout_s)
+        label = speed.LABELS.get(unit, unit)
+        meas = speed.measured_value(self.manager, dev, unit)
+        for i in range(1, max_iter + 1):
+            if meas is None:
+                # no measurement (open/garbage channel) → can't regulate;
+                # non-fatal by default (this is Casey's open-Pdiff case)
+                return self._regulate_giveup(
+                    f"no measured {label} available", dev, kwarg, value)
+            if abs(meas - target) <= tol:
+                self._event(f"tunnel regulate: at target — measured "
+                            f"{meas:g} {label} (target {target:g} ± "
+                            f"{tol:g}) after {i} command(s)")
+                return
+            if i >= max_iter:
+                break
+            # proportional nudge in the native parameter (clamped)
+            if meas > 1e-9 and value > 0:
+                nudged = value * (target / meas)
+            elif value > 0:
+                nudged = value * 1.25          # flow not established: step up
+            else:
+                nudged = value
+            nudged = clamp_command(dev, kwarg, nudged)
+            self._event(f"tunnel regulate: measured {meas:g} {label} off "
+                        f"target {target:g} — correcting to {nudged:g} "
+                        f"{kwarg} (iteration {i + 1}/{max_iter})")
+            value = nudged
+            dev.set_target(**{kwarg: value})
+            self._wait(dev.at_target, timeout,
+                       f"tunnel never settled at {value:g} {kwarg}")
+            self._record_command(point, kwarg, value)
+            meas = speed.measured_value(self.manager, dev, unit)
+        self._regulate_giveup(
+            f"measured {meas:g} {label} not within ±{tol:g} of target "
+            f"{target:g} after {max_iter} command(s)", dev, kwarg, value)
+
+    def _regulate_giveup(self, why: str, dev: SetpointDevice, kwarg: str,
+                         value: float) -> None:
+        """Non-convergence policy: raise the historical hard FAULT only
+        when ``tunnel_regulate_fault`` is set; otherwise WARN and keep the
+        best command (the point still records honestly)."""
+        if getattr(self.config, "tunnel_regulate_fault", False):
+            raise RuntimeError(
+                f"tunnel regulate FAULT: {why} — check the tunnel-condition "
+                f"channels and the drive; set tunnel_regulate_fault=False "
+                f"to record anyway")
+        self._event(f"WARNING: tunnel regulate did not converge — {why}; "
+                    f"recording with the best command ({value:g} {kwarg}) "
+                    f"— regulation is advisory (tunnel_regulate_fault off)")
 
     def _operator_wait(self, point: SweepPoint, rpm_override,
                        dev: SetpointDevice) -> None:

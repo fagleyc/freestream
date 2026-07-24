@@ -13,6 +13,18 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
 
+#: the three explicit tunnel-speed control tiers (config.tunnel_control_mode):
+#: * "manual"   — monitor-only; the OPERATOR brings the tunnel to speed and
+#:                Freestream never writes the fan (the mach_check_enabled
+#:                sub-toggle picks verify-and-wait vs record-immediately);
+#: * "auto"     — open-loop: command the tunnel ONCE (native drive param),
+#:                wait the DRIVE's own setpoint-settle, record; no measured
+#:                closure, no fault on a measured mismatch;
+#: * "regulate" — auto, THEN a measured-feedback correction loop in the
+#:                SELECTED speed unit; non-convergence WARNs + records by
+#:                default (config.tunnel_regulate_fault re-arms the fault).
+TUNNEL_CONTROL_MODES = ("manual", "auto", "regulate")
+
 
 @dataclass
 class FreestreamConfig:
@@ -51,6 +63,20 @@ class FreestreamConfig:
     #: the sweep waits (operator dialog) for the OPERATOR to bring the
     #: console to the target condition, then records honestly.
     tunnel_control_enabled: bool = False
+    #: Explicit 3-tier tunnel-speed control (spec above): "manual" |
+    #: "auto" | "regulate". Empty means "derive from the legacy
+    #: ``tunnel_control_enabled`` boolean" (see :meth:`__post_init__`):
+    #: legacy True → "regulate" (preserve the old closed-loop intent),
+    #: False → "manual". EVERYTHING keys off this + the selected
+    #: ``speed_unit`` and the adapter's NATIVE command param — nothing is
+    #: forced through Mach/RPM anymore.
+    tunnel_control_mode: str = ""
+    #: REGULATE-tier fault policy. False (default): a measured-feedback
+    #: loop that never converges (e.g. an OPEN Pdiff channel yielding a
+    #: garbage Mach, or a fan already off) logs a WARNING and RECORDS with
+    #: the best command — non-fatal. True: restore the historical HARD
+    #: FAULT (the sweep point fails) for rigs that want it.
+    tunnel_regulate_fault: bool = False
     #: Verify Mach at each point (operator dialog / settle check). True
     #: (default): current behavior — monitor-only mach/rpm points raise
     #: the operator MachWaitDialog and wait for the settle check. False:
@@ -131,6 +157,17 @@ class FreestreamConfig:
 
     # ── every device's own driver config, snapshotted on Save Config ────
     device_configs: Dict[str, dict] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Back-compat derivation of the 3-tier control mode. An empty /
+        # unknown mode is resolved from the legacy boolean so old configs
+        # AND code building FreestreamConfig(tunnel_control_enabled=True)
+        # keep the old closed-loop intent (→ "regulate"); the plain
+        # default (enabled False) resolves to monitor-only "manual".
+        mode = str(self.tunnel_control_mode or "").strip().lower()
+        if mode not in TUNNEL_CONTROL_MODES:
+            mode = "regulate" if self.tunnel_control_enabled else "manual"
+        self.tunnel_control_mode = mode
 
     def to_dict(self) -> dict:
         return asdict(self)

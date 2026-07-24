@@ -175,30 +175,49 @@ class MeasurementSetupDialog(QDialog):
         tun.addRow(self.speed_tol_label, self.mach_tol_spin)
         self.speed_unit_combo.currentIndexChanged.connect(
             self._speed_unit_changed)
-        self.tunnel_ctl_chk = QCheckBox(
-            "Tunnel RPM control (needs writable Block2)")
-        self.tunnel_ctl_chk.setChecked(config.tunnel_control_enabled)
-        self.tunnel_ctl_chk.setToolTip(
-            "Unchecked (default): MONITOR-ONLY — Freestream never writes "
-            "fan RPM, because the Red Lion currently rejects all Block2 "
-            "writes (Crimson fix pending). Mach/rpm points pause with an "
-            "operator dialog until the measured Mach holds at the target, "
-            "then record honestly.\n"
-            "Checked: Freestream commands RPM through the Mach loop — "
-            "only once the writable Block2 firmware is installed.")
-        tun.addRow(self.tunnel_ctl_chk)                # spans both columns
+        # ── 3-tier tunnel-speed control (replaces the two ambiguous
+        # checkboxes) — clear about who drives the fan and how closure is
+        # judged. Everything keys off the selected Speed unit above.
+        self.control_mode_combo = QComboBox()
+        self.control_mode_combo.addItem(
+            "Manual (operator sets speed)", "manual")
+        self.control_mode_combo.addItem(
+            "Automatic (command & hold)", "auto")
+        self.control_mode_combo.addItem(
+            "Automatic + regulate to tolerance", "regulate")
+        mode = getattr(config, "tunnel_control_mode", "") or (
+            "regulate" if config.tunnel_control_enabled else "manual")
+        idx = self.control_mode_combo.findData(mode)
+        self.control_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.control_mode_combo.setToolTip(
+            "How Freestream drives the tunnel to each point's speed:\n"
+            "• Manual — MONITOR-ONLY: the OPERATOR brings the tunnel to "
+            "speed; Freestream never writes the fan (use the verify option "
+            "below to auto-proceed once the measured speed holds).\n"
+            "• Automatic — command the drive ONCE in its native parameter "
+            "(Hz / velocity / RPM per the Speed unit), wait for the drive "
+            "to settle on that setpoint, then record. No measured-flow "
+            "closure.\n"
+            "• Automatic + regulate — Automatic, then nudge the command "
+            "until the MEASURED speed is within tolerance. A measurement "
+            "that can't be regulated (e.g. an open pressure channel) logs "
+            "a warning and records anyway — it never faults the point.")
+        tun.addRow("Tunnel speed control", self.control_mode_combo)
         self.mach_check_chk = QCheckBox(
-            "Verify Mach at each point (operator dialog / settle check)")
+            "Verify measured speed before recording")
         self.mach_check_chk.setChecked(config.mach_check_enabled)
         self.mach_check_chk.setToolTip(
-            "Checked (default): monitor-only mach/rpm points open the "
-            "operator wait dialog and auto-proceed once the measured "
-            "Mach holds in tolerance.\n"
-            "Unchecked: the per-point Mach gate is skipped entirely — "
-            "each point records immediately after positioning, without "
-            "waiting for tunnel conditions (tunnel channels are still "
-            "recorded honestly).")
+            "Manual mode only. Checked (default): each mach/rpm point opens "
+            "the operator-wait dialog and auto-proceeds once the measured "
+            "speed holds in tolerance for the settle time.\n"
+            "Unchecked: the per-point gate is skipped entirely — each point "
+            "records immediately after positioning, without waiting for "
+            "tunnel conditions (tunnel channels are still recorded "
+            "honestly). Ignored in the Automatic modes.")
         tun.addRow(self.mach_check_chk)                # spans both columns
+        self.control_mode_combo.currentIndexChanged.connect(
+            self._control_mode_changed)
+        self._control_mode_changed()                  # set initial enable
         grid.addWidget(tun_box, 1, 1)
 
         # ── Balance (display-only reduction; .vol is DEVICE-OWNED) ──────
@@ -302,6 +321,13 @@ class MeasurementSetupDialog(QDialog):
         self.mach_tol_spin.setRange(lo, hi)
         self.mach_tol_spin.setSingleStep(step)
 
+    def _control_mode_changed(self) -> None:
+        """The verify-before-recording toggle is only meaningful in Manual
+        (it picks operator-wait vs record-immediately); the Automatic modes
+        command the drive, so grey it out there."""
+        mode = str(self.control_mode_combo.currentData() or "manual")
+        self.mach_check_chk.setEnabled(mode == "manual")
+
     def _speed_unit_changed(self) -> None:
         """USER changed the unit: re-range the spin and seed that
         unit's sensible default band (deliberately NOT done on plain
@@ -354,7 +380,12 @@ class MeasurementSetupDialog(QDialog):
             # alone so a temporary unit switch never clobbers the
             # tuned Mach band
             config.mach_tolerance = self.mach_tol_spin.value()
-        config.tunnel_control_enabled = self.tunnel_ctl_chk.isChecked()
+        # 3-tier control mode + the legacy boolean kept consistent so any
+        # older reader / recorded config-snapshot still makes sense:
+        # tunnel_control_enabled = (mode != manual).
+        mode = str(self.control_mode_combo.currentData() or "manual")
+        config.tunnel_control_mode = mode
+        config.tunnel_control_enabled = (mode != "manual")
         config.mach_check_enabled = self.mach_check_chk.isChecked()
         # config.vol_path is DEVICE-OWNED (StrainBook panel → Forces tab);
         # the Forces page mirrors it into the config each tick

@@ -200,7 +200,8 @@ def test_control_enabled_still_commands_via_machloop(tmp_path):
     assert out.status == DONE
     assert waits == []                                # never prompted
     assert calls == [{"rpm": pytest.approx(0.3 * cfg.rpm_per_mach)}]
-    assert any("sim: Mach loop proxied by RPM" in e for e in events)
+    assert any("sim plant" in e and "regulation skipped" in e
+               for e in events)
 
 
 # ═══ GUI: MachWaitDialog auto-proceeds in SIM through the worker ═════════
@@ -251,22 +252,26 @@ def test_gui_mach_sweep_dialog_auto_proceeds_in_sim(app, tmp_path):
         assert [p.mach for p in win.planner.points] == [0.0, 0.2, 0.25, 0.3]
 
         win.start_btn.click()
-        # the dialog appears on the GUI thread, with the SIM note…
+        # the air-off 0 point records IMMEDIATELY (manual, no verify wait);
+        # the FIRST dialog is for the first air-on level (Mach 0.2), with
+        # the SIM note…
         assert _spin(app, lambda: win._wait_dialog is not None,
                      timeout_s=10)
         dlg = win._wait_dialog
         assert dlg.sim_lbl.isVisible()
         assert "SIM" in dlg.sim_lbl.text()
-        assert "0.000" in dlg.target_lbl.text()       # first target = air-off
+        assert "0.200" in dlg.target_lbl.text()       # air-off skipped
         # …and the whole sweep completes hands-free (1 s auto-proceed each)
         assert _spin(app, lambda: not win.sweep_active, timeout_s=60)
 
         assert calls == []                            # ZERO set_target calls
         h5_files = sorted((tmp_path / "runs").rglob("*.h5"))
-        assert len(h5_files) == 4
+        assert len(h5_files) == 4                     # all points recorded
         log_text = win.console.toPlainText()
         assert "decision 'proceed'" in log_text       # operator decisions
-        assert log_text.count("operator wait: bring the tunnel") == 4
+        # only the 3 air-on levels prompt; air-off records immediately
+        assert log_text.count("operator wait: bring the tunnel") == 3
+        assert "air-off (target 0) — recording immediately" in log_text
         assert win._wait_dialog is None               # cleaned up
     finally:
         win.close()

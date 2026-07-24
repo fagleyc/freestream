@@ -126,6 +126,7 @@ class _AxisState:
         # ── limit switch / fault ──
         self.limit = False                     # engaged (decoded polarity)
         self.limit_prev = False                # last tick's engaged state
+        self.limit_at_move_start = False       # switch made when move began
         self.fault: Optional[str] = None       # e.g. "LIMIT" (state dict)
         # ── host-side homing ──
         self.homing = False                    # cycle in progress
@@ -615,6 +616,13 @@ class TraverseDrive:
                 st.wrongway = 0
                 st.reversals = 0
                 st.last_move_dir = None
+                # remember whether the switch was ALREADY made when this
+                # move began: a move that STARTS on the limit (a freshly
+                # homed axis sitting on its datum) and heads AWAY is
+                # recovery — allowed; a move that starts CLEAR and then
+                # engages the switch drove INTO it and is stopped
+                # unconditionally (the sign-convention protection).
+                st.limit_at_move_start = st.limit
                 tol = abs(st.cfg.tolerance_in * st.cfg.clicks_per_inch)
                 st.moving = abs(st.counts - st.target_counts) > tol
                 if st.moving:
@@ -771,13 +779,15 @@ class TraverseDrive:
         # drove INTO the limit without stopping because the old reaction
         # only fired when the DIRECTION BOOKKEEPING said "heading
         # negative" — a sign-convention error defeated the protection.
-        # Two rules now, so bookkeeping can never defeat it again:
-        #  1. the ENGAGE TRANSITION while anything is commanded stops
-        #     the axis UNCONDITIONALLY (whatever the claimed direction —
-        #     the plant just proved it was driving into the switch);
-        #  2. while engaged, only a FRESH command in the away direction
-        #     (+inches, off the negative switch) is allowed to run —
-        #     the recovery path (move_to/jog away after the stop).
+        # Rules (so bookkeeping can never defeat the protection, yet a
+        # homed axis can still drive off its own datum switch):
+        #  1. a move that DROVE INTO the switch (started clear, engaged
+        #     mid-move) is stopped UNCONDITIONALLY — the plant just
+        #     proved it was heading in, whatever the claimed direction
+        #     (the sign-convention protection, rig 2026-07-22);
+        #  2. a move already engaged last tick, OR one that STARTED on
+        #     the switch (a freshly homed axis on its datum), commanded
+        #     in the AWAY direction, is recovery — allowed to run.
         newly_engaged = not st.limit_prev
         st.limit_prev = True
         commanded = st.command is not None or st.applied is not None
@@ -786,7 +796,9 @@ class TraverseDrive:
         away = self._away_dir(st.cfg)
         heading_away = (st.command == away and
                         st.applied in (None, away))
-        if not newly_engaged and heading_away:
+        recovering = heading_away and (not newly_engaged or
+                                       st.limit_at_move_start)
+        if recovering:
             return                     # deliberate recovery — let it run
         st.moving = False
         st.target_counts = None

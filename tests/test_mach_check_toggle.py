@@ -136,9 +136,9 @@ def test_checkbox_lives_in_tunnel_group_next_to_control(app):
     dlg = MeasurementSetupDialog(FreestreamConfig())
     chk = dlg.mach_check_chk
     assert isinstance(chk, QCheckBox)
-    assert "Verify Mach at each point" in chk.text()
-    # directly adjacent to tunnel_ctl_chk: same Tunnel group box
-    assert chk.parent() is dlg.tunnel_ctl_chk.parent()
+    assert "Verify measured speed" in chk.text()
+    # directly adjacent to the 3-way control selector: same Tunnel group box
+    assert chk.parent() is dlg.control_mode_combo.parent()
     assert chk.parent().title() == "Tunnel"
     assert "without waiting" in chk.toolTip()      # Off = record immediately
 

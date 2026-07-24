@@ -40,6 +40,15 @@ from .plc import STATUS_LIMIT_MASK, BlockReading
 SIM_RATE = 2_000.0        # counts/s — the PLC program's fixed speed
 ACCEL_TC = 0.12           # s, first-order response to commanded rate
 
+# Hard cap on the sim plant's per-tick counts advance. The huge-slope Z
+# axis, scaled up by rate_scale (~66×) and a fast adapter sim_rate, would
+# otherwise step ~80-100k counts/tick — brushing the driver's
+# max_counts_per_tick jump guard (default 100k), which then misreads
+# legitimate fast motion as a counter-reset and FREEZES the axis. Cap the
+# per-tick delta well under that guard so a fast sim can never trip it
+# (the axis just takes a few more ticks to cover a long move).
+SIM_MAX_COUNTS_PER_TICK = 40_000.0
+
 # default distance (counts) from the power-up zero to the negative
 # travel end — where the sim asserts the axis's limit bit. Far enough
 # that ordinary sim moves (a few inches at ~15k counts/in) don't touch
@@ -94,7 +103,14 @@ class _SimAxis:
     def advance(self, dt: float) -> None:
         alpha = min(dt / ACCEL_TC, 1.0)
         self.rate += (self.cmd_rate - self.rate) * alpha
-        self.counts += self.rate * dt
+        # cap the per-tick step so a fast sim never trips the driver's
+        # counter-jump guard (see SIM_MAX_COUNTS_PER_TICK)
+        delta = self.rate * dt
+        if delta > SIM_MAX_COUNTS_PER_TICK:
+            delta = SIM_MAX_COUNTS_PER_TICK
+        elif delta < -SIM_MAX_COUNTS_PER_TICK:
+            delta = -SIM_MAX_COUNTS_PER_TICK
+        self.counts += delta
 
     @property
     def at_neg_limit(self) -> bool:

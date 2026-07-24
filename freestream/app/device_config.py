@@ -99,12 +99,17 @@ _LAMP_STYLE = {
 #: embedded StrainBook panel's Forces tab (this dialog's primary tab) —
 #: Freestream's Forces page and Measurement Setup only display them.
 def _spec(sections=(), choices=None, axes=(), channels_panel="",
-          cal_panel="", skip=(), axis_skip=(),
+          cal_panel="", skip=(), axis_skip=(), axis_sections=None,
           device_panel="", device_kwarg="drive",
           device_tab="Motion && Calibration") -> Dict[str, Any]:
     return {"sections": sections, "choices": choices or {}, "axes": axes,
             "channels_panel": channels_panel, "cal_panel": cal_panel,
             "skip": tuple(skip), "axis_skip": tuple(axis_skip),
+            # per-spec axis-form layout; the Modbus-shaped AXIS_SECTIONS is
+            # the default (crescent/traverse), overridden per device whose
+            # axis dataclass has a different shape (lswt_sting motion limits)
+            "axis_sections": (AXIS_SECTIONS if axis_sections is None
+                              else axis_sections),
             "device_panel": device_panel, "device_kwarg": device_kwarg,
             "device_tab": device_tab}
 
@@ -271,12 +276,35 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
             ("Position persistence", ("restore_position", "state_path")),
             ("Display", ("plot_window_s",)),
         ),
+        # Alpha/Beta axis tabs expose the indexer MOTION LIMITS Casey wants
+        # editable from Freestream — the per-axis velocity/accel/decel that
+        # the drive pushes at connect. The soft travel limits stay owned by
+        # the embedded panel's Limits tab (the axis sections below name ONLY
+        # velocity/accel/decel, so the limit/cal fields are not duplicated
+        # here). The values are indexer command STRINGS (".108", "10.8528")
+        # — ConfigForm renders str fields as line edits and preserves the
+        # exact tokens (never coerced to float).
+        axes=(("Alpha axis", "alpha"), ("Beta axis", "beta")),
+        axis_sections=(("Motion limits (velocity / accel / decel)",
+                        ("velocity", "acceleration", "deceleration")),),
+        # Show ONLY the three motion-limit editors on each axis tab. The
+        # soft TRAVEL limits (min_deg/max_deg/tolerance_deg) keep their
+        # single LIVE editor — the embedded panel's Limits tab — so they
+        # are skipped here; a duplicate axis-form editor would replay a
+        # stale snapshot on Apply and clobber a fresh Limits-tab edit
+        # (the clobber pattern the whole dialog is designed to avoid). The
+        # open-loop zero reference + indexer constants (direction,
+        # steps_per_degree, …) are NOT operator dialog fields either.
+        # (ConfigForm otherwise sweeps every unnamed field into an "Other"
+        # group, so this skip is what confines the tab to the three
+        # motion tokens.)
+        axis_skip=("unit", "enabled", "steps_per_degree", "steps_per_rev",
+                   "direction", "zero_offset_deg", "zeroed", "min_deg",
+                   "max_deg", "tolerance_deg", "brake_output"),
         # the embedded panel's Limits tab is the single live editor for
         # the soft travel limits, park behaviour, poll period and the
         # connect-time Z reset — a second Settings-form editor would
-        # clobber it on Apply (and no Axis tabs: the per-axis zero
-        # reference is the open-loop calibration, operator-set via the
-        # panel's "Set Current Angle…" only)
+        # clobber it on Apply
         skip=("poll_ms", "park_on_disconnect", "park_alpha_deg",
               "init_reset"),
         # the standalone app's complete panel (Alpha/Beta axis boxes +
@@ -469,8 +497,13 @@ class DeviceConfigDialog(QDialog):
             if axis_cfg is None:
                 continue
             # "name" is the axis identity (state()/ring keys) — not a
-            # user setting; cal fields belong to the Calibration tab only
-            form = ConfigForm(axis_cfg, sections=AXIS_SECTIONS,
+            # user setting; cal fields belong to the Calibration tab only.
+            # Axis-form layout is per-spec (AXIS_SECTIONS by default) so a
+            # non-Modbus axis dataclass (lswt_sting motion limits) shows the
+            # right fields; unnamed fields still fall through to "Other".
+            form = ConfigForm(axis_cfg,
+                              sections=self.spec.get("axis_sections",
+                                                     AXIS_SECTIONS),
                               skip=("name",) + AXIS_CAL_FIELDS +
                                    self.spec["axis_skip"])
             self._forms.append(form)

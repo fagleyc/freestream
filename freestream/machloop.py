@@ -32,12 +32,94 @@ import math
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
+from . import speed
 from .config import FreestreamConfig
 from .derived import (TUNNEL_CONDITION_CHANNELS, live_tunnel_state,
                       tunnel_condition_sources, tunnel_state)
 from .hal import SetpointDevice, Streaming
 
 log = logging.getLogger(__name__)
+
+
+def _safe_readback(dev) -> dict:
+    try:
+        return dict(dev.readback() or {})
+    except Exception:                                  # noqa: BLE001
+        return {}
+
+
+def _adapter_limit(dev, *keys) -> float:
+    """The tunnel adapter's own write ceiling (0 = not configured): the
+    first present of *keys* on ``dev.config`` (``max_hz`` for the LSWT
+    drive, ``rpm_max`` for the SWT PLC)."""
+    cfg = getattr(dev, "config", None) or getattr(dev, "_cfg", None)
+    for key in keys:
+        try:
+            val = float(getattr(cfg, key, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            val = 0.0
+        if val > 0:
+            return val
+    return 0.0
+
+
+def command_kwarg_for(dev, target_mach, entered_value, unit, config):
+    """Pick the adapter's NATIVE command (kwarg, value) for a speed target.
+
+    The whole point of the 3-tier rework: never force everything through
+    Mach→RPM. Instead command the drive in its OWN parameter, honoring the
+    operator's selected unit:
+
+    * LSWT-style drive (readback carries ``hz`` / ``velocity_fps``): prefer
+      ``hz=`` when the unit is Hz or a mach-derived Hz (also RPM, which is
+      1:1 with Hz on this drive); ``velocity=`` (ft/s) for the velocity
+      units.
+    * SWT-style drive (readback carries ``rpm``): ``rpm=`` — the entered
+      RPM verbatim when the unit is RPM, else the nominal Mach→RPM map.
+
+    The ENTERED value in native units is authoritative when the unit
+    matches the drive parameter; otherwise the canonical Mach is converted
+    through :mod:`freestream.speed` (calibration for Hz, standard-day A0
+    for velocities, ``rpm_per_mach`` for RPM)."""
+    rb = _safe_readback(dev)
+    mach = float(target_mach)
+    rpm_per_mach = float(getattr(config, "rpm_per_mach", 1500.0))
+    lswt = ("hz" in rb) or ("velocity_fps" in rb)
+    if lswt:
+        if unit in ("ft/s", "m/s") and "velocity_fps" in rb:
+            if entered_value is not None:
+                fps = (speed.convert_velocity_ms(float(entered_value), "ft/s")
+                       if unit == "m/s" else float(entered_value))
+            else:
+                fps = speed.value_from_mach(mach, "ft/s", rpm_per_mach)
+            return "velocity", fps
+        # hz / rpm / mach → the drive's output frequency (hz)
+        if unit in ("hz", "rpm") and entered_value is not None:
+            hz = float(entered_value)          # native drive Hz (rpm≡hz 1:1)
+        else:
+            hz = speed.value_from_mach(mach, "hz", rpm_per_mach)
+        return "hz", hz
+    # SWT-style: fan RPM
+    if unit == "rpm" and entered_value is not None:
+        rpm = float(entered_value)
+    else:
+        rpm = speed.value_from_mach(mach, "rpm", rpm_per_mach)
+    return "rpm", rpm
+
+
+def clamp_command(dev, kwarg, value):
+    """Clamp a native command to [0, adapter-limit] (max_hz for Hz, rpm_max
+    for RPM; velocity is only floored at 0 — the drive clamps its own Hz)."""
+    value = max(float(value), 0.0)
+    if kwarg == "hz":
+        limit = _adapter_limit(dev, "max_hz")
+    elif kwarg == "rpm":
+        limit = _adapter_limit(dev, "rpm_max")
+    else:
+        limit = 0.0
+    if limit > 0 and value > limit:
+        return limit
+    return value
 
 #: WaitFn(condition, timeout_s, fail_msg) — the sweep engine's abortable
 #: _wait; tests may pass a simple polling loop.
