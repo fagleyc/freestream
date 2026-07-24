@@ -2,8 +2,9 @@
 
 This is the composition layer: the device drivers stay raw/standalone by
 project rule, and Freestream derives Mach/q from the tunnel-condition
-channels (Pdiff [psid], Ptot [psia], Temp [degC] — the adapters'
-``latest()`` engineering units). The channels are found BY NAME across
+channels (Pdiff [psid], Ptot [psia], Temp in the source instrument's unit —
+deg C for the DaqBook thermocouple, deg F for the Heise RTD, normalized to
+Celsius for the chain via :func:`temp_to_celsius`). The channels are found BY NAME across
 the registry's streaming devices (:func:`tunnel_condition_sources`) —
 all three on the SWT DaqBook, or split across devices as in the LSWT
 mode (Pdiff on the NI DAQ, Ptot/Temp on the Heise). Every consumer
@@ -83,8 +84,14 @@ def tunnel_condition_sources(manager) -> Dict[str, object]:
 
 
 def read_tunnel_conditions(manager) -> Dict[str, float]:
-    """Latest ENGINEERING values (Pdiff psid / Ptot psia / Temp degC)
-    gathered across the registry via :func:`tunnel_condition_sources`.
+    """Latest ENGINEERING values (Pdiff psid / Ptot psia / Temp in its
+    SOURCE unit — deg C for the DaqBook thermocouple, deg F for the Heise
+    RTD) gathered across the registry via :func:`tunnel_condition_sources`.
+
+    Temp is returned in the instrument's own unit (for display); the
+    isentropic chain needs Celsius, so convert with :func:`temp_to_celsius`
+    (:func:`temp_channel_unit` gives the source unit) before
+    :func:`tunnel_state` — :func:`live_tunnel_state` already does this.
 
     Same-device fast path preserved: each source device's ``latest()``
     is called AT MOST ONCE per read (the SWT modes' single DaqBook stays
@@ -109,17 +116,84 @@ def read_tunnel_conditions(manager) -> Dict[str, float]:
     return out
 
 
+def temp_channel_unit(manager) -> Optional[str]:
+    """Engineering unit of the LIVE Temp channel, from its source device —
+    'F'/'degF' for the Heise RTD, 'degC'/'C' for the DaqBook thermocouple.
+    Prefers the adapter's injected cal_unit (authoritative), then the channel
+    spec unit. None when there is no Temp source or its unit can't be read.
+
+    The isentropic chain works in Celsius; a source that reports another unit
+    (the Heise reads deg F) MUST be converted (see :func:`temp_to_celsius`),
+    or T0/velocity/density are wrong and the display mislabels the tile."""
+    dev = tunnel_condition_sources(manager).get("Temp")
+    if dev is None:
+        return None
+    try:
+        cal = dev.tunnel_cal() if hasattr(dev, "tunnel_cal") else {}
+        unit = (cal.get("Temp") or {}).get("unit")
+        if unit:
+            return str(unit)
+    except Exception:                                  # noqa: BLE001
+        pass
+    try:
+        for spec in dev.channels():
+            if getattr(spec, "name", None) == "Temp":
+                return str(getattr(spec, "unit", "") or "") or None
+    except Exception:                                  # noqa: BLE001
+        pass
+    return None
+
+
+def temp_to_celsius(value: float, unit: Optional[str]) -> float:
+    """Convert a temperature reading to Celsius for the isentropic chain.
+
+    Recognizes F/degF, K/degK/kelvin, R/degR/rankine; anything else
+    (C/degC/None) is assumed already Celsius. Keeps the ONE physics path in
+    Celsius regardless of which instrument (Heise deg F vs DaqBook deg C)
+    sources the Temp channel."""
+    u = (str(unit or "").strip().lower()
+         .replace("°", "").replace("deg", "").strip())
+    v = float(value)
+    if u in ("f", "fahrenheit"):
+        return (v - 32.0) * 5.0 / 9.0
+    if u in ("k", "kelvin"):
+        return v - C_TO_K
+    if u in ("r", "rankine"):
+        return (v - 491.67) * 5.0 / 9.0
+    return v
+
+
+def temp_display_unit(unit: Optional[str]) -> str:
+    """Display label for a Temp source unit — '°F' for the Heise RTD, '°C'
+    for the DaqBook thermocouple, 'K'/'°R' otherwise. Keeps the T-total tile
+    (and any temperature readout) labeled with the instrument's ACTUAL unit."""
+    u = (str(unit or "").strip().lower()
+         .replace("°", "").replace("deg", "").strip())
+    if u in ("f", "fahrenheit"):
+        return "°F"
+    if u in ("k", "kelvin"):
+        return "K"
+    if u in ("r", "rankine"):
+        return "°R"
+    return "°C"
+
+
 def live_tunnel_state(manager) -> Optional["TunnelState"]:
     """One-call derived flow condition from the live registry: find the
     Pdiff/Ptot/Temp sources, read them, run :func:`tunnel_state`.
     None when any of the three channels is unavailable (missing device,
     stream not started, read error) — the caller shows q = None exactly
     as the old DaqBook-only path did. When a state IS returned, check
-    ``.valid`` as usual."""
+    ``.valid`` as usual.
+
+    The Temp reading is normalized to Celsius from its source unit first, so
+    an LSWT Heise (deg F) yields correct T0/velocity/density, not an off-by
+    ~30 K error from treating deg F as deg C."""
     vals = read_tunnel_conditions(manager)
     if any(k not in vals for k in TUNNEL_CONDITION_CHANNELS):
         return None
-    return tunnel_state(vals["Pdiff"], vals["Ptot"], vals["Temp"])
+    temp_c = temp_to_celsius(vals["Temp"], temp_channel_unit(manager))
+    return tunnel_state(vals["Pdiff"], vals["Ptot"], temp_c)
 
 
 @dataclass

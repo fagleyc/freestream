@@ -31,7 +31,8 @@ from PyQt6.QtWidgets import (QFrame, QGridLayout, QGroupBox, QHBoxLayout,
 
 from .. import speed, theme
 from ..derived import (TUNNEL_CONDITION_CHANNELS, read_tunnel_conditions,
-                       tunnel_state)
+                       tunnel_state, temp_channel_unit, temp_to_celsius,
+                       temp_display_unit)
 from ..hal import SetpointDevice
 
 SAMPLE_MS = 200                       # 5 Hz UI sampling
@@ -580,12 +581,17 @@ class TunnelDashboard(QWidget):
         # DAQ, Ptot/Temp from the Heise). Partial availability still
         # shows the raw Ptot/Temp tiles; Mach/q need all three.
         mach = q = ptot = temp = vel = None
+        temp_unit = None
         try:
             vals = read_tunnel_conditions(self.manager)
             ptot = vals.get("Ptot")
             temp = vals.get("Temp")
+            temp_unit = temp_channel_unit(self.manager)
             if all(k in vals for k in TUNNEL_CONDITION_CHANNELS):
-                st = tunnel_state(vals["Pdiff"], ptot, temp)
+                # the isentropic chain works in Celsius; the Temp reading is
+                # in its SOURCE unit (Heise deg F / DaqBook deg C) -> convert.
+                temp_c = temp_to_celsius(vals["Temp"], temp_unit)
+                st = tunnel_state(vals["Pdiff"], ptot, temp_c)
                 if st.valid:
                     mach, q, vel = st.mach, st.q_psi, st.velocity_ms
                     self._push("mach", t, mach)
@@ -595,6 +601,10 @@ class TunnelDashboard(QWidget):
         self.tiles["mach"].set_value(mach)
         self.tiles["q"].set_value(q)
         self.tiles["ptot"].set_value(ptot)
+        # label the T-total tile with the ACTUAL source unit (deg F for the
+        # Heise), never a hardcoded deg C — the displayed value is raw.
+        if temp_unit is not None:
+            self.tiles["temp"].set_unit(temp_display_unit(temp_unit))
         self.tiles["temp"].set_value(temp)
         # velocity tile follows the configured speed unit when it is
         # ft/s (LSWT operators think in ft/s); everything else keeps

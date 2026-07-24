@@ -64,6 +64,63 @@ class CountingDaq(FakeDaq):
         return super().latest()
 
 
+class HeiseFLike(FakeStreamer):
+    """Heise reporting Temp in deg F (the real RTD default) with an identity
+    tunnel_cal advertising cal_unit degF — as the live adapter does."""
+
+    def __init__(self, temp_f=72.4):
+        super().__init__(group="Heise", channels=("Ptot", "Temp"))
+        self.temp_f = temp_f
+
+    def latest(self):
+        return {"Ptot": PTOT, "Temp": self.temp_f}
+
+    def tunnel_cal(self):
+        return {"Ptot": {"slope": 1.0, "offset": 0.0, "unit": "psia",
+                         "type": "identity"},
+                "Temp": {"slope": 1.0, "offset": 0.0, "unit": "degF",
+                         "type": "identity"}}
+
+
+def test_temp_to_celsius_units():
+    from freestream.derived import temp_to_celsius
+    assert abs(temp_to_celsius(72.4, "degF") - 22.444) < 0.01
+    assert abs(temp_to_celsius(72.4, "F") - 22.444) < 0.01
+    assert temp_to_celsius(21.0, "degC") == 21.0
+    assert temp_to_celsius(21.0, None) == 21.0
+    assert abs(temp_to_celsius(293.15, "K") - 20.0) < 1e-6
+
+
+def test_temp_channel_unit_from_heise():
+    from freestream.derived import temp_channel_unit
+    mgr = _Mgr([NiLike(), HeiseFLike()])
+    assert temp_channel_unit(mgr) == "degF"
+
+
+def test_live_state_converts_heise_degF_to_celsius():
+    """An LSWT Heise reporting Temp in deg F must yield the SAME derived
+    T_static / velocity / density as feeding that temperature already in
+    deg C — i.e. deg F is converted, not treated as deg C (the ~30 K bug)."""
+    mgr = _Mgr([NiLike(), HeiseFLike(temp_f=72.4)])
+    st = live_tunnel_state(mgr)
+    assert st is not None and st.valid
+    ref = tunnel_state(PDIFF, PTOT, (72.4 - 32.0) * 5.0 / 9.0)
+    assert abs(st.velocity_ms - ref.velocity_ms) < 1e-6
+    assert abs(st.t_static_c - ref.t_static_c) < 1e-6
+    assert abs(st.density_kgm3 - ref.density_kgm3) < 1e-9
+    # and NOT the wrong (deg-F-as-deg-C) answer
+    wrong = tunnel_state(PDIFF, PTOT, 72.4)
+    assert abs(st.velocity_ms - wrong.velocity_ms) > 1.0
+
+
+def test_display_unit_for_heise():
+    from freestream.derived import temp_display_unit
+    assert temp_display_unit("degF") == "°F"
+    assert temp_display_unit("F") == "°F"
+    assert temp_display_unit("degC") == "°C"
+    assert temp_display_unit(None) == "°C"
+
+
 def test_sources_found_by_name_across_devices():
     ni, he = NiLike(), HeiseLike()
     mgr = _Mgr([ni, he])
