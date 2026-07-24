@@ -43,6 +43,7 @@ if str(_DEVICES_DIR) not in sys.path:
 from ni_usb_6351.config import ChannelConfig, NiDaqConfig     # noqa: E402
 from ni_usb_6351.device import NiUsb6351                      # noqa: E402
 
+from ..derived import TUNNEL_CONDITION_CHANNELS               # noqa: E402
 from ..hal import ChannelSpec, DeviceStatus, OFFLINE, OK      # noqa: E402
 from ._configurable import ConfigurableAdapter                 # noqa: E402
 
@@ -166,6 +167,31 @@ class NiDaqAdapter(ConfigurableAdapter):
     @property
     def cal_type(self) -> str:
         return self._cfg.cal_type
+
+    def extra_meta(self) -> Dict[str, str]:
+        """Balance .vol calibration POINTER merged into /meta/devices/<id>.
+
+        Path (and fit type) ONLY — the .vol is never applied here; the
+        raw bridge volts stay verbatim and Streamlined reduces them. Emitted
+        only when a .vol path is configured, so files without a balance cal
+        are byte-for-byte unchanged (backward compatible)."""
+        vol = str(self.vol_path or "")
+        if not vol:
+            return {}
+        return {"vol_path": vol, "cal_type": str(self.cal_type or "")}
+
+    def tunnel_cal(self) -> Dict[str, Dict[str, object]]:
+        """LINEAR cal coefficients for the tunnel-condition channel(s) this
+        DAQ owns (Pdiff — NOT the balance bridges). Recorded arrays are RAW
+        VOLTS; Streamlined reconstructs psid as ``raw*slope + offset`` from
+        the transducer channel's ChannelConfig scale/offset/unit."""
+        out: Dict[str, Dict[str, object]] = {}
+        for c in self._cfg.enabled_channels():
+            if c.name in TUNNEL_CONDITION_CHANNELS and not c.balance:
+                out[c.name] = {"slope": float(c.scale),
+                               "offset": float(c.offset),
+                               "unit": str(c.unit), "type": "linear"}
+        return out
 
     def status(self) -> DeviceStatus:
         if not self._dev.connected:

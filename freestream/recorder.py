@@ -253,6 +253,46 @@ def _normalize_units(channel_units: UnitsArg) -> Dict[tuple, str]:
     return units
 
 
+#: per-channel tunnel-condition calibration coefficients — a flat
+#: ``{ch: {"slope","offset","unit","type"}}`` dict or a nested
+#: ``{group: {ch: {...}}}`` dict (mirrors :data:`UnitsArg`).
+CalArg = Union[Mapping[str, Any], None]
+
+
+def _normalize_cal(channel_cal: CalArg) -> Dict[tuple, Dict[str, Any]]:
+    """→ ``{(group|None, channel): {slope,offset,unit,type}}``.
+
+    Accepts a flat ``{ch: cal}`` dict or a nested ``{group: {ch: cal}}``
+    dict, where each ``cal`` is a mapping of slope/offset/unit/type. The
+    two shapes are told apart the same way units are: a value whose OWN
+    values are ALL mappings is a nested group ({ch: cal}); otherwise the
+    value is itself a flat cal entry ({slope: 0.38, type: 'linear', …})."""
+    cal: Dict[tuple, Dict[str, Any]] = {}
+    if not channel_cal:
+        return cal
+    for key, val in channel_cal.items():
+        if isinstance(val, Mapping) and val and all(
+                isinstance(v, Mapping) for v in val.values()):
+            for ch, entry in val.items():          # nested {group: {ch: cal}}
+                cal[(key, ch)] = dict(entry)
+        elif isinstance(val, Mapping):             # flat {ch: cal}
+            cal[(None, key)] = dict(val)
+    return cal
+
+
+def _cal_attrs(entry: Mapping[str, Any]) -> Dict[str, Any]:
+    """The four cal dataset attrs from one cal entry, with the contract
+    defaults (slope 1.0, offset 0.0, type ``"linear"``). ``cal_unit`` is
+    the ENGINEERING unit the cal PRODUCES; ``cal_type`` is ``"linear"``
+    (eng = raw*slope + offset) or ``"identity"`` (already engineering)."""
+    return {
+        "cal_slope": float(entry.get("slope", 1.0)),
+        "cal_offset": float(entry.get("offset", 0.0)),
+        "cal_unit": str(entry.get("unit", "")),
+        "cal_type": str(entry.get("type", "linear")),
+    }
+
+
 # ── recorder ─────────────────────────────────────────────────────────────
 class Hdf5Recorder:
     """Writes one raw per-point file under ``root/config_name/``.
@@ -401,6 +441,7 @@ class Hdf5Recorder:
         device_meta: Optional[List[Dict[str, Any]]] = None,
         config_snapshot: Optional[Dict[str, Any]] = None,
         channel_units: UnitsArg = None,
+        channel_cal: CalArg = None,
         time_array: Optional[np.ndarray] = None,
     ) -> Path:
         """Write one test point and return the written primary file path
@@ -418,6 +459,14 @@ class Hdf5Recorder:
         channel_units : per-channel units — a flat ``{ch: unit}`` dict, a
             nested ``{group: {ch: unit}}`` dict, or an iterable of
             :class:`freestream.hal.ChannelSpec`.
+        channel_cal : per-channel tunnel-condition calibration coefficients
+            — a flat ``{ch: {slope,offset,unit,type}}`` dict or a nested
+            ``{group: {ch: {...}}}`` dict. When an entry exists for a
+            recorded channel, ``cal_slope``/``cal_offset``/``cal_unit``/
+            ``cal_type`` are written ALONGSIDE its ``unit`` attr so
+            Streamlined can convert raw → engineering with NO external
+            ``.pcf``. Channels with no entry are untouched (backward
+            compatible); the RAW sample arrays are NEVER altered.
         time_array : explicit /Time/Time seconds axis; default is
             ``arange(n)/rate`` for the longest group.
         device_meta : list of per-device dicts (model, sim, firmware,
@@ -428,6 +477,7 @@ class Hdf5Recorder:
             run_number = self.next_run_number()
         extra_attrs = extra_attrs or {}
         units = _normalize_units(channel_units)
+        cal = _normalize_cal(channel_cal)
         start_iso = _iso_start(point_meta)
         path = self.config_dir / self.filename_for(run_number, point_meta,
                                                    air_state)
@@ -452,7 +502,7 @@ class Hdf5Recorder:
         #    blocks directly (no intermediate .h5 for mat/xlsx) ──────────
         self.last_mat_path = None
         if self.output_format == "mat":
-            self._write_mat(path, root, blocks, rates, units, start_iso,
+            self._write_mat(path, root, blocks, rates, units, cal, start_iso,
                             device_meta, config_snapshot, time_axis)
             self.last_mat_path = path
         elif self.output_format == "xlsx":
@@ -460,7 +510,7 @@ class Hdf5Recorder:
             write_xlsx(path, root, blocks, rates, units, start_iso,
                        device_meta, config_snapshot, time_axis)
         else:
-            self._write_h5(path, root, blocks, rates, units, start_iso,
+            self._write_h5(path, root, blocks, rates, units, cal, start_iso,
                            device_meta, config_snapshot, time_axis)
         return path
 
@@ -472,6 +522,7 @@ class Hdf5Recorder:
         blocks: Dict[str, Dict[str, np.ndarray]],
         rates: Dict[str, float],
         units: Dict[tuple, str],
+        cal: Dict[tuple, Dict[str, Any]],
         start_iso: str,
         device_meta: Optional[List[Dict[str, Any]]],
         config_snapshot: Optional[Dict[str, Any]],
@@ -496,6 +547,14 @@ class Hdf5Recorder:
                     dset.attrs["unit"] = (units.get((group_name, ch_name))
                                           or units.get((None, ch_name))
                                           or "")
+                    # tunnel-condition calibration COEFFICIENTS (metadata
+                    # only — raw samples above stay verbatim): Streamlined
+                    # reads these to convert raw → engineering with no .pcf
+                    cal_entry = (cal.get((group_name, ch_name))
+                                 or cal.get((None, ch_name)))
+                    if cal_entry:
+                        for k, v in _cal_attrs(cal_entry).items():
+                            dset.attrs[k] = v
 
             # ── /Time/Time ────────────────────────────────────────────────
             if time_axis is not None:
@@ -531,6 +590,7 @@ class Hdf5Recorder:
         blocks: Dict[str, Dict[str, np.ndarray]],
         rates: Dict[str, float],
         units: Dict[tuple, str],
+        cal: Dict[tuple, Dict[str, Any]],
         start_iso: str,
         device_meta: Optional[List[Dict[str, Any]]],
         config_snapshot: Optional[Dict[str, Any]],
@@ -555,7 +615,7 @@ class Hdf5Recorder:
 
         def _add_group(group_name: str,
                        channels: Mapping[str, Any],
-                       incr: float, unit_of) -> None:
+                       incr: float, unit_of, cal_of=None) -> None:
             g_san = _matlab_name(group_name, used_groups)
             name_map["groups"][g_san] = str(group_name)
             g_data: Dict[str, Any] = {}
@@ -567,12 +627,18 @@ class Hdf5Recorder:
                 g_names[c_san] = str(ch_name)
                 arr = np.asarray(data, dtype=np.float64).ravel()
                 g_data[c_san] = arr
-                g_meta[c_san] = {
+                cmeta = {
                     "wf_increment": incr,
                     "wf_samples": int(arr.size),
                     "wf_start_time": start_iso,
                     "unit": unit_of(ch_name),
                 }
+                # mirror the HDF5 cal COEFFICIENTS onto the per-channel
+                # meta struct (tunnel-condition channels only)
+                cal_entry = cal_of(ch_name) if cal_of else None
+                if cal_entry:
+                    cmeta.update(_cal_attrs(cal_entry))
+                g_meta[c_san] = cmeta
             mat[g_san] = g_data
             chan_meta[g_san] = g_meta
             name_map["channels"][g_san] = g_names
@@ -583,7 +649,9 @@ class Hdf5Recorder:
             _add_group(group_name, channels, incr,
                        lambda ch, g=group_name: (units.get((g, ch))
                                                  or units.get((None, ch))
-                                                 or ""))
+                                                 or ""),
+                       lambda ch, g=group_name: (cal.get((g, ch))
+                                                 or cal.get((None, ch))))
 
         # synthesized Time group — mirrors /Time/Time exactly
         if time_axis is not None:

@@ -30,6 +30,7 @@ if str(_DEVICES_DIR) not in sys.path:
 from daqbook_2000.config import DaqbookConfig                 # noqa: E402
 from daqbook_2000.device import Daqbook2000                   # noqa: E402
 
+from ..derived import TUNNEL_CONDITION_CHANNELS               # noqa: E402
 from ..hal import ChannelSpec, DeviceStatus, OFFLINE, OK      # noqa: E402
 from ._configurable import ConfigurableAdapter                 # noqa: E402
 
@@ -103,6 +104,22 @@ class DaqbookAdapter(ConfigurableAdapter):
         return [ChannelSpec(name=c.name, unit="V", group=GROUP,
                             kind="tunnel", device_id=self.id)
                 for c in self._cfg.enabled_channels()]
+
+    def tunnel_cal(self) -> Dict[str, Dict[str, object]]:
+        """LINEAR cal coefficients for the tunnel-condition channels
+        (Pdiff/Ptot/Temp only — NOT any balance/bridge channel).
+
+        The recorded arrays are RAW VOLTS, so Streamlined reconstructs
+        engineering units as ``eng = raw*slope + offset`` from each
+        channel's ChannelConfig scale/offset/unit — no external .pcf.
+        E.g. Pdiff scale=0.386949 unit="psid" → slope 0.386949, psid."""
+        out: Dict[str, Dict[str, object]] = {}
+        for c in self._cfg.enabled_channels():
+            if c.name in TUNNEL_CONDITION_CHANNELS:
+                out[c.name] = {"slope": float(c.scale),
+                               "offset": float(c.offset),
+                               "unit": str(c.unit), "type": "linear"}
+        return out
 
     def latest(self) -> Dict[str, float]:
         """Engineering units (psid/psia/degC) for the live UI."""

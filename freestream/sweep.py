@@ -56,7 +56,8 @@ import numpy as np
 
 from . import speed
 from .config import FreestreamConfig
-from .derived import TUNNEL_CONDITION_CHANNELS, tunnel_state
+from .derived import (TUNNEL_CONDITION_CHANNELS, tunnel_condition_sources,
+                      tunnel_state)
 from .hal import Positioner, SetpointDevice, Streaming, Zeroable
 from .machloop import (clamp_command, command_kwarg_for, make_tunnel_measure)
 from .manager import DeviceManager
@@ -1046,11 +1047,42 @@ class SweepEngine:
         return self.recorder.write_point(
             point_meta={k: v for k, v in meta.items() if v is not None},
             blocks=blocks, rates=rates, channel_units=units,
+            channel_cal=self._tunnel_channel_cal(),
             air_state=air_state,
             extra_attrs=extra_attrs,
             device_meta=[self._device_meta(d_id, dev)
                          for d_id, dev in self.manager.devices.items()],
             config_snapshot=self.config.to_dict())
+
+    def _tunnel_channel_cal(self) -> Dict[str, Dict[str, object]]:
+        """Per-channel cal coefficients for the three tunnel-condition
+        channels (Pdiff/Ptot/Temp), gathered from whichever streaming
+        device OWNS each — found BY NAME via
+        :func:`derived.tunnel_condition_sources`. Each owning adapter
+        reports its OWN cal through ``tunnel_cal()``: DaqBook/NI/StrainBook
+        LINEAR (raw volts → EU via the channel's scale/offset), the Heise
+        IDENTITY (already engineering units). ONLY the three tunnel
+        channels are included — balance/bridge channels never carry tunnel
+        cal. Passed flat ``{ch: cal}`` to the recorder, which writes
+        cal_slope/offset/unit/type alongside each channel's ``unit`` attr."""
+        sources = tunnel_condition_sources(self.manager)
+        cal_by_dev: Dict[int, Dict[str, Dict[str, object]]] = {}
+        out: Dict[str, Dict[str, object]] = {}
+        for name, dev in sources.items():
+            key = id(dev)
+            if key not in cal_by_dev:
+                getter = getattr(dev, "tunnel_cal", None)
+                try:
+                    cal_by_dev[key] = (dict(getter()) if callable(getter)
+                                       else {})
+                except Exception:                      # noqa: BLE001
+                    log.exception("tunnel_cal() failed on %s",
+                                  getattr(dev, "id", "?"))
+                    cal_by_dev[key] = {}
+            entry = cal_by_dev[key].get(name)
+            if entry:
+                out[name] = entry
+        return out
 
     def _source_markers(self, pos) -> Dict[str, str]:
         """Root-attr markers that make the file self-describing:

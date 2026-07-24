@@ -40,6 +40,7 @@ from heise.config import (HeiseConfig, defaults_path,         # noqa: E402
                           load_startup_config)
 from heise.device import HeiseGauge                           # noqa: E402
 
+from ..derived import TUNNEL_CONDITION_CHANNELS               # noqa: E402
 from ..hal import ChannelSpec, DeviceStatus, OFFLINE, OK      # noqa: E402
 from ._configurable import ConfigurableAdapter                 # noqa: E402
 
@@ -48,6 +49,22 @@ GROUP = "Heise"
 #: canonical channel name per port role (the derived chain / Streamlined
 #: key on these EXACT names)
 ROLE_NAMES = {"pressure": "Ptot", "temperature": "Temp"}
+
+#: Heise port unit code → the ENGINEERING cal_unit vocabulary Streamlined
+#: reduces against ("psia"/"degF"/"degC"/…). The total-pressure port is an
+#: ABSOLUTE sensor, so its configured "psi" IS psia; the RTD unit (F vs C,
+#: read from config — never hardcoded) maps to degF/degC. Anything already
+#: in the target vocabulary passes through unchanged.
+_CAL_UNIT = {"psi": "psia", "psia": "psia", "psid": "psid",
+             "f": "degF", "degf": "degF",
+             "c": "degC", "degc": "degC",
+             "k": "K", "r": "degR", "ohms": "ohms"}
+
+
+def _cal_unit(port_unit: str) -> str:
+    """Engineering cal_unit for a Heise port's configured unit (read from
+    the port config, NOT hardcoded — the F/C distinction is preserved)."""
+    return _CAL_UNIT.get(str(port_unit).strip().lower(), str(port_unit))
 
 
 def _canonicalise_port_names(cfg: HeiseConfig) -> None:
@@ -184,6 +201,22 @@ class HeiseAdapter(ConfigurableAdapter):
         return [ChannelSpec(name=p.name, unit=p.unit, group=GROUP,
                             kind="tunnel", device_id=self.id)
                 for p in ports]
+
+    def tunnel_cal(self) -> Dict[str, Dict[str, object]]:
+        """IDENTITY cal for the tunnel-condition ports (Ptot/Temp).
+
+        The indicator transmits CALIBRATED engineering values, so the
+        recorded arrays are already engineering units — Streamlined applies
+        NO scaling (type="identity", slope 1, offset 0). ``cal_unit`` is the
+        port's configured unit mapped to the engineering vocabulary (psia for
+        the absolute total-pressure port; degF/degC read from the RTD port —
+        never hardcoded)."""
+        out: Dict[str, Dict[str, object]] = {}
+        for p in self._cfg.enabled_ports():
+            if p.name in TUNNEL_CONDITION_CHANNELS:
+                out[p.name] = {"slope": 1.0, "offset": 0.0,
+                               "unit": _cal_unit(p.unit), "type": "identity"}
+        return out
 
     def latest(self) -> Dict[str, float]:
         """Engineering units (configured pressure unit / RTD unit)."""
