@@ -136,10 +136,16 @@ class HeiseConfig:
     # LEFT/first port is the ABSOLUTE PRESSURE sensor (psi) and the RIGHT/
     # second port is the RTD TEMPERATURE (deg F). Both ports are fully
     # reconfigurable.
+    # Port order confirmed on the LIVE gauge twice: '?' returns
+    # "<temperature>,<pressure>" — 73.61,11.43 (2026-07-23) and
+    # 74,11.3 (2026-07-24; 74 deg F room / 11.3 psi ambient at
+    # altitude). FIRST value = LEFT port = RTD temperature; SECOND =
+    # RIGHT port = pressure. Swapping these labels 74 "psi" on the
+    # display. Both ports remain reconfigurable for other setups.
     left: HeisePortConfig = field(default_factory=lambda: HeisePortConfig(
-        name="Pressure", role="pressure", unit="psi"))
-    right: HeisePortConfig = field(default_factory=lambda: HeisePortConfig(
         name="Temperature", role="temperature", unit="F"))
+    right: HeisePortConfig = field(default_factory=lambda: HeisePortConfig(
+        name="Pressure", role="pressure", unit="psi"))
 
     def ports(self) -> List[HeisePortConfig]:
         return [self.left, self.right]
@@ -164,9 +170,9 @@ class HeiseConfig:
                                       if k in port_fields})
 
         left = mk_port(d.pop("left", None), HeisePortConfig(
-            name="Pressure", role="pressure", unit="psi"))
-        right = mk_port(d.pop("right", None), HeisePortConfig(
             name="Temperature", role="temperature", unit="F"))
+        right = mk_port(d.pop("right", None), HeisePortConfig(
+            name="Pressure", role="pressure", unit="psi"))
         return cls(left=left, right=right,
                    **{k: v for k, v in d.items()
                       if k in known and k not in ("left", "right")})

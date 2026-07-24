@@ -120,10 +120,14 @@ class HeiseGauge:
         self._thread.start()
         self._connected = True
         mode = "SIM" if self._sim else f"LIVE on {cfg.com_port}"
-        units = ", ".join(f"{p.name} [{p.unit}]"
-                          for p in cfg.enabled_ports())
-        self._status(f"Connected ({mode}) — {units}; "
-                     f"first reading {values}")
+        # label the first reading PER PORT so a swapped mapping is
+        # obvious at a glance ("Temperature[left]=74.0 F" vs "74 psi")
+        sides = ("left", "right")
+        labeled = ", ".join(
+            f"{p.name}[{sides[i]}]={values[i]:.4g} {p.unit}"
+            for i, p in enumerate(cfg.ports())
+            if p.enabled and i < len(values))
+        self._status(f"Connected ({mode}) — {labeled}")
 
     def disconnect(self) -> None:
         if not self._connected:

@@ -35,8 +35,8 @@ class SimSerial:
         #: different code (Err02). The LEFT port is the pressure sensor and
         #: accepts pressure EUNIT codes. (Port order corrected 2026-07-24:
         #: pressure LEFT, temperature RIGHT — matches the real instrument.)
-        self._units = [0, 15]
-        self._rtd_right_code = 15
+        self._units = [15, 0]       # LEFT = RTD (locked code), RIGHT = psi
+        self._rtd_left_code = 15
         self._tare = [0, 0]
         self._zero_off = [0.0, 0.0]
         self._rng = random.Random(0x4E15E)
@@ -61,10 +61,11 @@ class SimSerial:
         c = cmd.strip()
         u = c.upper()
         if c == "?":
-            # port order (corrected 2026-07-24): left = pressure (EUNIT code
-            # of the LEFT port applies), right = RTD temperature (deg F)
-            left = self._pressure_psi() * _CONVERT[self._units[0]]
-            right = self._temperature_f()
+            # LIVE-confirmed twice (73.61,11.43 on 07-23; 74,11.3 on
+            # 07-24): FIRST value = LEFT = RTD temperature, SECOND =
+            # RIGHT = pressure (EUNIT code of the RIGHT port applies)
+            left = self._temperature_f()
+            right = self._pressure_psi() * _CONVERT[self._units[1]]
             self._respond(f"{left:.6f},{right:.6f}")
         elif u.startswith("EUNIT?"):
             self._respond(f"{self._units[0]},{self._units[1]}")
@@ -72,8 +73,8 @@ class SimSerial:
             vals = [int(v) for v in c[5:].replace(",", " ").split()]
             left = vals[0]
             right = vals[1] if len(vals) > 1 else vals[0]
-            if right != self._rtd_right_code:
-                self._respond("Err02")      # RTD port (right): code locked
+            if left != self._rtd_left_code:
+                self._respond("Err02")      # RTD port (LEFT): code locked
             else:
                 self._units = [left, right]
                 self._respond("OK")
