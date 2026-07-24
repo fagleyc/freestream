@@ -77,6 +77,32 @@ def test_config_round_trip(tmp_path):
     assert back.right.role == "temperature" and back.right.unit == "C"
 
 
+def test_default_port_order_pressure_left_temperature_right():
+    """Regression guard (Casey HIL 2026-07-24): the instrument transmits
+    ``?`` values PRESSURE first, TEMPERATURE second. The default port
+    layout MUST match — pressure on the LEFT/first port, temperature on the
+    RIGHT/second — or the reduction reads temperature as pressure and vice
+    versa. Also pins the deg-F RTD default and psi pressure default."""
+    cfg = HeiseConfig()
+    assert cfg.left.role == "pressure" and cfg.left.unit == "psi"
+    assert cfg.right.role == "temperature" and cfg.right.unit == "F"
+    # from_dict defaults (used when a saved bundle omits a port) match
+    back = HeiseConfig.from_dict({"com_port": "COM1"})
+    assert back.left.role == "pressure"
+    assert back.right.role == "temperature"
+
+
+def test_sim_reply_is_pressure_then_temperature():
+    """The emulator's ``?`` reply order matches the real instrument:
+    values[0] ~= ambient pressure (psi), values[1] ~= room temperature."""
+    from heise.protocol import HeiseProtocol
+    from heise.emulator import SimSerial
+    p = HeiseProtocol(SimSerial(HeiseConfig(force_sim=True)))
+    vals = p.read_values()
+    assert 14.0 < vals[0] < 15.5      # pressure first (~ambient psi)
+    assert 70.0 < vals[1] < 75.0      # temperature second (~room degF)
+
+
 def test_config_unknown_keys_tolerated():
     cfg = HeiseConfig.from_dict(
         {"com_port": "COM7", "bogus": 1,
@@ -161,7 +187,8 @@ def dev():
 def test_connect_and_poll(dev):
     dev.connect()
     assert dev.connected and dev.sim_mode
-    assert dev.channel_names() == ["Temperature", "Pressure"]
+    # port order (corrected 2026-07-24): pressure LEFT, temperature RIGHT
+    assert dev.channel_names() == ["Pressure", "Temperature"]
     assert _wait(lambda: dev.frame_count() >= 5)
     latest = dev.latest()
     assert 14.0 < latest["Pressure"] < 15.5          # ~ambient psi
@@ -188,8 +215,8 @@ def test_set_pressure_unit_live(dev):
     before = dev.latest()["Pressure"]     # psi, ~14.7
     name = dev.set_pressure_unit("kPa")
     assert name == "kPa"
-    assert dev.config.right.unit == "kPa"
-    assert dev.get_unit_codes()[1] == 7
+    assert dev.config.left.unit == "kPa"       # pressure port is now LEFT
+    assert dev.get_unit_codes()[0] == 7
     n0 = dev.frame_count()
     assert _wait(lambda: dev.frame_count() > n0 + 2)
     after = dev.latest()["Pressure"]
@@ -223,7 +250,7 @@ def test_single_port_config():
     """Disabling one driver-side port must not shift the other port's
     value (the indicator still transmits both — map by position)."""
     cfg = HeiseConfig(force_sim=True, poll_s=0.05)
-    cfg.left.role = "off"                  # temperature off
+    cfg.right.role = "off"                 # temperature off (RIGHT port)
     d = HeiseGauge(cfg)
     try:
         d.connect()
@@ -237,22 +264,23 @@ def test_single_port_config():
 
 
 def test_connect_with_rtd_port_survives_eunit(dev):
-    """Live 2026-07-23: the RTD (left) port rejects pressure unit
-    codes — 'EUNIT 0, 0' answered Err02 and killed the connect. Units
-    must be read-modify-write and non-fatal."""
+    """The RTD (RIGHT port after the 2026-07-24 order correction) rejects
+    pressure unit codes (Err02). Units must be read-modify-write and
+    non-fatal, so connect survives."""
     dev.connect()                       # raised HeiseError before fix
     assert dev.connected
     codes = dev.get_unit_codes()
-    assert codes[0] == 15               # RTD code untouched
-    assert codes[1] == 0                # configured psi applied
+    assert codes[1] == 15               # RTD code (right) untouched
+    assert codes[0] == 0                # configured psi applied (left)
 
 
 def test_wrong_pressure_role_on_rtd_port_falls_back():
     """Misconfigured session (pressure role on the RTD port): connect
     must still succeed, with the unit label reflecting the instrument."""
     cfg = HeiseConfig(force_sim=True, poll_s=0.05)
-    cfg.left.role = "pressure"          # wrong — the port is an RTD
-    cfg.left.unit = "kPa"
+    cfg.left.role = "temperature"       # left is physically the pressure port
+    cfg.right.role = "pressure"         # wrong — the RIGHT port is an RTD
+    cfg.right.unit = "kPa"
     d = HeiseGauge(cfg)
     msgs = []
     d.on_status = msgs.append
@@ -261,7 +289,7 @@ def test_wrong_pressure_role_on_rtd_port_falls_back():
         assert d.connected
         assert any("Could not set the pressure unit" in m
                    for m in msgs)
-        assert cfg.left.unit == "code15"    # instrument's actual code
+        assert cfg.right.unit == "code15"   # instrument's actual code
     finally:
         d.disconnect()
 

@@ -133,7 +133,7 @@ def test_heise_defaults_units_not_stomped(isolated_defaults):
     the derived-chain unit declaration (psi / C)."""
     cfg = HeiseConfig()
     cfg.com_port = "COM9"
-    cfg.right.unit = "kPa"                 # operator's saved choice
+    cfg.left.unit = "kPa"                  # operator's saved choice (pressure=LEFT)
     cfg.save(isolated_defaults / "heise_defaults.json")
 
     a = HeiseAdapter(sim=False)
@@ -145,7 +145,7 @@ def test_heise_factory_units_when_no_defaults(isolated_defaults):
     a = HeiseAdapter(sim=False)            # no defaults file present
     units = {p.role: p.unit for p in a.config.ports()}
     assert units["pressure"] == "psi"
-    assert units["temperature"] == "C"
+    assert units["temperature"] == "F"     # RTD default deg F (Casey)
 
 
 def test_freestream_bundle_overrides_device_defaults(isolated_defaults):

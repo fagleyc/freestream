@@ -37,7 +37,7 @@ def test_identity_channels_and_capabilities():
     assert all(c.kind == "tunnel" for c in specs)
     units = {c.name: c.unit for c in specs}
     assert units["Ptot"] == "psi"              # absolute sensor → psia
-    assert units["Temp"] == "C"
+    assert units["Temp"] == "F"                # RTD default deg F (Casey)
     assert isinstance(a, Streaming)
     # must NOT look like a balance (custom-mode role derivation prefers
     # Zeroables as balance; the Heise's instrument ZERO is not exposed)

@@ -2,9 +2,11 @@
 ``force_sim=True`` and no hardware.
 
 Duck-typed stand-in for ``serial.Serial``: answers the remote-protocol
-command subset the driver uses. Left port simulates a pressure sensor
-(ambient ~14.7 psi with slow wander + noise, converted per the active
-EUNIT code); right port simulates an RTD (~72 °F, slow drift).
+command subset the driver uses. Port order matches the real instrument
+(corrected 2026-07-24 per Casey's HIL check): the LEFT/first port is the
+pressure sensor (ambient ~14.7 psi with slow wander + noise, converted per
+the active EUNIT code); the RIGHT/second port is the RTD (~72 °F, slow
+drift). The ``?`` reply is therefore ``pressure,temperature``.
 """
 
 from __future__ import annotations
@@ -28,11 +30,13 @@ class SimSerial:
         self._buf = bytearray()
         self._rx = bytearray()
         self._t0 = time.time()
-        #: EUNIT codes (left, right). Left is an RTD port (live bench):
-        #: it reports its own temperature-unit code and REJECTS any
-        #: attempt to write a different code (Err02, seen 2026-07-23).
-        self._units = [15, 0]
-        self._rtd_left_code = 15
+        #: EUNIT codes (left, right). The RIGHT port is an RTD: it reports
+        #: its own temperature-unit code and REJECTS any attempt to write a
+        #: different code (Err02). The LEFT port is the pressure sensor and
+        #: accepts pressure EUNIT codes. (Port order corrected 2026-07-24:
+        #: pressure LEFT, temperature RIGHT — matches the real instrument.)
+        self._units = [0, 15]
+        self._rtd_right_code = 15
         self._tare = [0, 0]
         self._zero_off = [0.0, 0.0]
         self._rng = random.Random(0x4E15E)
@@ -57,10 +61,10 @@ class SimSerial:
         c = cmd.strip()
         u = c.upper()
         if c == "?":
-            # bench layout (2026-07-23): left = RTD temperature,
-            # right = pressure (EUNIT code of the right port applies)
-            left = self._temperature_f()
-            right = self._pressure_psi() * _CONVERT[self._units[1]]
+            # port order (corrected 2026-07-24): left = pressure (EUNIT code
+            # of the LEFT port applies), right = RTD temperature (deg F)
+            left = self._pressure_psi() * _CONVERT[self._units[0]]
+            right = self._temperature_f()
             self._respond(f"{left:.6f},{right:.6f}")
         elif u.startswith("EUNIT?"):
             self._respond(f"{self._units[0]},{self._units[1]}")
@@ -68,8 +72,8 @@ class SimSerial:
             vals = [int(v) for v in c[5:].replace(",", " ").split()]
             left = vals[0]
             right = vals[1] if len(vals) > 1 else vals[0]
-            if left != self._rtd_left_code:
-                self._respond("Err02")      # RTD port: code locked
+            if right != self._rtd_right_code:
+                self._respond("Err02")      # RTD port (right): code locked
             else:
                 self._units = [left, right]
                 self._respond("OK")

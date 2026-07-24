@@ -129,13 +129,17 @@ class HeiseConfig:
     max_consecutive_errors: int = 5
     force_sim: bool = False
 
-    # Default port layout matches the bench instrument (live 2026-07-23:
-    # '?' returned '73.61,11.43' — RTD temperature on the LEFT port,
-    # pressure on the RIGHT). Both ports are fully reconfigurable.
+    # Default port layout (CORRECTED 2026-07-24 from Casey's HIL check —
+    # pressure and temperature were previously swapped, so the reduction read
+    # temperature as pressure and vice versa): the instrument transmits
+    # ``?`` values in port order PRESSURE first, TEMPERATURE second, so the
+    # LEFT/first port is the ABSOLUTE PRESSURE sensor (psi) and the RIGHT/
+    # second port is the RTD TEMPERATURE (deg F). Both ports are fully
+    # reconfigurable.
     left: HeisePortConfig = field(default_factory=lambda: HeisePortConfig(
-        name="Temperature", role="temperature", unit="F"))
-    right: HeisePortConfig = field(default_factory=lambda: HeisePortConfig(
         name="Pressure", role="pressure", unit="psi"))
+    right: HeisePortConfig = field(default_factory=lambda: HeisePortConfig(
+        name="Temperature", role="temperature", unit="F"))
 
     def ports(self) -> List[HeisePortConfig]:
         return [self.left, self.right]
@@ -160,9 +164,9 @@ class HeiseConfig:
                                       if k in port_fields})
 
         left = mk_port(d.pop("left", None), HeisePortConfig(
-            name="Temperature", role="temperature", unit="F"))
-        right = mk_port(d.pop("right", None), HeisePortConfig(
             name="Pressure", role="pressure", unit="psi"))
+        right = mk_port(d.pop("right", None), HeisePortConfig(
+            name="Temperature", role="temperature", unit="F"))
         return cls(left=left, right=right,
                    **{k: v for k, v in d.items()
                       if k in known and k not in ("left", "right")})

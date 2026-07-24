@@ -161,11 +161,12 @@ class HeiseGauge:
         """Push the configured pressure unit via EUNIT.
 
         Read-modify-write: an RTD (temperature) port REJECTS pressure
-        unit codes — live 2026-07-23, 'EUNIT 0, 0' answered Err02
-        because the left port is an RTD. Only the pressure port's code
-        is changed; the other port keeps whatever the instrument
-        reports. A units failure must never kill the connection —
-        warn and fall back to the instrument's current setting.
+        unit codes (Err02). Only the PRESSURE port's code is changed
+        (found by ROLE, not position — the pressure sensor is the LEFT
+        port after the 2026-07-24 order correction); the other port keeps
+        whatever the instrument reports. A units failure must never kill
+        the connection — warn and fall back to the instrument's current
+        setting.
         """
         cfg = self.config
         try:

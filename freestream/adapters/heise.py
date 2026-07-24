@@ -109,18 +109,17 @@ class HeiseAdapter(ConfigurableAdapter):
             factory = not defaults_path().exists()
         cfg.force_sim = bool(sim)
         if factory:
-            # factory defaults: declare the units the derived chain
-            # expects (psia total pressure; RTD set to Celsius on the
-            # instrument — the config unit is the display label). Assign
-            # by ROLE — the driver's default port order is Temperature
-            # (port 1) / Pressure (port 2), so keying on left/right put
-            # "C" on the pressure port and connect() rejected it as an
-            # unknown pressure unit.
+            # factory defaults: declare the units the derived chain expects
+            # (psia total pressure; the RTD reads deg F — Casey's instrument
+            # default; the config unit is the display/interpretation label
+            # that Streamlined reduces against via cal_unit). Assign by ROLE
+            # (never by left/right position) so the port-order correction of
+            # 2026-07-24 can't put a pressure code on the RTD port.
             for port in cfg.ports():
                 if port.role == "pressure":
                     port.unit = "psi"
                 elif port.role == "temperature":
-                    port.unit = "C"
+                    port.unit = "F"
         _canonicalise_port_names(cfg)
         self._cfg = cfg
         self._dev = HeiseGauge(cfg)
