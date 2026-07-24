@@ -1,0 +1,29 @@
+# Freestream wind-tunnel suite — runtime requirements.
+# Install:  python -m pip install -r requirements.txt
+# Python 3.10+  (tested on 3.12).
+#
+# Version floors are the versions this suite is developed/tested against;
+# newer patch/minor releases are expected to work.
+
+# ── core ─────────────────────────────────────────────────────────────
+numpy>=2.4            # arrays, ring buffers, all numeric work
+scipy>=1.13           # channel resampling / reduction (Streamlined interop)
+h5py>=3.11            # HDF5 run files (the primary output format)
+openpyxl>=3.1         # run-book (.xlsx) import + .xlsx output format
+
+# ── GUI ──────────────────────────────────────────────────────────────
+PyQt6>=6.6            # the desktop apps
+pyqtgraph>=0.13       # live strip charts / gauges (width-1 non-AA pens)
+
+# ── instrument I/O ───────────────────────────────────────────────────
+pymodbus>=3.6         # Modbus TCP: traverse WAGO, tunnel Red Lion, LSWT ABB
+pyserial>=3.5         # RS-232/422: Heise indicator, LSWT sting indexers
+
+# ── optional: hardware backends (not needed for sim / running tests) ──
+# nidaqmx>=1.0        # NI USB-6351 DAQ backend (needs the NI-DAQmx driver
+#                       installed); the driver imports it lazily and runs
+#                       in sim without it. Uncomment to use the real board.
+
+# ── optional: development / tests ────────────────────────────────────
+# pytest>=8.0         # test suite (python -m pytest tests -q)
+# matplotlib>=3.8     # only used by balance_cal's icon-generation tool
