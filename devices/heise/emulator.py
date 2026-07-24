@@ -3,10 +3,11 @@
 
 Duck-typed stand-in for ``serial.Serial``: answers the remote-protocol
 command subset the driver uses. Port order matches the real instrument
-(corrected 2026-07-24 per Casey's HIL check): the LEFT/first port is the
-pressure sensor (ambient ~14.7 psi with slow wander + noise, converted per
-the active EUNIT code); the RIGHT/second port is the RTD (~72 °F, slow
-drift). The ``?`` reply is therefore ``pressure,temperature``.
+(bench-confirmed twice: 73.61,11.43 on 2026-07-23 and 74,11.3 on 07-24):
+the LEFT/first port is the RTD (~72 °F, slow drift); the RIGHT/second port
+is the pressure sensor (ambient ~14.7 psi with slow wander + noise,
+converted per the active EUNIT code). The ``?`` reply is therefore
+``temperature,pressure``.
 """
 
 from __future__ import annotations
@@ -30,11 +31,11 @@ class SimSerial:
         self._buf = bytearray()
         self._rx = bytearray()
         self._t0 = time.time()
-        #: EUNIT codes (left, right). The RIGHT port is an RTD: it reports
+        #: EUNIT codes (left, right). The LEFT port is an RTD: it reports
         #: its own temperature-unit code and REJECTS any attempt to write a
-        #: different code (Err02). The LEFT port is the pressure sensor and
-        #: accepts pressure EUNIT codes. (Port order corrected 2026-07-24:
-        #: pressure LEFT, temperature RIGHT — matches the real instrument.)
+        #: different code (Err02). The RIGHT port is the pressure sensor and
+        #: accepts pressure EUNIT codes. (Bench-confirmed port order:
+        #: temperature LEFT, pressure RIGHT — matches the real instrument.)
         self._units = [15, 0]       # LEFT = RTD (locked code), RIGHT = psi
         self._rtd_left_code = 15
         self._tare = [0, 0]

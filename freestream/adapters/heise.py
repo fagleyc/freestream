@@ -113,8 +113,8 @@ class HeiseAdapter(ConfigurableAdapter):
             # (psia total pressure; the RTD reads deg F — Casey's instrument
             # default; the config unit is the display/interpretation label
             # that Streamlined reduces against via cal_unit). Assign by ROLE
-            # (never by left/right position) so the port-order correction of
-            # 2026-07-24 can't put a pressure code on the RTD port.
+            # (never by left/right position) so it never puts a pressure code
+            # on the RTD port regardless of which side each sensor is on.
             for port in cfg.ports():
                 if port.role == "pressure":
                     port.unit = "psi"

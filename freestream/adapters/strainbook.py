@@ -28,11 +28,13 @@ _DEVICES_DIR = Path(__file__).resolve().parents[2] / "devices"
 if str(_DEVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_DEVICES_DIR))
 
+from strainbook_616 import balcal                            # noqa: E402
 from strainbook_616.config import StrainbookConfig            # noqa: E402
 from strainbook_616.device import Strainbook616               # noqa: E402
 
 from ..derived import TUNNEL_CONDITION_CHANNELS               # noqa: E402
 from ..hal import ChannelSpec, DeviceStatus, OFFLINE, OK      # noqa: E402
+from ._balance_cal import balance_cal_meta                     # noqa: E402
 from ._configurable import ConfigurableAdapter                 # noqa: E402
 
 GROUP = "StrainBook_0"
@@ -101,17 +103,31 @@ class StrainbookAdapter(ConfigurableAdapter):
     def cal_type(self) -> str:
         return self._cfg.cal_type
 
-    def extra_meta(self) -> Dict[str, str]:
-        """Balance .vol calibration POINTER merged into /meta/devices/<id>.
+    def extra_meta(self) -> Dict[str, object]:
+        """Balance .vol calibration merged into /meta/devices/<id>.
 
-        Path (and fit type) ONLY — the .vol is never applied here; the raw
-        bridge volts stay verbatim and Streamlined reduces them. Emitted
-        only when a .vol path is configured, so files without a balance cal
-        are byte-for-byte unchanged (backward compatible)."""
+        Emitted only when a .vol path is configured, so files without a
+        balance cal are byte-for-byte unchanged (backward compatible). The
+        raw bridge volts ALWAYS stay verbatim — nothing here is applied to
+        them. Two layers:
+
+        * the ``vol_path``/``cal_type`` POINTER (provenance), and
+        * for this INTERNAL balance, the COMPUTED calibration
+          (``cal_matrix``/``cal_type``/``cal_distances``/``balance_serial``/
+          ``balance_type``) so Streamlined can reduce forces without ever
+          opening the .vol — the matrix is memoised, computed once. A
+          missing/unreadable .vol degrades to the pointer only."""
         vol = str(self.vol_path or "")
         if not vol:
             return {}
-        return {"vol_path": vol, "cal_type": str(self.cal_type or "")}
+        meta: Dict[str, object] = {"vol_path": vol,
+                                   "cal_type": str(self.cal_type or "")}
+        if self.balance_type == "internal":
+            meta.update(balance_cal_meta(
+                balcal, vol, self.cal_type,
+                balance_serial=getattr(self._cfg, "balance_serial", ""),
+                balance_type=self.balance_type))
+        return meta
 
     def tunnel_cal(self) -> Dict[str, Dict[str, object]]:
         """LINEAR cal coefficients for any tunnel-condition channel this

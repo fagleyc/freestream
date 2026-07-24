@@ -133,7 +133,7 @@ def test_heise_defaults_units_not_stomped(isolated_defaults):
     the derived-chain unit declaration (psi / C)."""
     cfg = HeiseConfig()
     cfg.com_port = "COM9"
-    cfg.left.unit = "kPa"                  # operator's saved choice (pressure=LEFT)
+    cfg.right.unit = "kPa"                 # operator's saved choice (pressure=RIGHT)
     cfg.save(isolated_defaults / "heise_defaults.json")
 
     a = HeiseAdapter(sim=False)
