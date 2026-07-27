@@ -288,7 +288,8 @@ def test_default_format_is_h5_and_writes_only_h5(rec):
     assert rec.output_format == "h5" and rec.extension == ".h5"
     p = write_default(rec)
     assert p.suffix == ".h5"
-    suffixes = {q.suffix for q in rec.config_dir.iterdir()}
+    # point files only — manifest.json sits alongside them by design
+    suffixes = {q.suffix for q in rec.config_dir.glob("run_*")}
     assert suffixes == {".h5"}
 
 
@@ -311,7 +312,7 @@ def test_filename_pattern_identical_across_formats(tmp_path, fmt, ext):
     assert p.name == f"run_0001_alpha_-2.0_beta_0.0_mach_0.30{ext}"
     assert p.exists()
     # exactly ONE file per point — only the selected format
-    assert [q.suffix for q in rec.config_dir.iterdir()] == [ext]
+    assert [q.suffix for q in rec.config_dir.glob("run_*")] == [ext]
 
 
 def test_run_numbering_scans_all_formats(tmp_path):

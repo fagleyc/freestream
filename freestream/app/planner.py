@@ -16,12 +16,14 @@ Double-clicking a FAILED row asks the main window to re-run just that point
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-                             QLabel, QLineEdit, QProgressBar, QPushButton,
+from PyQt6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame,
+                             QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+                             QLineEdit, QProgressBar, QPushButton,
                              QTableWidget, QTableWidgetItem, QVBoxLayout,
                              QWidget)
 
@@ -41,6 +43,23 @@ _STATUS_COLOR = {
     "failed": theme.ERROR,
     "skipped": theme.TEXT_DISABLED,
 }
+
+#: per-status ROW tint for the point table, so the operator can read sweep
+#: progress at a glance from across the control room. Deliberately muted —
+#: these sit behind text on the dark theme. None = leave the row untinted
+#: (queued points stay plain, so the worked-through frontier is obvious).
+_STATUS_ROW_BG = {
+    "moving": "#3a3115",
+    "acquiring": "#3a3115",
+    "done": "#1b2a1b",
+    "failed": "#3a1d1b",
+    "skipped": None,
+    "queued": None,
+}
+
+#: statuses that mean "this point is being worked right now" — the row the
+#: table auto-scrolls to keep in view.
+_ACTIVE_STATUSES = ("moving", "acquiring")
 
 #: axis-set definitions per positioner family: (field, row label, hint).
 #: "aero" = attitude sweeps (crescent/ate + tunnel); "xyz" = the Mode-3
@@ -81,10 +100,34 @@ class PlannerPanel(QWidget):
         self._runbook: Optional[RunBook] = None
         self._run_row: Optional[RunRow] = None
         self._named: Dict[str, str] = {}
+        #: row -> last painted status, so the 250 ms poll only repaints rows
+        #: that actually changed (a 500-point grid otherwise restyles 2500
+        #: cells four times a second)
+        self._row_status: Dict[int, str] = {}
+        #: auto-scroll the table to the point being acquired. Paused when the
+        #: operator scrolls away, resumed when they scroll back to the end.
+        self._auto_follow = True
+        self._programmatic_scroll = False
+        self._last_scrolled_row: Optional[int] = None
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(6)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(5)
+
+        # ── destination strip: WHERE this sweep gets written. Top of the
+        #    pane, above the run-book/expansion summary, because "which
+        #    folder am I about to fill" is the first thing to check when a
+        #    test starts. ──────────────────────────────────────────────────
+        self.dest_lbl = QLabel()
+        self.dest_lbl.setObjectName("plannerDest")
+        # exactly two lines by construction, and the path is pre-elided to
+        # fit — wrapping would only let the strip grow and eat table space
+        self.dest_lbl.setWordWrap(False)
+        self.dest_lbl.setStyleSheet(
+            f"QLabel#plannerDest {{ background: {theme.BG_LIGHT}; "
+            f"border: 1px solid {theme.BORDER}; border-radius: 4px; "
+            f"padding: 4px 8px; font-family: 'Consolas', monospace; }}")
+        lay.addWidget(self.dest_lbl)
 
         # ── run-book indicator strip (below the "Sweep Planner" title,
         #    above the alpha/beta/mach fields) ─────────────────────────────
@@ -131,12 +174,34 @@ class PlannerPanel(QWidget):
         self.table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setColumnWidth(0, 36)
+        # tighten the HORIZONTAL padding: the suite-wide header rule is a
+        # uniform 6 px, which on a five-column numeric table wastes 12 px per
+        # column and squeezes the labels. Trim the sides only — row height,
+        # fonts and grid lines stay as the theme sets them.
+        self.table.setStyleSheet(
+            "QHeaderView::section { padding: 6px 2px; }"
+            "QTableWidget::item { padding: 0px 2px; }")
+        # size each column to its content (header included, so nothing
+        # clips) and let the status column take up the slack
+        header = self.table.horizontalHeader()
+        for col in range(self.table.columnCount() - 1):
+            header.setSectionResizeMode(
+                col, QHeaderView.ResizeMode.ResizeToContents)
         self.table.cellDoubleClicked.connect(self._double_clicked)
+        self.table.verticalScrollBar().valueChanged.connect(
+            self._on_table_scrolled)
         lay.addWidget(self.table, stretch=1)
 
         self.progress = QProgressBar()
         self.progress.setTextVisible(True)
+        self.progress.setFormat("%v / %m points")
+        # the sweep progress bar is read from across the control room —
+        # give it real presence rather than the default hairline
+        self.progress.setMinimumHeight(26)
+        _pf = self.progress.font()
+        _pf.setPointSize(_pf.pointSize() + 1)
+        _pf.setBold(True)
+        self.progress.setFont(_pf)
         lay.addWidget(self.progress)
         self.summary_lbl = QLabel("0 points")
         self.summary_lbl.setObjectName("dim")
@@ -376,6 +441,11 @@ class PlannerPanel(QWidget):
         if running == self._sweep_running:
             return
         self._sweep_running = running
+        if running:
+            # a new run re-arms auto-follow even if the operator had
+            # scrolled away while reviewing the previous one
+            self._auto_follow = True
+            self._last_scrolled_row = None
         self._sync_grid_button()
 
     def _sync_grid_button(self) -> None:
@@ -532,7 +602,47 @@ class PlannerPanel(QWidget):
                 f"padding: 6px 8px; font-family: 'Consolas', monospace; "
                 f"color: {color}; }}")
 
+    @staticmethod
+    def _elide_path(path: str, limit: int = 44) -> str:
+        """Trim a long output path from the FRONT, on a separator, so the
+        strip stays two lines. The tail is what distinguishes one run folder
+        from another; the full path lives in the tooltip."""
+        if len(path) <= limit:
+            return path
+        parts = path.replace("\\", "/").split("/")
+        kept: List[str] = []
+        for part in reversed(parts):
+            candidate = "/".join([part] + kept)
+            if kept and len(candidate) > limit - 2:
+                break
+            kept.insert(0, part)
+        return "…/" + "/".join(kept) if kept else path[-limit:]
+
+    def _update_destination(self) -> None:
+        """Refresh the destination strip: the config name and the folder the
+        recorder will write into (``data_root`` / ``config_name`` — the same
+        join Hdf5Recorder makes). Shown verbatim as configured rather than
+        resolved, because a relative root resolves against the working
+        directory, not the app."""
+        cfg_name = str(getattr(self.config, "config_name", "") or "") or "—"
+        root = str(getattr(self.config, "data_root", "") or "")
+        try:
+            out_dir = str(Path(root) / cfg_name) if root else cfg_name
+        except (TypeError, ValueError):     # pathological config values
+            out_dir = cfg_name
+        self.dest_lbl.setText(
+            f"<span style='color:{theme.TEXT_DIM}'>config&nbsp;&nbsp;</span>"
+            f"<span style='color:{theme.TEXT}'><b>{cfg_name}</b></span><br>"
+            f"<span style='color:{theme.TEXT_DIM}'>writes&nbsp;&nbsp;</span>"
+            f"<span style='color:{theme.TEXT_DIM}'>"
+            f"{self._elide_path(out_dir)}</span>")
+        self.dest_lbl.setToolTip(
+            f"Run files are written to:\n  {out_dir}\n\n"
+            "Data root and config name are set in "
+            "File → Measurement Setup…")
+
     def _update_indicator(self) -> None:
+        self._update_destination()
         summary = self._expansion_summary()
         if summary is None:
             self.indicator.setStyleSheet(
@@ -610,26 +720,95 @@ class PlannerPanel(QWidget):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, col, item)
+        # a fresh table has nothing painted yet — drop the repaint cache so
+        # refresh_statuses styles every row once
+        self._row_status.clear()
+        self._last_scrolled_row = None
+        self._auto_follow = True
         self.progress.setMaximum(max(len(points), 1))
         self.progress.setValue(0)
         self.summary_lbl.setText(points_summary(points))
         self._sync_grid_button()
         self.refresh_statuses()
 
+    def _style_row(self, row: int, status: str) -> None:
+        """Tint a whole row for its status — the point being acquired is
+        highlighted, completed points read as done, failures stand out."""
+        bg = _STATUS_ROW_BG.get(status)
+        status_fg = QColor(_STATUS_COLOR.get(status, theme.TEXT))
+        active = status in _ACTIVE_STATUSES
+        last_col = self.table.columnCount() - 1
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item is None:
+                continue
+            if bg is None:
+                # clear any tint from a previous status (a re-run point
+                # goes failed -> queued -> acquiring)
+                item.setData(Qt.ItemDataRole.BackgroundRole, None)
+            else:
+                item.setBackground(QColor(bg))
+            # only the status cell carries the status color; the parameter
+            # cells stay plainly readable against the tint
+            item.setForeground(status_fg if col == last_col
+                               else QColor(theme.TEXT))
+            font = item.font()
+            font.setBold(active)
+            item.setFont(font)
+
+    def _on_table_scrolled(self, value: int) -> None:
+        """Operator scrolling pauses auto-follow; scrolling back to the
+        bottom resumes it (the usual log-tail behaviour)."""
+        if self._programmatic_scroll:
+            return
+        self._auto_follow = value >= self.table.verticalScrollBar().maximum()
+
+    def _follow_active_row(self, active_row: Optional[int],
+                           finished: int) -> None:
+        """Keep the point under acquisition in view as the sweep advances."""
+        if not self._auto_follow or not self.points:
+            return
+        row = active_row
+        if row is None:
+            # between points: sit on the frontier of completed work, but
+            # only while a sweep is actually running — otherwise building a
+            # grid would yank the view around
+            if not self._sweep_running:
+                return
+            row = min(finished, len(self.points) - 1)
+        if row < 0 or row == self._last_scrolled_row:
+            return
+        item = self.table.item(row, 0)
+        if item is None:
+            return
+        self._last_scrolled_row = row
+        self._programmatic_scroll = True
+        try:
+            self.table.scrollToItem(
+                item, QAbstractItemView.ScrollHint.PositionAtCenter)
+        finally:
+            self._programmatic_scroll = False
+
     def refresh_statuses(self) -> None:
         if not self.points or self.table.rowCount() != len(self.points):
             return
+        status_col = self.table.columnCount() - 1
         finished = 0
+        active_row: Optional[int] = None
         for row, p in enumerate(self.points):
             if p.status in ("done", "failed", "skipped"):
                 finished += 1
-            item = self.table.item(row, 4)
-            if item is not None and item.text() != p.status:
-                item.setText(p.status)
+            elif p.status in _ACTIVE_STATUSES and active_row is None:
+                active_row = row
+            if self._row_status.get(row) == p.status:
+                continue                   # unchanged — skip the repaint
+            self._row_status[row] = p.status
+            item = self.table.item(row, status_col)
             if item is not None:
-                item.setForeground(QColor(
-                    _STATUS_COLOR.get(p.status, theme.TEXT)))
+                item.setText(p.status)
+            self._style_row(row, p.status)
         self.progress.setValue(finished)
+        self._follow_active_row(active_row, finished)
 
     def mark_done(self, outcome: PointOutcome) -> None:
         self.refresh_statuses()

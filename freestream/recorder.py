@@ -59,11 +59,32 @@ names are truncated to MATLAB's 63-char limit and de-duplicated with
 ``_2``, ``_3`` … suffixes. While ``output_format == "mat"`` the path of
 the last ``.mat`` written is also exposed as
 :attr:`Hdf5Recorder.last_mat_path` (None for the other formats).
+
+Run manifest (``manifest.json``)
+--------------------------------
+Every format also maintains ONE ``manifest.json`` in the configuration
+folder, alongside the ``run_*`` files, so a finished directory is
+self-describing without opening a single point file::
+
+    {"schema_version": 1, "config_name": …, "output_format": …,
+     "created": …, "updated": …, "config": {…written once…},
+     "points": [{"run_number", "filename", "timestamp", "alpha", "beta",
+                 "mach", "speed_value", "speed_unit", "air_state",
+                 "sweep_dir"}, …]}
+
+It is updated INCREMENTALLY as each point lands (a run that dies at
+point 7 of 40 leaves a valid manifest of those 7), written ATOMICALLY
+(temp file + :func:`os.replace`), resumed rather than clobbered when one
+already exists, and a re-taken run number REPLACES its entry. A manifest
+failure is logged at warning and swallowed — it must never interrupt an
+acquisition, the point file is what matters.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -72,7 +93,16 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Union
 import h5py
 import numpy as np
 
-__all__ = ["Hdf5Recorder", "read_point"]
+__all__ = ["Hdf5Recorder", "read_point", "MANIFEST_NAME",
+           "MANIFEST_SCHEMA_VERSION"]
+
+log = logging.getLogger(__name__)
+
+#: per-configuration run manifest — the JSON index of the whole test,
+#: written next to the run_* files (see the module docstring).
+MANIFEST_NAME = "manifest.json"
+#: manifest contract version written into every manifest.
+MANIFEST_SCHEMA_VERSION = 1
 
 # keys of point_meta that participate in the filename, in this order
 # (aero attitude axes first, then the Mode-3 traverse position axes). The
@@ -148,6 +178,22 @@ def _iso_start(point_meta: Mapping[str, Any]) -> str:
     if isinstance(t, (int, float)):
         return datetime.fromtimestamp(float(t)).isoformat()
     return str(t)
+
+
+def _json_number(value: Any) -> Optional[float]:
+    """Manifest rendering of a numeric field: float, or None when the
+    value is genuinely unknown (written as null, NEVER omitted/faked)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_text(value: Any) -> Optional[str]:
+    """Manifest rendering of a string field: str, or None when absent."""
+    return None if value is None else str(value)
 
 
 def _set_attr(attrs: h5py.AttributeManager, key: str, value: Any) -> None:
@@ -343,11 +389,19 @@ class Hdf5Recorder:
                     "Install with: pip install openpyxl") from exc
         self.config_dir = self.root_dir / config_name
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        #: in-memory run manifest; None until the first write_point of
+        #: this process reads (or starts) the one on disk.
+        self._manifest: Optional[Dict[str, Any]] = None
 
     @property
     def extension(self) -> str:
         """File extension of the selected format (``.h5``/``.mat``/…)."""
         return self.EXTENSIONS[self.output_format]
+
+    @property
+    def manifest_path(self) -> Path:
+        """Path of this configuration's ``manifest.json``."""
+        return self.config_dir / MANIFEST_NAME
 
     # ── run numbering ────────────────────────────────────────────────────
     def next_run_number(self) -> int:
@@ -512,7 +566,104 @@ class Hdf5Recorder:
         else:
             self._write_h5(path, root, blocks, rates, units, cal, start_iso,
                            device_meta, config_snapshot, time_axis)
+        # the point file is safely on disk — index it (never raises)
+        self._update_manifest(root, path.name, config_snapshot)
         return path
+
+    # ── run manifest ─────────────────────────────────────────────────────
+    def _update_manifest(self, root_attrs: Mapping[str, Any], filename: str,
+                         config_snapshot: Optional[Dict[str, Any]]) -> None:
+        """Add (or REPLACE, for a re-taken run number) one point in
+        ``manifest.json`` and rewrite it atomically.
+
+        This is live-acquisition code: it NEVER raises. Any manifest
+        problem is logged at warning and swallowed — the point file is
+        what matters, and the next point retries.
+        """
+        try:
+            data = self._load_manifest()
+            entry = self._manifest_entry(root_attrs, filename)
+            now = entry["timestamp"] or datetime.now().isoformat()
+            # a re-taken point replaces its entry; never two of a number
+            points = [p for p in data["points"]
+                      if p.get("run_number") != entry["run_number"]]
+            points.append(entry)
+            points.sort(key=lambda p: _json_number(p.get("run_number")) or 0.0)
+            data["schema_version"] = MANIFEST_SCHEMA_VERSION
+            data["config_name"] = self.config_name
+            data["output_format"] = self.output_format
+            data.setdefault("created", now)
+            data["updated"] = now
+            if config_snapshot is not None and not data.get("config"):
+                data["config"] = config_snapshot     # written once
+            data.setdefault("config", {})
+            data["points"] = points
+            self._manifest = data                    # keep going even if the
+            self._write_manifest(data)               # disk write below fails
+        except Exception:                            # noqa: BLE001
+            log.warning("run manifest update failed for %s", filename,
+                        exc_info=True)
+
+    def _manifest_entry(self, root_attrs: Mapping[str, Any],
+                        filename: str) -> Dict[str, Any]:
+        """One manifest point entry, lifted from the root attrs already
+        assembled for the point file (unknown values stay null)."""
+        return {
+            "run_number": int(root_attrs.get("run_number") or 0),
+            "filename": filename,
+            "timestamp": _json_text(root_attrs.get("timestamp")),
+            "alpha": _json_number(root_attrs.get("alpha")),
+            "beta": _json_number(root_attrs.get("beta")),
+            "mach": _json_number(root_attrs.get("mach")),
+            "speed_value": _json_number(root_attrs.get("speed_value")),
+            "speed_unit": _json_text(root_attrs.get("speed_unit")),
+            "air_state": _json_text(root_attrs.get("air_state")),
+            "sweep_dir": str(root_attrs.get("sweep_dir") or ""),
+        }
+
+    def _load_manifest(self) -> Dict[str, Any]:
+        """The manifest to append to — cached after the first point.
+
+        Only the FIRST write_point of a process touches the copy on disk:
+        a resumed test APPENDS to it (mirroring next_run_number()'s
+        tolerance of an existing folder) instead of clobbering it. One
+        that does not parse is moved aside to ``manifest.json.bad``
+        rather than destroyed.
+        """
+        if self._manifest is not None:
+            return self._manifest
+        path = self.manifest_path
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    raise ValueError("manifest is not a JSON object")
+                data["points"] = [p for p in (data.get("points") or [])
+                                  if isinstance(p, dict)]
+                return data
+            except Exception:                        # noqa: BLE001
+                bad = path.with_name(path.name + ".bad")
+                log.warning("unparseable %s — moved aside to %s",
+                            path.name, bad.name, exc_info=True)
+                os.replace(path, bad)
+        return {"points": []}
+
+    def _write_manifest(self, data: Mapping[str, Any]) -> None:
+        """Serialise *data* to a temp file in the SAME directory, then
+        :func:`os.replace` it onto ``manifest.json`` — a crash or a kill
+        mid-write can never leave a truncated manifest behind."""
+        tmp = self.config_dir / f"{MANIFEST_NAME}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, default=str)
+            os.replace(tmp, self.manifest_path)
+        finally:
+            if tmp.exists():                         # a failed serialise
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
     # ── HDF5 writer (the reference schema) ───────────────────────────────
     @staticmethod

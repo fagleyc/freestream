@@ -20,13 +20,14 @@ from typing import Dict, List, Optional
 
 import numpy as np
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QPixmap
+from PyQt6.QtGui import QAction, QBrush, QColor, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
-    QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+    QPlainTextEdit, QPushButton, QSizePolicy, QSpacerItem, QSplitter,
+    QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout,
+    QWidget)
 
 import pyqtgraph as pg
 
@@ -41,6 +42,73 @@ from ..volfile import read_vol_session, validate_session, write_vol
 IMAGES_DIR = Path(__file__).resolve().parents[2] / "FB_Cal_GUI"
 
 CAL_TYPES = ("Linear", "Quadratic", "Cubic")
+
+#: The loading-guide PNGs are MATLAB-era artwork: white background, black
+#: annotation, blue arrows. FB_Cal_GUI/ is still the MATLAB app's asset
+#: folder, so the files are left alone on disk and recolored to the house
+#: dark theme when they are loaded instead.
+_GUIDE_BG = (0x25, 0x25, 0x26)          # theme.BG_LIGHT — the tab surface
+_GUIDE_FG = (0xE0, 0xE0, 0xE0)          # theme.TEXT
+#: max channel spread for a pixel to count as neutral (white/grey/black
+#: artwork) rather than a coloured arrow
+_GUIDE_GREY_SAT = 32
+#: cache: absolute path -> recoloured pixmap (the recolour is a per-pixel
+#: pass, and orientations are flicked through constantly)
+_GUIDE_CACHE: Dict[str, QPixmap] = {}
+
+#: Calibration Procedure tab: the settings column is a FIXED width so the
+#: live-volts readout can never resize it, and the readout itself is pinned
+#: narrower still to sit inside the form's field column.
+_SETTINGS_COL_W = 360
+_LIVE_READOUT_W = 224
+
+
+def themed_guide_pixmap(path: Path) -> QPixmap:
+    """Load a loading-guide PNG recoloured for the dark theme.
+
+    Neutral pixels are remapped along a background->text ramp, so the white
+    sheet becomes the tab background and the black annotation becomes light
+    text with the greys in between preserved as intermediate shades.
+    Saturated pixels (the blue load arrows) keep their hue and are only
+    lightened when they would otherwise be too dark to read against the new
+    background. Returns a null pixmap if the file will not load.
+    """
+    key = str(path)
+    cached = _GUIDE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    img = QImage(key)
+    if img.isNull():
+        return QPixmap()
+    img = img.convertToFormat(QImage.Format.Format_RGBA8888)
+    width, height = img.width(), img.height()
+    ptr = img.bits()
+    ptr.setsize(img.sizeInBytes())
+    arr = np.frombuffer(ptr, np.uint8).reshape(height, width, 4).copy()
+
+    rgb = arr[..., :3].astype(np.float32)
+    sat = rgb.max(axis=2) - rgb.min(axis=2)
+    lum = rgb @ np.array([0.299, 0.587, 0.114], np.float32)
+
+    bg = np.array(_GUIDE_BG, np.float32)
+    fg = np.array(_GUIDE_FG, np.float32)
+    # white -> background, black -> text, greys land in between
+    ramp = (1.0 - lum / 255.0)[..., None]
+    neutral = bg + ramp * (fg - bg)
+    # coloured artwork: lift only what is too dark to read on the new
+    # background, leaving already-bright colours untouched
+    lift = (np.clip((150.0 - lum) / 150.0, 0.0, 1.0) * 0.55)[..., None]
+    coloured = rgb + (255.0 - rgb) * lift
+
+    out = np.where((sat < _GUIDE_GREY_SAT)[..., None], neutral, coloured)
+    arr[..., :3] = np.clip(out, 0, 255).astype(np.uint8)
+
+    themed = QImage(arr.data, width, height,
+                    QImage.Format.Format_RGBA8888).copy()
+    pix = QPixmap.fromImage(themed)
+    _GUIDE_CACHE[key] = pix
+    return pix
 
 
 from dataclasses import dataclass
@@ -301,7 +369,15 @@ class BalanceCalWindow(QMainWindow):
         v = QVBoxLayout(w)
 
         top = QHBoxLayout()
-        left = QFormLayout()
+        # the settings column is ANCHORED: its width is fixed so the live
+        # volts readout (which repaints 4x a second) can never resize the
+        # form column and shove the guide image around
+        left_box = QWidget()
+        left_box.setFixedWidth(_SETTINGS_COL_W)
+        left = QFormLayout(left_box)
+        left.setContentsMargins(0, 0, 8, 0)
+        left.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         self.orient_combo = QComboBox()
         self.orient_combo.currentTextChanged.connect(
             self._on_orientation_changed)
@@ -321,12 +397,30 @@ class BalanceCalWindow(QMainWindow):
 
         self.live_label = QLabel("—")
         self.live_label.setProperty("mono", "true")
+        # The readout repaints 4x a second with text whose length used to
+        # vary, which resized the form column and shoved the guide image
+        # around. Pin BOTH axes: the label wraps inside a fixed box and its
+        # own size hint can no longer reach the layout at all. Three lines
+        # is enough for a six-component balance at the fixed field width.
+        self.live_label.setWordWrap(True)
+        self.live_label.setFixedWidth(_LIVE_READOUT_W)
+        self.live_label.setFixedHeight(
+            self.live_label.fontMetrics().lineSpacing() * 3 + 6)
+        self.live_label.setAlignment(Qt.AlignmentFlag.AlignTop
+                                     | Qt.AlignmentFlag.AlignLeft)
         left.addRow("Live volts", self.live_label)
-        top.addLayout(left)
+        left.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum,
+                                 QSizePolicy.Policy.Expanding))
+        top.addWidget(left_box, 0, Qt.AlignmentFlag.AlignTop)
 
         self.image_label = QLabel()
         self.image_label.setMinimumSize(420, 130)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # the recoloured guide art carries the theme background; matching it
+        # here hides the letterbox left by KeepAspectRatio
+        self.image_label.setStyleSheet(
+            f"background: {theme.BG_LIGHT}; border: 1px solid "
+            f"{theme.BORDER}; border-radius: 4px;")
         top.addWidget(self.image_label, 1)
         v.addLayout(top)
 
@@ -800,7 +894,7 @@ class BalanceCalWindow(QMainWindow):
 
         img = IMAGES_DIR / orient.image_name(s.kind)
         if img.exists():
-            pix = QPixmap(str(img))
+            pix = themed_guide_pixmap(img)
             self.image_label.setPixmap(pix.scaled(
                 self.image_label.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -1065,9 +1159,14 @@ class BalanceCalWindow(QMainWindow):
             for b, t in zip(bridges, tare):
                 if b in vals:
                     vals[b] = vals[b] - t
-        mark = "T " if tare is not None else ""
+        # CONSTANT-WIDTH rendering: the tare marker keeps its two columns
+        # whether or not a tare is applied, and each reading is padded to a
+        # fixed field, so the string length never changes between refreshes.
+        # A varying length would re-wrap the label and nudge the layout four
+        # times a second.
+        mark = "T " if tare is not None else "  "
         self.live_label.setText(mark + "  ".join(
-            f"{n}:{v:+.4f}" for n, v in vals.items()))
+            f"{n}:{v:+10.4f}" for n, v in vals.items()))
 
     # ── table edit / output ──────────────────────────────────────────────
     def _delete_row(self) -> None:
