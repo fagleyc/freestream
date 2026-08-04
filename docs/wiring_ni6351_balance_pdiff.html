@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NI USB-6351 Wiring — Balances + Pdiff (LSWT)</title>
+<style>
+  @page { size: letter landscape; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Arial, sans-serif; color: #1a1a1a;
+         margin: 0; padding: 14px 20px; background: #fff; }
+  h1 { font-size: 19px; margin: 0 0 2px; }
+  .sub { font-size: 11.5px; color: #555; margin-bottom: 6px; }
+  .tag { display: inline-block; border: 1px solid #888; border-radius: 3px;
+         padding: 0 6px; font-size: 10.5px; margin-left: 6px; color: #333; }
+  svg { width: 100%; height: auto; display: block; }
+  table { border-collapse: collapse; width: 100%; font-size: 10.5px;
+          margin-top: 5px; }
+  th, td { border: 1px solid #999; padding: 2.5px 6px; text-align: left; }
+  th { background: #eef1f5; font-size: 10px; text-transform: uppercase;
+       letter-spacing: .03em; }
+  td.num { text-align: center; font-weight: 600;
+           font-family: Consolas, monospace; }
+  .sw { display: inline-block; width: 20px; height: 8px;
+        border-radius: 2px; vertical-align: middle; margin-right: 4px;
+        border: 1px solid #0003; }
+  .notes { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 22px;
+           font-size: 10.5px; margin-top: 6px; }
+  .notes div { padding-left: 14px; text-indent: -14px; }
+  .notes b { color: #b02318; }
+  .fine { font-size: 9.5px; color: #555; margin-top: 3px; }
+  .foot { font-size: 9px; color: #777; margin-top: 7px;
+          border-top: 1px solid #ccc; padding-top: 3px; }
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+</style>
+</head>
+<body>
+
+<!-- ═════════════════ PAGE 1 — NK MOMENT BALANCE ═════════════════ -->
+<div class="page">
+<h1>NI USB-6351 Wiring — Pg 1: NK MOMENT Balance + Pdiff
+  <span class="tag">Dev2</span><span class="tag">Mode: LSWT-LSWTSting-NI</span>
+  <span class="tag">Excitation 5 V DC</span>
+  <span class="tag">All AI DIFFERENTIAL</span></h1>
+<div class="sub">NK six-component moment balance — wire colors per
+ MomentBalance/WiringGuide.xlsx (listed color is the S+ &ldquo;high&rdquo;
+ conductor; twisted-pair mate is S−). Terminal numbers per NI X&nbsp;Series
+ manual Fig.&nbsp;A-15 — cross-check the label inside the terminal cover
+ before landing wires.</div>
+<svg viewBox="0 0 1350 900" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif">
+<defs><marker id="dot" markerWidth="4" markerHeight="4" refX="2" refY="2"><circle cx="2" cy="2" r="1.6" fill="#000"/></marker></defs>
+<rect x="40" y="40" width="175" height="76" rx="6" fill="#fff4f2" stroke="#b02318" stroke-width="1.5"/>
+<text x="127" y="62" text-anchor="middle" font-size="13" font-weight="600">EXTERNAL EXCITATION</text>
+<text x="127" y="80" text-anchor="middle" font-size="12.5" font-weight="600" fill="#b02318">5 V DC bridge supply</text>
+<text x="127" y="98" text-anchor="middle" font-size="10" fill="#555">sole authority — never driven by DAQ</text>
+<line x1="230" y1="76" x2="230" y2="545" stroke="#c0392b" stroke-width="2.2"/>
+<line x1="248" y1="94" x2="248" y2="618" stroke="#111" stroke-width="2.2"/>
+<line x1="215" y1="76" x2="230" y2="76" stroke="#c0392b" stroke-width="2.2"/>
+<line x1="215" y1="94" x2="248" y2="94" stroke="#111" stroke-width="2.2"/>
+<text x="222" y="136" font-size="10" fill="#c0392b" transform="rotate(-90 222 136)">+EXC BUS</text>
+<text x="262" y="136" font-size="10" fill="#111" transform="rotate(-90 262 136)">−EXC BUS</text>
+<rect x="290" y="132" width="150" height="56" rx="5" fill="#f0f6fc" stroke="#1a6fb4" stroke-width="1.6"/>
+<text x="365" y="152" text-anchor="middle" font-size="12.5" font-weight="600">Aft Pitch <tspan font-weight="400" fill="#555">/ N1</tspan></text>
+<text x="365" y="170" text-anchor="middle" font-size="10.5" fill="#555">AI0 · ±0.2 V · S+ wire: Blue</text>
+<line x1="230" y1="145" x2="290" y2="145" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="175" x2="290" y2="175" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#1a6fb4" points="440,148 480,148 480,90 962,90"/>
+<polyline fill="none" stroke-width="1.9" stroke="#1a6fb4" stroke-dasharray="6 4" points="440,172 500,172 500,116 962,116"/>
+<rect x="290" y="212" width="150" height="56" rx="5" fill="#f6f1ea" stroke="#8b5a2b" stroke-width="1.6"/>
+<text x="365" y="232" text-anchor="middle" font-size="12.5" font-weight="600">Aft Yaw <tspan font-weight="400" fill="#555">/ N2</tspan></text>
+<text x="365" y="250" text-anchor="middle" font-size="10.5" fill="#555">AI1 · ±0.2 V · S+ wire: Brown</text>
+<line x1="230" y1="225" x2="290" y2="225" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="255" x2="290" y2="255" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#8b5a2b" points="440,228 528,228 528,168 962,168"/>
+<polyline fill="none" stroke-width="1.9" stroke="#8b5a2b" stroke-dasharray="6 4" points="440,252 548,252 548,194 962,194"/>
+<rect x="290" y="292" width="150" height="56" rx="5" fill="#f1f8f2" stroke="#2e9e3a" stroke-width="1.6"/>
+<text x="365" y="312" text-anchor="middle" font-size="12.5" font-weight="600">Fwd Pitch <tspan font-weight="400" fill="#555">/ Y1</tspan></text>
+<text x="365" y="330" text-anchor="middle" font-size="10.5" fill="#555">AI2 · ±0.2 V · S+ wire: Green</text>
+<line x1="230" y1="305" x2="290" y2="305" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="335" x2="290" y2="335" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#2e9e3a" points="440,308 576,308 576,246 962,246"/>
+<polyline fill="none" stroke-width="1.9" stroke="#2e9e3a" stroke-dasharray="6 4" points="440,332 596,332 596,272 962,272"/>
+<rect x="290" y="372" width="150" height="56" rx="5" fill="#fbf7e6" stroke="#c8a400" stroke-width="1.6"/>
+<text x="365" y="392" text-anchor="middle" font-size="12.5" font-weight="600">Fwd Yaw <tspan font-weight="400" fill="#555">/ Y2</tspan></text>
+<text x="365" y="410" text-anchor="middle" font-size="10.5" fill="#555">AI3 · ±0.2 V · S+ wire: Yellow</text>
+<line x1="230" y1="385" x2="290" y2="385" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="415" x2="290" y2="415" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#c8a400" points="440,388 624,388 624,324 962,324"/>
+<polyline fill="none" stroke-width="1.9" stroke="#c8a400" stroke-dasharray="6 4" points="440,412 644,412 644,350 962,350"/>
+<rect x="290" y="452" width="150" height="56" rx="5" fill="#f5f0fa" stroke="#7d4fb0" stroke-width="1.6"/>
+<text x="365" y="472" text-anchor="middle" font-size="12.5" font-weight="600">Axial</text>
+<text x="365" y="490" text-anchor="middle" font-size="10.5" fill="#555">AI4 · ±0.5 V · S+ wire: Purple</text>
+<line x1="230" y1="465" x2="290" y2="465" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="495" x2="290" y2="495" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#7d4fb0" points="440,468 672,468 672,506 962,506"/>
+<polyline fill="none" stroke-width="1.9" stroke="#7d4fb0" stroke-dasharray="6 4" points="440,492 692,492 692,532 962,532"/>
+<rect x="290" y="530" width="150" height="56" rx="5" fill="#fdf3ea" stroke="#e07b1a" stroke-width="1.6"/>
+<text x="365" y="550" text-anchor="middle" font-size="12.5" font-weight="600">Roll</text>
+<text x="365" y="568" text-anchor="middle" font-size="10.5" fill="#555">AI5 · ±0.5 V · S+ wire: Orange</text>
+<line x1="230" y1="543" x2="290" y2="543" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="573" x2="290" y2="573" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#e07b1a" points="440,546 720,546 720,584 962,584"/>
+<polyline fill="none" stroke-width="1.9" stroke="#e07b1a" stroke-dasharray="6 4" points="440,570 740,570 740,610 962,610"/>
+<rect x="278" y="120" width="174" height="478" rx="10" fill="none" stroke="#999" stroke-dasharray="5 4"/>
+<text x="284" y="614" font-size="10.5" fill="#777">NK 6-COMPONENT MOMENT BALANCE (4-wire per bridge: +E −E S+ S−)</text>
+<polyline fill="none" stroke-width="1.9" stroke="#c0392b" points="230,126 768,126 768,662 962,662"/>
+<polyline fill="none" stroke-width="1.9" stroke="#111" stroke-dasharray="6 4" points="248,136 788,136 788,688 962,688"/>
+<polyline fill="none" stroke-width="1.4" stroke="#111" points="248,618 864,618 864,142 962,142"/>
+<text x="470" y="634" font-size="10" fill="#333">single-point ground: −EXC → AI GND (terminal 3) ONLY HERE ★</text>
+<rect x="290" y="648" width="150" height="70" rx="5" fill="#f0fafb" stroke="#0f8a99" stroke-width="1.6"/>
+<text x="365" y="668" text-anchor="middle" font-size="12" font-weight="600">Pdiff transducer</text>
+<text x="365" y="683" text-anchor="middle" font-size="10" fill="#555">dynamic pressure (psid)</text>
+<text x="365" y="697" text-anchor="middle" font-size="10" fill="#555">output → AI7 (±10 V)</text>
+<rect x="60" y="656" width="120" height="42" rx="5" fill="#fff" stroke="#888" stroke-width="1.2"/>
+<text x="120" y="673" text-anchor="middle" font-size="10">transducer supply</text>
+<text x="120" y="687" text-anchor="middle" font-size="9.5" fill="#777">per datasheet</text>
+<line x1="180" y1="670" x2="290" y2="670" stroke="#888" stroke-width="1.4"/>
+<line x1="180" y1="686" x2="290" y2="686" stroke="#888" stroke-width="1.4" stroke-dasharray="4 3"/>
+<polyline fill="none" stroke-width="1.9" stroke="#0f8a99" points="440,664 816,664 816,740 962,740"/>
+<polyline fill="none" stroke-width="1.9" stroke="#0f8a99" stroke-dasharray="6 4" points="440,688 836,688 836,766 962,766"/>
+<rect x="956" y="74" width="52" height="792" fill="#f4f4f4" stroke="#333" stroke-width="1.4"/>
+<text x="982" y="66" text-anchor="middle" font-size="13" font-weight="600">USB-6351</text>
+<text x="982" y="92" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">1</text>
+<text x="1018" y="92" font-size="13" fill="#111">AI 0 — Aft Pitch S+ · Blue</text>
+<text x="982" y="118" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">2</text>
+<text x="1018" y="118" font-size="13" fill="#111">AI 8 — Aft Pitch S−</text>
+<text x="982" y="144" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">3</text>
+<text x="1018" y="144" font-size="13" fill="#111">AI GND — ★ system ground + shields</text>
+<text x="982" y="170" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">4</text>
+<text x="1018" y="170" font-size="13" fill="#111">AI 1 — Aft Yaw S+ · Brown</text>
+<text x="982" y="196" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">5</text>
+<text x="1018" y="196" font-size="13" fill="#111">AI 9 — Aft Yaw S−</text>
+<text x="982" y="222" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">6</text>
+<text x="1018" y="222" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="248" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">7</text>
+<text x="1018" y="248" font-size="13" fill="#111">AI 2 — Fwd Pitch S+ · Green</text>
+<text x="982" y="274" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">8</text>
+<text x="1018" y="274" font-size="13" fill="#111">AI 10 — Fwd Pitch S−</text>
+<text x="982" y="300" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">9</text>
+<text x="1018" y="300" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="326" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">10</text>
+<text x="1018" y="326" font-size="13" fill="#111">AI 3 — Fwd Yaw S+ · Yellow</text>
+<text x="982" y="352" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">11</text>
+<text x="1018" y="352" font-size="13" fill="#111">AI 11 — Fwd Yaw S−</text>
+<text x="982" y="378" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">12</text>
+<text x="1018" y="378" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="404" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">13</text>
+<text x="1018" y="404" font-size="13" fill="#777">APFI 0 (analog trigger, spare)</text>
+<text x="982" y="430" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">14</text>
+<text x="1018" y="430" font-size="13" fill="#777">AI GND</text>
+<text x="982" y="456" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#aaa">15</text>
+<text x="1018" y="456" font-size="13" fill="#aaa">(AO — not used)</text>
+<text x="982" y="482" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#aaa">16</text>
+<text x="1018" y="482" font-size="13" fill="#aaa">(AO — not used)</text>
+<text x="982" y="508" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">17</text>
+<text x="1018" y="508" font-size="13" fill="#111">AI 4 — Axial S+ · Purple</text>
+<text x="982" y="534" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">18</text>
+<text x="1018" y="534" font-size="13" fill="#111">AI 12 — Axial S−</text>
+<text x="982" y="560" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">19</text>
+<text x="1018" y="560" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="586" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">20</text>
+<text x="1018" y="586" font-size="13" fill="#111">AI 5 — Roll S+ · Orange</text>
+<text x="982" y="612" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">21</text>
+<text x="1018" y="612" font-size="13" fill="#111">AI 13 — Roll S−</text>
+<text x="982" y="638" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">22</text>
+<text x="1018" y="638" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="664" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">23</text>
+<text x="1018" y="664" font-size="13" fill="#111">AI 6 — Excitation + (readback)</text>
+<text x="982" y="690" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">24</text>
+<text x="1018" y="690" font-size="13" fill="#111">AI 14 — Excitation − (readback)</text>
+<text x="982" y="716" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">25</text>
+<text x="1018" y="716" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="742" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">26</text>
+<text x="1018" y="742" font-size="13" fill="#111">AI 7 — Pdiff out +</text>
+<text x="982" y="768" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">27</text>
+<text x="1018" y="768" font-size="13" fill="#111">AI 15 — Pdiff out −</text>
+<text x="982" y="794" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">28</text>
+<text x="1018" y="794" font-size="13" fill="#111">AI GND — shield + Pdiff supply −*</text>
+<text x="982" y="820" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">29</text>
+<text x="1018" y="820" font-size="13" fill="#777">AI SENSE (unused in DIFF)</text>
+<text x="982" y="846" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">30</text>
+<text x="1018" y="846" font-size="13" fill="#777">AI GND</text>
+</svg>
+<table><tr><th>Ch</th><th>Element (plate / software)</th>
+<th>S+ wire*</th>
+<th>S− wire</th>
+<th>S+ term.</th><th>S− term.</th><th>GND/shield</th><th>Input range</th></tr>
+<tr><td class="num">AI0</td><td>Aft Pitch / N1</td>
+<td><span class="sw" style="background:#1a6fb4"></span>Blue*</td>
+<td>pair mate (fill in)</td>
+<td class="num">1</td><td class="num">2</td><td class="num">3</td><td>±0.2 V</td></tr>
+<tr><td class="num">AI1</td><td>Aft Yaw / N2</td>
+<td><span class="sw" style="background:#8b5a2b"></span>Brown*</td>
+<td>pair mate (fill in)</td>
+<td class="num">4</td><td class="num">5</td><td class="num">6</td><td>±0.2 V</td></tr>
+<tr><td class="num">AI2</td><td>Fwd Pitch / Y1</td>
+<td><span class="sw" style="background:#2e9e3a"></span>Green*</td>
+<td>pair mate (fill in)</td>
+<td class="num">7</td><td class="num">8</td><td class="num">9</td><td>±0.2 V</td></tr>
+<tr><td class="num">AI3</td><td>Fwd Yaw / Y2</td>
+<td><span class="sw" style="background:#c8a400"></span>Yellow*</td>
+<td>pair mate (fill in)</td>
+<td class="num">10</td><td class="num">11</td><td class="num">12</td><td>±0.2 V</td></tr>
+<tr><td class="num">AI4</td><td>Axial</td>
+<td><span class="sw" style="background:#7d4fb0"></span>Purple*</td>
+<td>pair mate (fill in)</td>
+<td class="num">17</td><td class="num">18</td><td class="num">19</td><td>±0.5 V</td></tr>
+<tr><td class="num">AI5</td><td>Roll</td>
+<td><span class="sw" style="background:#e07b1a"></span>Orange*</td>
+<td>pair mate (fill in)</td>
+<td class="num">20</td><td class="num">21</td><td class="num">22</td><td>±0.5 V</td></tr>
+<tr><td class="num">AI6</td><td>Excitation readback (across supply)</td><td>—</td><td>—</td><td class="num">23</td><td class="num">24</td><td class="num">25</td><td>±10 V</td></tr>
+<tr><td class="num">AI7</td><td>Pdiff — dynamic pressure output</td><td>—</td><td>—</td><td class="num">26</td><td class="num">27</td><td class="num">28</td><td>±10 V</td></tr>
+</table>
+<div class="fine">* NK guide lists the color of the + (high) wire per
+ element; the pair mate lands on S−. Record mate colors in the blank
+ column at the rig.</div>
+<div class="notes">
+  <div><b>1.</b> All channels DIFFERENTIAL (<code>ni_usb_6351</code>
+   defaults): AI&lt;n&gt; is +, AI&lt;n+8&gt; is −. Never land a bridge
+   wire on AI&nbsp;SENSE (terminal 29).</div>
+  <div><b>2.</b> Single-point ground: tie the excitation supply − to
+   AI&nbsp;GND at terminal 3 <i>once</i> (★) — references the bridge
+   outputs inside the ±11 V common-mode window. A second ground point
+   makes a loop.</div>
+  <div><b>3.</b> Individually shielded twisted pairs; shields land on the
+   listed AI&nbsp;GND terminal at the DAQ end ONLY; open at the balance
+   end.</div>
+  <div><b>4.</b> Ranges are the driver defaults (±0.2 V pitch/yaw
+   bridges, ±0.5 V Axial/Roll, ±10 V Excitation and Pdiff); adjust in
+   the NI panel's Channels tab — the driver snaps to the nearest native
+   range.</div>
+  <div><b>5.</b> Pdiff: own supply per datasheet. Single-ended output:
+   output − and supply − together to terminal 27, jumper 27→28 (AI
+   GND)*; differential: as drawn. Enter the psi/V scale in the Channels
+   tab (unit psid).</div>
+  <div><b>6.</b> Excitation readback (AI6) is REQUIRED — freestream and
+   balcal normalize bridge volts by live excitation. Wire it even if
+   the supply has a panel meter.</div>
+  <div><b>7.</b> Trigger (optional): digital PFI&nbsp;0 = terminal 73,
+   D&nbsp;GND = terminal 82; analog edge APFI&nbsp;0 = terminal 13.
+   Configure in the NI panel's Output &amp; Trigger tab.</div>
+  <div><b>8.</b> Software layout Moment ↔ Force is a pure rename
+   (AftPitch/AftYaw/FwdPitch/FwdYaw ↔ N1/N2/Y1/Y2) — physical wiring on
+   AI0–AI3 does not change. Select the layout in the Forces tab.</div>
+</div>
+<div class="foot">LSWT · NI USB-6351 (Dev2) · pg 1/2 — NK moment balance
+ (5 V exc) · generated 2026-07-24 · terminals: NI DAQ X Series manual
+ Fig. A-15 · channel map: devices/ni_usb_6351/config.py +
+ freestream/adapters/ni_daq.py</div>
+</div>
+
+<!-- ═════════════════ PAGE 2 — ABLE FORCE BALANCE ═════════════════ -->
+<div class="page">
+<h1>NI USB-6351 Wiring — Pg 2: ABLE FORCE Balance + Pdiff
+  <span class="tag">Dev2</span><span class="tag">0.75 MK LV</span>
+  <span class="tag">Excitation 10 V DC</span>
+  <span class="tag">350 Ω bridges</span>
+  <span class="tag">All AI DIFFERENTIAL</span></h1>
+<div class="sub">ABLE Corporation 0.75 MK LV internal balance — nameplate
+ colors: every element outputs <b>Green = output positive (S+)</b>; the
+ element is identified by its output-NEGATIVE color. Inputs are Red (+)
+ / Black (−) on every bridge, from the shared 10 V bus (plate rating
+ 6.0–12.0 V DC). Diagram line colors are channel IDs, not insulation
+ colors — read the printed color at each terminal.</div>
+<svg viewBox="0 0 1350 900" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif">
+<defs><marker id="dot" markerWidth="4" markerHeight="4" refX="2" refY="2"><circle cx="2" cy="2" r="1.6" fill="#000"/></marker></defs>
+<rect x="40" y="40" width="175" height="76" rx="6" fill="#fff4f2" stroke="#b02318" stroke-width="1.5"/>
+<text x="127" y="62" text-anchor="middle" font-size="13" font-weight="600">EXTERNAL EXCITATION</text>
+<text x="127" y="80" text-anchor="middle" font-size="12.5" font-weight="600" fill="#b02318">10 V DC bridge supply</text>
+<text x="127" y="98" text-anchor="middle" font-size="10" fill="#555">plate: 6–12 V DC · 350 Ω</text>
+<line x1="230" y1="76" x2="230" y2="545" stroke="#c0392b" stroke-width="2.2"/>
+<line x1="248" y1="94" x2="248" y2="618" stroke="#111" stroke-width="2.2"/>
+<line x1="215" y1="76" x2="230" y2="76" stroke="#c0392b" stroke-width="2.2"/>
+<line x1="215" y1="94" x2="248" y2="94" stroke="#111" stroke-width="2.2"/>
+<text x="222" y="136" font-size="10" fill="#c0392b" transform="rotate(-90 222 136)">+EXC BUS</text>
+<text x="262" y="136" font-size="10" fill="#111" transform="rotate(-90 262 136)">−EXC BUS</text>
+<rect x="290" y="132" width="150" height="56" rx="5" fill="#f0f6fc" stroke="#1a6fb4" stroke-width="1.6"/>
+<text x="365" y="152" text-anchor="middle" font-size="12.5" font-weight="600">N1</text>
+<text x="365" y="170" text-anchor="middle" font-size="10.5" fill="#555">AI0 · ±0.2 V · S+: Green / S−: Blue</text>
+<line x1="230" y1="145" x2="290" y2="145" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="175" x2="290" y2="175" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#1a6fb4" points="440,148 480,148 480,90 962,90"/>
+<polyline fill="none" stroke-width="1.9" stroke="#1a6fb4" stroke-dasharray="6 4" points="440,172 500,172 500,116 962,116"/>
+<rect x="290" y="212" width="150" height="56" rx="5" fill="#f5f5f5" stroke="#8a8a8a" stroke-width="1.6"/>
+<text x="365" y="232" text-anchor="middle" font-size="12.5" font-weight="600">N2</text>
+<text x="365" y="250" text-anchor="middle" font-size="10.5" fill="#555">AI1 · ±0.2 V · S+: Green / S−: White</text>
+<line x1="230" y1="225" x2="290" y2="225" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="255" x2="290" y2="255" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#8a8a8a" points="440,228 528,228 528,168 962,168"/>
+<polyline fill="none" stroke-width="1.9" stroke="#8a8a8a" stroke-dasharray="6 4" points="440,252 548,252 548,194 962,194"/>
+<rect x="290" y="292" width="150" height="56" rx="5" fill="#f1f4f7" stroke="#6b7b8c" stroke-width="1.6"/>
+<text x="365" y="312" text-anchor="middle" font-size="12.5" font-weight="600">Y1 <tspan font-weight="400" fill="#555">/ S₁</tspan></text>
+<text x="365" y="330" text-anchor="middle" font-size="10.5" fill="#555">AI2 · ±0.2 V · S+: Green / S−: Gray</text>
+<line x1="230" y1="305" x2="290" y2="305" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="335" x2="290" y2="335" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#6b7b8c" points="440,308 576,308 576,246 962,246"/>
+<polyline fill="none" stroke-width="1.9" stroke="#6b7b8c" stroke-dasharray="6 4" points="440,332 596,332 596,272 962,272"/>
+<rect x="290" y="372" width="150" height="56" rx="5" fill="#fbf7e6" stroke="#c8a400" stroke-width="1.6"/>
+<text x="365" y="392" text-anchor="middle" font-size="12.5" font-weight="600">Y2 <tspan font-weight="400" fill="#555">/ S₂</tspan></text>
+<text x="365" y="410" text-anchor="middle" font-size="10.5" fill="#555">AI3 · ±0.2 V · S+: Green / S−: Yellow</text>
+<line x1="230" y1="385" x2="290" y2="385" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="415" x2="290" y2="415" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#c8a400" points="440,388 624,388 624,324 962,324"/>
+<polyline fill="none" stroke-width="1.9" stroke="#c8a400" stroke-dasharray="6 4" points="440,412 644,412 644,350 962,350"/>
+<rect x="290" y="452" width="150" height="56" rx="5" fill="#f5f0fa" stroke="#7d4fb0" stroke-width="1.6"/>
+<text x="365" y="472" text-anchor="middle" font-size="12.5" font-weight="600">Axial <tspan font-weight="400" fill="#555">/ A₁/A₂</tspan></text>
+<text x="365" y="490" text-anchor="middle" font-size="10.5" fill="#555">AI4 · ±0.5 V · S+: Green / S−: Violet</text>
+<line x1="230" y1="465" x2="290" y2="465" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="495" x2="290" y2="495" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#7d4fb0" points="440,468 672,468 672,506 962,506"/>
+<polyline fill="none" stroke-width="1.9" stroke="#7d4fb0" stroke-dasharray="6 4" points="440,492 692,492 692,532 962,532"/>
+<rect x="290" y="530" width="150" height="56" rx="5" fill="#fdf3ea" stroke="#e07b1a" stroke-width="1.6"/>
+<text x="365" y="550" text-anchor="middle" font-size="12.5" font-weight="600">Roll <tspan font-weight="400" fill="#555">/ ℓ₁/ℓ₂</tspan></text>
+<text x="365" y="568" text-anchor="middle" font-size="10.5" fill="#555">AI5 · ±0.5 V · S+: Green / S−: Orange</text>
+<line x1="230" y1="543" x2="290" y2="543" stroke="#c0392b" stroke-width="1.6" marker-start="url(#dot)"/>
+<line x1="248" y1="573" x2="290" y2="573" stroke="#111" stroke-width="1.6" marker-start="url(#dot)"/>
+<polyline fill="none" stroke-width="1.9" stroke="#e07b1a" points="440,546 720,546 720,584 962,584"/>
+<polyline fill="none" stroke-width="1.9" stroke="#e07b1a" stroke-dasharray="6 4" points="440,570 740,570 740,610 962,610"/>
+<rect x="278" y="120" width="174" height="478" rx="10" fill="none" stroke="#999" stroke-dasharray="5 4"/>
+<text x="284" y="614" font-size="10.5" fill="#777">ABLE 0.75 MK LV FORCE BALANCE (inputs Red/Black on all bridges)</text>
+<polyline fill="none" stroke-width="1.9" stroke="#c0392b" points="230,126 768,126 768,662 962,662"/>
+<polyline fill="none" stroke-width="1.9" stroke="#111" stroke-dasharray="6 4" points="248,136 788,136 788,688 962,688"/>
+<polyline fill="none" stroke-width="1.4" stroke="#111" points="248,618 864,618 864,142 962,142"/>
+<text x="470" y="634" font-size="10" fill="#333">single-point ground: −EXC → AI GND (terminal 3) ONLY HERE ★</text>
+<rect x="290" y="648" width="150" height="70" rx="5" fill="#f0fafb" stroke="#0f8a99" stroke-width="1.6"/>
+<text x="365" y="668" text-anchor="middle" font-size="12" font-weight="600">Pdiff transducer</text>
+<text x="365" y="683" text-anchor="middle" font-size="10" fill="#555">dynamic pressure (psid)</text>
+<text x="365" y="697" text-anchor="middle" font-size="10" fill="#555">output → AI7 (±10 V)</text>
+<rect x="60" y="656" width="120" height="42" rx="5" fill="#fff" stroke="#888" stroke-width="1.2"/>
+<text x="120" y="673" text-anchor="middle" font-size="10">transducer supply</text>
+<text x="120" y="687" text-anchor="middle" font-size="9.5" fill="#777">per datasheet</text>
+<line x1="180" y1="670" x2="290" y2="670" stroke="#888" stroke-width="1.4"/>
+<line x1="180" y1="686" x2="290" y2="686" stroke="#888" stroke-width="1.4" stroke-dasharray="4 3"/>
+<polyline fill="none" stroke-width="1.9" stroke="#0f8a99" points="440,664 816,664 816,740 962,740"/>
+<polyline fill="none" stroke-width="1.9" stroke="#0f8a99" stroke-dasharray="6 4" points="440,688 836,688 836,766 962,766"/>
+<rect x="956" y="74" width="52" height="792" fill="#f4f4f4" stroke="#333" stroke-width="1.4"/>
+<text x="982" y="66" text-anchor="middle" font-size="13" font-weight="600">USB-6351</text>
+<text x="982" y="92" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">1</text>
+<text x="1018" y="92" font-size="13" fill="#111">AI 0 — N1 S+ · Green</text>
+<text x="982" y="118" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">2</text>
+<text x="1018" y="118" font-size="13" fill="#111">AI 8 — N1 S− · Blue</text>
+<text x="982" y="144" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">3</text>
+<text x="1018" y="144" font-size="13" fill="#111">AI GND — ★ system ground + shields</text>
+<text x="982" y="170" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">4</text>
+<text x="1018" y="170" font-size="13" fill="#111">AI 1 — N2 S+ · Green</text>
+<text x="982" y="196" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">5</text>
+<text x="1018" y="196" font-size="13" fill="#111">AI 9 — N2 S− · White</text>
+<text x="982" y="222" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">6</text>
+<text x="1018" y="222" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="248" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">7</text>
+<text x="1018" y="248" font-size="13" fill="#111">AI 2 — Y1 S+ · Green</text>
+<text x="982" y="274" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">8</text>
+<text x="1018" y="274" font-size="13" fill="#111">AI 10 — Y1 S− · Gray</text>
+<text x="982" y="300" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">9</text>
+<text x="1018" y="300" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="326" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">10</text>
+<text x="1018" y="326" font-size="13" fill="#111">AI 3 — Y2 S+ · Green</text>
+<text x="982" y="352" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">11</text>
+<text x="1018" y="352" font-size="13" fill="#111">AI 11 — Y2 S− · Yellow</text>
+<text x="982" y="378" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">12</text>
+<text x="1018" y="378" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="404" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">13</text>
+<text x="1018" y="404" font-size="13" fill="#777">APFI 0 (analog trigger, spare)</text>
+<text x="982" y="430" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">14</text>
+<text x="1018" y="430" font-size="13" fill="#777">AI GND</text>
+<text x="982" y="456" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#aaa">15</text>
+<text x="1018" y="456" font-size="13" fill="#aaa">(AO — not used)</text>
+<text x="982" y="482" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#aaa">16</text>
+<text x="1018" y="482" font-size="13" fill="#aaa">(AO — not used)</text>
+<text x="982" y="508" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">17</text>
+<text x="1018" y="508" font-size="13" fill="#111">AI 4 — Axial S+ · Green</text>
+<text x="982" y="534" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">18</text>
+<text x="1018" y="534" font-size="13" fill="#111">AI 12 — Axial S− · Violet</text>
+<text x="982" y="560" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">19</text>
+<text x="1018" y="560" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="586" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">20</text>
+<text x="1018" y="586" font-size="13" fill="#111">AI 5 — Roll S+ · Green</text>
+<text x="982" y="612" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">21</text>
+<text x="1018" y="612" font-size="13" fill="#111">AI 13 — Roll S− · Orange</text>
+<text x="982" y="638" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">22</text>
+<text x="1018" y="638" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="664" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">23</text>
+<text x="1018" y="664" font-size="13" fill="#111">AI 6 — Excitation + (readback)</text>
+<text x="982" y="690" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">24</text>
+<text x="1018" y="690" font-size="13" fill="#111">AI 14 — Excitation − (readback)</text>
+<text x="982" y="716" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">25</text>
+<text x="1018" y="716" font-size="13" fill="#111">AI GND — shield</text>
+<text x="982" y="742" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">26</text>
+<text x="1018" y="742" font-size="13" fill="#111">AI 7 — Pdiff out +</text>
+<text x="982" y="768" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">27</text>
+<text x="1018" y="768" font-size="13" fill="#111">AI 15 — Pdiff out −</text>
+<text x="982" y="794" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">28</text>
+<text x="1018" y="794" font-size="13" fill="#111">AI GND — shield + Pdiff supply −*</text>
+<text x="982" y="820" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">29</text>
+<text x="1018" y="820" font-size="13" fill="#777">AI SENSE (unused in DIFF)</text>
+<text x="982" y="846" text-anchor="middle" font-size="12" font-family="Consolas, monospace" fill="#111">30</text>
+<text x="1018" y="846" font-size="13" fill="#777">AI GND</text>
+</svg>
+<table><tr><th>Ch</th><th>Element (plate / software)</th>
+<th>Load</th>
+<th>Output + (S+)</th>
+<th>Output − (S−)</th>
+<th>S+ term.</th><th>S− term.</th><th>GND/shield</th><th>Input range</th></tr>
+<tr><td class="num">AI0</td><td>N1</td>
+<td>100 lb</td>
+<td><span class="sw" style="background:#2e9e3a"></span>Green</td>
+<td>Blue</td>
+<td class="num">1</td><td class="num">2</td><td class="num">3</td><td>±0.2 V</td></tr>
+<tr><td class="num">AI1</td><td>N2</td>
+<td>100 lb</td>
+<td><span class="sw" style="background:#2e9e3a"></span>Green</td>
+<td>White</td>
+<td class="num">4</td><td class="num">5</td><td class="num">6</td><td>±0.2 V</td></tr>
+<tr><td class="num">AI2</td><td>Y1 / S₁</td>
+<td>50 lb</td>
+<td><span class="sw" style="background:#2e9e3a"></span>Green</td>
+<td>Gray</td>
+<td class="num">7</td><td class="num">8</td><td class="num">9</td><td>±0.2 V</td></tr>
+<tr><td class="num">AI3</td><td>Y2 / S₂</td>
+<td>50 lb</td>
+<td><span class="sw" style="background:#2e9e3a"></span>Green</td>
+<td>Yellow</td>
+<td class="num">10</td><td class="num">11</td><td class="num">12</td><td>±0.2 V</td></tr>
+<tr><td class="num">AI4</td><td>Axial / A₁/A₂</td>
+<td>25 lb (A₁)</td>
+<td><span class="sw" style="background:#2e9e3a"></span>Green</td>
+<td>Violet (A₁) · Violet&amp;White (A₂ tot)</td>
+<td class="num">17</td><td class="num">18</td><td class="num">19</td><td>±0.5 V</td></tr>
+<tr><td class="num">AI5</td><td>Roll / ℓ₁/ℓ₂</td>
+<td>60 in·lb (ℓ₁)</td>
+<td><span class="sw" style="background:#2e9e3a"></span>Green</td>
+<td>Orange (ℓ₁) · Orange&amp;White (ℓ₂ tot)</td>
+<td class="num">20</td><td class="num">21</td><td class="num">22</td><td>±0.5 V</td></tr>
+<tr><td class="num">AI6</td><td>Excitation readback (across supply)</td><td>—</td><td>—</td><td>—</td><td class="num">23</td><td class="num">24</td><td class="num">25</td><td>±10 V</td></tr>
+<tr><td class="num">AI7</td><td>Pdiff — dynamic pressure output</td><td>—</td><td>—</td><td>—</td><td class="num">26</td><td class="num">27</td><td class="num">28</td><td>±10 V</td></tr>
+</table>
+<div class="notes">
+  <div><b>1.</b> Axial and Roll each have TWO outputs on the plate:
+   individual elements (A₁ 25 lb · Green/Violet, ℓ₁ 60 in·lb ·
+   Green/Orange) and TOTAL composites (A₂ · Green/Violet&amp;White, ℓ₂ ·
+   Green/Orange&amp;White). <b>Land whichever output the balance's .vol
+   calibration was performed with</b> — mixing them invalidates the
+   force reduction.</div>
+  <div><b>2.</b> S₁/S₂ on the plate are the side-force elements → software
+   channels Y1/Y2 (Force layout). N₁/N₂ load rating 100 lb; S₁/S₂
+   50 lb — the Forces tab utilization bars use the .vol maxima.</div>
+  <div><b>3.</b> Every element's S+ is the GREEN conductor — label both
+   ends of each pair before pulling, or continuity-buzz at the terminal
+   strip; six identical greens are unforgiving.</div>
+  <div><b>4.</b> Excitation 10 V for this balance (5 V for the NK moment
+   balance on page 1) — set the supply BEFORE connecting, and verify on
+   the AI6 readback tile in the NI panel.</div>
+  <div><b>5.</b> Grounding, shields, Pdiff, triggering and range notes:
+   identical to page 1 (notes 2–7).</div>
+  <div><b>6.</b> White / Gray / White-striped conductors: confirm against
+   the nameplate under good light — Gray (S₁−) and White (N₂−) are easy
+   to confuse in tunnel lighting.</div>
+</div>
+<div class="foot">LSWT · NI USB-6351 (Dev2) · pg 2/2 — ABLE 0.75 MK LV
+ force balance (10 V exc) · generated 2026-07-24 · nameplate: ABLE Corp,
+ Anaheim CA · terminals: NI DAQ X Series manual Fig. A-15</div>
+</div>
+
+</body>
+</html>
