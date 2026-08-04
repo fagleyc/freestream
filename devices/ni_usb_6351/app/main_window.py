@@ -175,11 +175,25 @@ class NiDaqPanel(QWidget):
         self.follow_btn.clicked.connect(
             lambda: self.history.set_follow(True))
         bar.addWidget(self.follow_btn)
+        bar.addSpacing(24)
+        bar.addWidget(QLabel("LPF"))
+        self.lpf_spin = QDoubleSpinBox()
+        self.lpf_spin.setRange(0.0, 500.0)
+        self.lpf_spin.setDecimals(1)
+        self.lpf_spin.setSuffix(" Hz")
+        self.lpf_spin.setSpecialValueText("off")
+        self.lpf_spin.setValue(self.config.display_lpf_hz)
+        self.lpf_spin.setToolTip(
+            "Display low-pass for the voltage/force plots, tiles and "
+            "utilization bars (0 = off). Recorded data stays raw.")
+        self.lpf_spin.valueChanged.connect(self._lpf_changed)
+        bar.addWidget(self.lpf_spin)
         bar.addStretch(1)
         ll.addLayout(bar)
 
         self.history = ChannelHistory()
         self.history.window_s = self.config.plot_window_s
+        self.history.lpf_hz = self.config.display_lpf_hz
         ll.addWidget(self.history, 1)
         self.tabs.addTab(live, "Live")
 
@@ -277,6 +291,10 @@ class NiDaqPanel(QWidget):
             self.trig_lamp.setStyleSheet(f"color: {color};")
 
     # ── live controls ──
+    def _lpf_changed(self, hz: float):
+        self.config.display_lpf_hz = float(hz)
+        self.history.lpf_hz = float(hz)
+
     def _window_changed(self, idx: int):
         self.history.window_s = _WINDOWS[idx][1]
 

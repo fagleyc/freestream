@@ -184,7 +184,16 @@ class NiDaqConfig:
     vol_path: str = ""                 # auto-loaded at startup when set
     cal_type: str = "Linear"           # Linear | Quadratic | Cubic
     balance_config: str = "Force"      # Force | Moment (balance layout)
-    warn_utilization: float = 0.8      # amber above this fraction of max
+    warn_utilization: float = 0.8
+    #: display/monitoring low-pass [Hz] for the history plots, force
+    #: tiles and the utilization/overstress slice (0 = off). Raw 1 kHz
+    #: electrical noise peaks otherwise inflate the peak-based
+    #: utilization bars far above the (mean-based) displayed loads.
+    display_lpf_hz: float = 10.0
+    #: excitation warn floor [V]. The LSWT moment balances run a 5 V
+    #: supply — the old hardcoded 7 V floor false-alarmed on them;
+    #: 10 V force-balance supplies sagging below ~4 V still warn.
+    min_excitation_v: float = 4.0      # amber above this fraction of max
     balance_type: str = ""
     balance_serial: str = ""
 

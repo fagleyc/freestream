@@ -125,6 +125,20 @@ class ChannelTiles(QWidget):
                 tile.update_value(float(np.mean(data[name])))
 
 
+def lowpass(x: np.ndarray, rate_hz: float, cutoff_hz: float) -> np.ndarray:
+    """Display-grade low-pass: moving-average FIR with the window sized
+    to ``rate/cutoff`` (first null at ~cutoff). Vectorized, zero-lag
+    enough for visualization; NOT for recorded data (the recorder
+    stores raw samples untouched)."""
+    if cutoff_hz <= 0 or rate_hz <= 0:
+        return x
+    n = int(round(rate_hz / cutoff_hz))
+    if n < 2 or x.size < n:
+        return x
+    kernel = np.full(n, 1.0 / n)
+    return np.convolve(x, kernel, mode="same")
+
+
 class ChannelHistory(QWidget):
     """All enabled AI channels overlaid in raw volts."""
 
@@ -133,6 +147,7 @@ class ChannelHistory(QWidget):
         self.window_s = 30.0
         self.paused = False
         self.follow = True        # x pinned to now; user zoom/pan unpins
+        self.lpf_hz = 0.0         # display low-pass (0 = off)
         self._rate = 200.0
         self._ring: Optional[ScanRingBuffer] = None
         self._curves: Dict[str, pg.PlotDataItem] = {}
@@ -192,7 +207,8 @@ class ChannelHistory(QWidget):
         for name, curve in self._curves.items():
             key = f"{name}_V"
             if key in data:
-                xd, yd = _envelope(x, data[key][keep])
+                y = lowpass(data[key][keep], self._rate, self.lpf_hz)
+                xd, yd = _envelope(x, y)
                 curve.setData(xd, yd)
         if self.follow:
             self._plot.getPlotItem().setXRange(-self.window_s, 0.0,

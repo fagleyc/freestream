@@ -24,7 +24,7 @@ from ni_usb_6351 import balcal, theme
 from ni_usb_6351.config import NiDaqConfig
 from ni_usb_6351.datamodel import ScanRingBuffer
 
-from .plots import _style_plot
+from .plots import _style_plot, lowpass
 
 _FORCES = [("Fx", "lb"), ("Fy", "lb"), ("Fz", "lb"),
            ("Mx", "in·lb"), ("My", "in·lb"), ("Mz", "in·lb")]
@@ -286,6 +286,14 @@ class ForcesPanel(QWidget):
             self.cal_info.setText("calibration loaded, but the channel "
                                   "names don't match the balance channels")
             return
+        # display/monitoring low-pass at the TOP of the pipeline: the
+        # tiles, the peak-based utilization bars and the history plot
+        # all inherit it. Without this, 1 kHz electrical noise peaks
+        # inflate the utilization far above the (mean) displayed loads.
+        # Recorded data is untouched — this is the panel's view only.
+        lpf = getattr(self.config, "display_lpf_hz", 0.0)
+        if lpf > 0:
+            raw = {k: lowpass(v, rate, lpf) for k, v in raw.items()}
 
         def forces_of(sel):
             r = {k: v[sel] for k, v in raw.items()}
@@ -305,10 +313,12 @@ class ForcesPanel(QWidget):
         for name, _u in _FORCES:
             self.tiles[name].update_value(
                 float(np.mean(getattr(brf, name)[-n_tile:])))
-        if self.exc_v is not None and self.exc_v < 7.0:
+        min_exc = getattr(self.config, "min_excitation_v", 4.0)
+        if self.exc_v is not None and self.exc_v < min_exc:
             self.cal_info.setText(
                 balcal.balance_summary(self.cal) +
-                f"   ⚠ excitation {self.exc_v:.2f} V < 7 V — forces "
+                f"   ⚠ excitation {self.exc_v:.2f} V < {min_exc:g} V — "
+                f"forces "
                 f"{'UNNORMALIZED' if self.exc_v < 1.0 else 'suspect'}")
 
         # history plot: decimate BEFORE the cal pipeline (display-grade;
