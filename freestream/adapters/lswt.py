@@ -79,6 +79,17 @@ class LswtTunnelAdapter(ConfigurableAdapter):
     label = "North LSWT fan (ABB ACS530)"
     settings_dialog_path = "lswt.app.settings_dialog:SettingsDialog"
 
+    #: Freestream panel speed display: the drive's NATIVE scale — Hz,
+    #: ceiling ``config.max_hz`` (60 = drive full speed), never RPM.
+    speed_display_unit = "Hz"
+
+    @property
+    def speed_display_max(self) -> float:
+        try:
+            return float(self._cfg.max_hz or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def __init__(self, sim: bool = False,
                  config_path: Optional[str] = None,
                  tunnel: str = "north",

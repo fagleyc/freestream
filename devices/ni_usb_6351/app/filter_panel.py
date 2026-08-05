@@ -28,7 +28,7 @@ from ni_usb_6351 import theme
 from ni_usb_6351.config import ChannelConfig
 from ni_usb_6351.datamodel import ScanRingBuffer
 
-from .plots import _envelope, _style_plot, lowpass
+from .plots import _envelope, _style_plot, add_clear_action, lowpass
 
 #: the cutoff ladder [Hz]; 0 = raw (no filter)
 _CUTOFFS = (0.0, 100.0, 30.0, 10.0, 3.0, 1.0)
@@ -46,6 +46,9 @@ class FilterPanel(QWidget):
         self._ring: Optional[ScanRingBuffer] = None
         self._chans: List[ChannelConfig] = []
         self._curves: Dict[float, pg.PlotDataItem] = {}
+        # clear watermark: only samples newer than this are drawn
+        self._clear_t = -np.inf
+        self._last_t: Optional[float] = None
 
         root = QVBoxLayout(self)
         root.setSpacing(8)
@@ -91,6 +94,7 @@ class FilterPanel(QWidget):
         pi.addLegend(offset=(8, 8), labelTextColor=theme.TEXT,
                      brush=pg.mkBrush(theme.PLOT_BG + "cc"),
                      pen=pg.mkPen(theme.BORDER))
+        add_clear_action(self._plot, self._clear_plot)
         root.addWidget(self._plot, 1)
 
         self.stats = QTableWidget(0, 3)
@@ -126,6 +130,10 @@ class FilterPanel(QWidget):
     def _selection_changed(self, *_a) -> None:
         self._rebuild_curves()
 
+    def _clear_plot(self) -> None:
+        if self._last_t is not None:
+            self._clear_t = self._last_t
+
     def _rebuild_curves(self) -> None:
         pi = self._plot.getPlotItem()
         pi.clearPlots()
@@ -160,8 +168,9 @@ class FilterPanel(QWidget):
         y_raw = data.get(f"{name}_V")
         if t.size < 2 or y_raw is None:
             return
+        self._last_t = float(t[-1])
         x = t - t[-1]
-        keep = x >= -window
+        keep = (x >= -window) & (t > self._clear_t)
         x, y_raw = x[keep], y_raw[keep]
         for row, (hz, curve) in enumerate(self._curves.items()):
             y = lowpass(y_raw, rate_hz, hz)

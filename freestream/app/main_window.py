@@ -290,6 +290,8 @@ class FreestreamMainWindow(QMainWindow):
         self._build_central()
         self._build_docks()
         self._build_menus()
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
         self._update_ui_state()
         if self.config.device_configs:
             # startup defaults / passed-in config carry saved driver
@@ -1084,9 +1086,9 @@ class FreestreamMainWindow(QMainWindow):
     def _estop(self) -> None:
         # DIRECT call from the GUI thread — must never be queued
         if self.engine is not None:
-            self.engine.estop()        # sets abort + stops all motion
+            self.engine.estop()    # sets abort + stops motion AND tunnel
         self._release_operator_wait("E-STOP")      # a stuck dialog must
-        self.manager.stop_all_motion()             # never defeat E-STOP
+        self.manager.estop_all()                   # never defeat E-STOP
         self.console.log("E-STOP pressed")
         self.status_lbl.setText("E-STOP")
 

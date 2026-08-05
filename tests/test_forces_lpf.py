@@ -107,10 +107,22 @@ def _panel(app, lpf_hz):
 
 def test_lowpass_helper():
     x = np.zeros(4000)
-    x[::97] = 1.0
+    # spikes NOT on sample 0 — edge-hold padding holds the boundary
+    # sample's level, so a spike exactly at the window edge stays visible
+    x[10::97] = 1.0
     y = _lowpass(x, 1000.0, 10.0)
     assert np.max(y) < 0.15
     assert _lowpass(x, 1000.0, 0.0) is x
+
+
+def test_lowpass_edge_hold_no_rolloff():
+    # constant input stays constant at BOTH window ends — the old
+    # convolve(mode="same") zero-padding rolled the displayed trace off
+    # toward zero over the kernel half-window at each edge
+    x = np.ones(4000)
+    y = _lowpass(x, 1000.0, 10.0)         # 100-sample kernel
+    assert y.shape == x.shape
+    assert np.allclose(y, 1.0)
 
 
 def test_noise_spikes_block_runs_without_lpf(app):

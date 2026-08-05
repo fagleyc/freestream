@@ -88,12 +88,13 @@ def test_streaming_blocks_trimmed_to_requested_samples(tmp_path):
     # StrainBook streams fast (1 kHz) so it overshoots 100 and is trimmed
     # to exactly the requested count
     assert set(sb.values()) == {100}, sb
-    # DaqBook streams slower (200 Hz): either it also reached 100, or it
-    # came up short and that shortfall was logged (never silently faked)
+    # DaqBook streams slower (200 Hz): it cannot reach 100 within the
+    # primary-rate acquire window — an EXPECTED shortfall for a
+    # rate-limited group (like the ~1 Hz Heise), demoted to a debug log:
+    # no operator-facing WARNING event per point
     db_n = next(iter(db.values()))
-    assert db_n == 100 or (
-        db_n < 100 and any("captured" in e and "< " in e for e in events)), \
-        (db_n, events)
+    assert db_n <= 100
+    assert not any("captured" in e and "< " in e for e in events), events
 
 
 def test_runsheet_meta_inherited_into_h5(tmp_path):
@@ -204,3 +205,44 @@ def test_estop_stops_motion_and_aborts(tmp_path):
     assert not t.is_alive()
     assert mgr.devices["pos"].stopped
     assert not engine.running
+
+
+# ── calibration hand-off: the active .vol travels with the run ───────────
+def test_run_stages_balance_vol_beside_run_files(tmp_path):
+    # F16_Val-style hand-off: run start copies the active .vol into the
+    # run folder and records it in manifest.json (balance metadata riding
+    # along), so Streamlined's reduction resolves it with no CalFiles
+    # lookup. Nothing is applied at capture — raw stays raw.
+    vol = tmp_path / "CalFiles" / "50lb 2026_07_24.vol"
+    vol.parent.mkdir()
+    vol.write_text("Voltage Calibration File\n", encoding="utf-8")
+    mgr, rec, cfg = _rig(tmp_path, vol_path=str(vol), cal_type="Linear",
+                         balance_config="Moment")
+    events = []
+    engine = SweepEngine(mgr, rec, cfg,
+                         SweepCallbacks(on_event=events.append))
+    out = engine.run([SweepPoint(alpha=0.0, dwell_s=0.05, samples=50)])[0]
+    assert out.status == DONE
+    copy = rec.config_dir / vol.name
+    assert copy.is_file()                        # beside the run_* files
+    assert copy.read_text(encoding="utf-8") == \
+        vol.read_text(encoding="utf-8")
+    m = json.loads(rec.manifest_path.read_text(encoding="utf-8"))
+    assert m["balance_cal"]["vol_file"] == vol.name
+    assert m["balance_cal"]["vol_source"] == str(vol)
+    assert m["balance_cal"]["cal_type"] == "Linear"
+    # DEVICE-OWNED layout wins over the config fallback (FakeStreamer
+    # declares "Force"; the cfg kwarg above is deliberately different)
+    assert m["balance_cal"]["balance_config"] == "Force"
+    assert len(m["points"]) == 1                 # point landed after staging
+    assert any("balance cal staged" in e for e in events)
+
+
+def test_run_without_vol_stages_nothing(tmp_path):
+    mgr, rec, cfg = _rig(tmp_path)               # no vol_path configured
+    engine = SweepEngine(mgr, rec, cfg)
+    out = engine.run([SweepPoint(alpha=0.0, dwell_s=0.05, samples=50)])[0]
+    assert out.status == DONE
+    m = json.loads(rec.manifest_path.read_text(encoding="utf-8"))
+    assert "balance_cal" not in m                # additive key only
+    assert not list(rec.config_dir.glob("*.vol"))

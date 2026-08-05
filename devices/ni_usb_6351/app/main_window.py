@@ -208,6 +208,12 @@ class NiDaqPanel(QWidget):
         bar.addStretch(1)
         ll.addLayout(bar)
 
+        # per-channel plot visibility toggles (rebuilt on channel attach)
+        self.chan_row = QHBoxLayout()
+        self.chan_row.setSpacing(10)
+        self._chan_checks = {}
+        ll.addLayout(self.chan_row)
+
         self.history = ChannelHistory()
         self.history.window_s = self.config.plot_window_s
         self.history.lpf_hz = self.config.display_lpf_hz
@@ -233,6 +239,9 @@ class NiDaqPanel(QWidget):
         # auto-load a previously used .vol calibration
         if self.config.vol_path:
             self.forces_panel.load_vol(self.config.vol_path)
+
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
 
     # ── balance layout (Force ↔ Moment) ──
     def _on_balance_config_changed(self, text: str):
@@ -278,8 +287,37 @@ class NiDaqPanel(QWidget):
         self.tiles.set_channels(chans)
         self.history.set_channels(chans, self.device.ring)
         self.filter_panel.set_channels(chans, self.device.ring)
+        self._rebuild_channel_toggles(chans)
         self._last_count = 0
         self._last_time = time.perf_counter()
+
+    def _rebuild_channel_toggles(self, chans):
+        """One colored checkbox per channel — shows/hides its curve on the
+        live history plot (e.g. hide Excitation to zoom the bridges).
+        Visibility state lives in the history widget, keyed by name, so
+        it survives rebinds while names persist."""
+        while self.chan_row.count():
+            item = self.chan_row.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._chan_checks = {}
+        lbl = QLabel("Show")
+        lbl.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        self.chan_row.addWidget(lbl)
+        for i, ch in enumerate(chans):
+            chk = QCheckBox(ch.name)
+            chk.setChecked(self.history.channel_visible(ch.name))
+            chk.setStyleSheet(
+                f"QCheckBox {{ color: {theme.series_color(i)}; "
+                f"font-weight: bold; }}")
+            chk.setToolTip(f"Show/hide {ch.name} on the plot")
+            chk.toggled.connect(
+                lambda on, n=ch.name:
+                self.history.set_channel_visible(n, on))
+            self._chan_checks[ch.name] = chk
+            self.chan_row.addWidget(chk)
+        self.chan_row.addStretch(1)
 
     def _handle_disconnect(self):
         self.device.disconnect()

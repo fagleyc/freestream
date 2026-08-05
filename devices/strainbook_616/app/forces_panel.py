@@ -27,7 +27,7 @@ from strainbook_616 import balcal, theme
 from strainbook_616.config import StrainbookConfig
 from strainbook_616.datamodel import ScanRingBuffer
 
-from .plots import _style_plot
+from .plots import _style_plot, add_clear_action
 
 _FORCES = [("Fx", "lb"), ("Fy", "lb"), ("Fz", "lb"),
            ("Mx", "in·lb"), ("My", "in·lb"), ("Mz", "in·lb")]
@@ -142,6 +142,10 @@ class ForcesPanel(QWidget):
         # cleared whenever the device's tare_count changes
         self._peak_hist: Dict[str, Deque[Tuple[float, float]]] = {}
         self._last_zero_count: Optional[int] = None
+        # history-plot clear watermark (display only — the safety path
+        # and recorded data always see every sample)
+        self._plot_clear_t = -np.inf
+        self._last_t: Optional[float] = None
         self._build()
 
     def _rolling_peak(self, name: str, u: float, now: float) -> float:
@@ -251,7 +255,12 @@ class ForcesPanel(QWidget):
             self._curves[name] = pi.plot(
                 [], [], name=name, antialias=False,
                 pen=pg.mkPen(theme.series_color(i), width=1))
+        add_clear_action(self._hist, self._clear_plot)
         root.addWidget(self._hist, 1)
+
+    def _clear_plot(self):
+        if self._last_t is not None:
+            self._plot_clear_t = self._last_t
 
     # ── calibration ──
     def _browse_vol(self):
@@ -379,6 +388,7 @@ class ForcesPanel(QWidget):
         t = data["t"]
         if t.size < 2:
             return
+        self._last_t = float(t[-1])
         n_safe = min(t.size, int(self._SAFETY_S * rate) + 2)
 
         # excitation normalization — only with a live excitation reading
@@ -429,10 +439,11 @@ class ForcesPanel(QWidget):
                     t.size > n_safe else brf
             except Exception:                          # noqa: BLE001
                 brf_plot = brf
-            x = (t[sel] - t[-1]) if brf_plot is not brf else \
-                (t[-n_safe:] - t[-1])
+            t_plot = t[sel] if brf_plot is not brf else t[-n_safe:]
+            keep = t_plot > self._plot_clear_t     # clear-plot watermark
+            x = t_plot[keep] - t[-1]
             for name, _u in _FORCES:
-                self._curves[name].setData(x, getattr(brf_plot, name))
+                self._curves[name].setData(x, getattr(brf_plot, name)[keep])
 
         # utilization / overstress (newest slice — live load state; the
         # bar's marker line holds the rolling peak, reset on tare)

@@ -15,13 +15,13 @@ from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QButtonGroup
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMainWindow, QPushButton, QSpinBox, QStatusBar, QTableWidget,
+    QMainWindow, QMenu, QPushButton, QSpinBox, QStatusBar, QTableWidget,
     QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -387,12 +387,32 @@ class CrescentPanel(QWidget):
             "Beta": pi.plot([], [], name="Beta",
                             pen=pg.mkPen(theme.series_color(1), width=2)),
         }
+        # clear watermark: only ring samples newer than this are drawn.
+        # The pg menu is disabled on this plot, so "Clear plot" rides a
+        # plain Qt context menu (ring/recorded data untouched).
+        self._plot_clear_t = float("-inf")
+        self._plot_last_t = None
+        self.plot.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.plot.customContextMenuRequested.connect(self._plot_menu)
         ml.addWidget(self.plot, 1)
         self.tabs.addTab(motion, "Motion")
 
         self.cal_panel = CalibrationPanel(self.config, self.device)
         self.tabs.addTab(self.cal_panel, "Calibration")
         root.addWidget(self.tabs, 1)
+
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
+
+    def _plot_menu(self, pos):
+        menu = QMenu(self.plot)
+        menu.addAction("Clear plot").triggered.connect(self._clear_plot)
+        menu.exec(self.plot.mapToGlobal(pos))
+
+    def _clear_plot(self):
+        if self._plot_last_t is not None:
+            self._plot_clear_t = self._plot_last_t
 
     # ── actions ──
     def _handle_connect(self):
@@ -502,13 +522,14 @@ class CrescentPanel(QWidget):
         data = self.device.ring.tail(n)
         t = data["t"]
         if t.size >= 2 and self.plot.isVisible():
+            self._plot_last_t = float(t[-1])
             # until both axes are calibrated, plot raw encoder counts
             both_cal = a["calibrated"] and b["calibrated"]
             suffix = "" if both_cal else "_enc"
             self.plot.getPlotItem().setLabel(
                 "left", "angle  (deg)" if both_cal else "encoder  (counts)")
             x = t - t[-1]
-            keep = x >= -window
+            keep = (x >= -window) & (t > self._plot_clear_t)
             for name, curve in self._curves.items():
                 xd, yd = _envelope(x[keep], data[name + suffix][keep])
                 curve.setData(xd, yd)

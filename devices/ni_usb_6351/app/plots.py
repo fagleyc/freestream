@@ -39,6 +39,15 @@ def _envelope(x: np.ndarray, y: np.ndarray, max_bins: int = _MAX_PLOT_BINS):
     return xs, ys
 
 
+def add_clear_action(pw: pg.PlotWidget, callback) -> None:
+    """'Clear plot' entry in the plot's right-click menu. Plots draw from
+    the device ring buffer, so clearing is a per-plot display watermark —
+    stored/recorded samples are untouched."""
+    vb = pw.getPlotItem().getViewBox()
+    vb.menu.addSeparator()
+    vb.menu.addAction("Clear plot").triggered.connect(callback)
+
+
 def _style_plot(pw: pg.PlotWidget) -> None:
     pi = pw.getPlotItem()
     pi.showGrid(x=False, y=True, alpha=0.25)
@@ -129,14 +138,19 @@ def lowpass(x: np.ndarray, rate_hz: float, cutoff_hz: float) -> np.ndarray:
     """Display-grade low-pass: moving-average FIR with the window sized
     to ``rate/cutoff`` (first null at ~cutoff). Vectorized, zero-lag
     enough for visualization; NOT for recorded data (the recorder
-    stores raw samples untouched)."""
+    stores raw samples untouched).
+
+    Edge-hold padded so the kernel never runs onto implicit zeros —
+    plain ``convolve(mode="same")`` rolls the trace off toward zero over
+    the kernel half-window at both ends of every plotted window."""
     if cutoff_hz <= 0 or rate_hz <= 0:
         return x
     n = int(round(rate_hz / cutoff_hz))
     if n < 2 or x.size < n:
         return x
     kernel = np.full(n, 1.0 / n)
-    return np.convolve(x, kernel, mode="same")
+    xp = np.pad(x, (n // 2, n - 1 - n // 2), mode="edge")
+    return np.convolve(xp, kernel, mode="valid")
 
 
 class ChannelHistory(QWidget):
@@ -151,6 +165,12 @@ class ChannelHistory(QWidget):
         self._rate = 200.0
         self._ring: Optional[ScanRingBuffer] = None
         self._curves: Dict[str, pg.PlotDataItem] = {}
+        # per-channel plot visibility (name-keyed so it survives channel
+        # rebinds; unknown names default to visible)
+        self._visible: Dict[str, bool] = {}
+        # clear watermark: only samples newer than this are drawn
+        self._clear_t = -np.inf
+        self._last_t: Optional[float] = None
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -165,6 +185,7 @@ class ChannelHistory(QWidget):
                      brush=pg.mkBrush(theme.PLOT_BG + "cc"),
                      pen=pg.mkPen(theme.BORDER))
         pi.getViewBox().sigRangeChangedManually.connect(self._user_zoomed)
+        add_clear_action(self._plot, self.clear_plot)
         lay.addWidget(self._plot, 1)
 
     def set_channels(self, channels: List[ChannelConfig],
@@ -181,10 +202,30 @@ class ChannelHistory(QWidget):
             pen = pg.mkPen(theme.series_color(i), width=1)
             self._curves[ch.name] = pi.plot([], [], name=ch.name, pen=pen,
                                             antialias=False)
+        self._apply_visibility()
 
     def note_rate(self, hz: float) -> None:
         if hz > 1.0:
             self._rate = hz
+
+    # ── per-channel visibility ───────────────────────────────────────────
+    def channel_visible(self, name: str) -> bool:
+        return self._visible.get(name, True)
+
+    def set_channel_visible(self, name: str, on: bool) -> None:
+        self._visible[name] = bool(on)
+        if name in self._curves:
+            self._curves[name].setVisible(bool(on))
+
+    def _apply_visibility(self) -> None:
+        for name, curve in self._curves.items():
+            curve.setVisible(self.channel_visible(name))
+
+    def clear_plot(self) -> None:
+        """Display watermark: only samples newer than 'now' are drawn
+        from here on (the ring buffer / recorded data are untouched)."""
+        if self._last_t is not None:
+            self._clear_t = self._last_t
 
     def _user_zoomed(self, *_a) -> None:
         self.follow = False       # stop pinning x; "Follow" button restores
@@ -201,12 +242,13 @@ class ChannelHistory(QWidget):
         t = data["t"]
         if t.size < 2:
             return
+        self._last_t = float(t[-1])
         x = t - t[-1]
-        keep = x >= -self.window_s
+        keep = (x >= -self.window_s) & (t > self._clear_t)
         x = x[keep]
         for name, curve in self._curves.items():
             key = f"{name}_V"
-            if key in data:
+            if key in data and self.channel_visible(name):
                 y = lowpass(data[key][keep], self._rate, self.lpf_hz)
                 xd, yd = _envelope(x, y)
                 curve.setData(xd, yd)

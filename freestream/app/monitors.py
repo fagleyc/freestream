@@ -68,6 +68,9 @@ class MonitorPanel(QTabWidget):
         self._subpanels = []          # self-timed child panels (fwd active)
         self._t0 = time.monotonic()
         self._hist: Dict[str, deque] = {}
+        # per-tab clear-plot watermarks: only history newer than the mark
+        # is drawn (the deques themselves are untouched)
+        self._clear_marks = {"bal": float("-inf"), "pos": float("-inf")}
         self._targets = {"alpha": None, "beta": None}
         self._balance: Optional[Streaming] = None
         self._bal_curves: Dict[str, object] = {}
@@ -109,6 +112,12 @@ class MonitorPanel(QTabWidget):
         self._pos_axes = []           # axis names of the active positioner
         self.addTab(self._pos_plot, "Position")
 
+        # "Clear plot" context-menu entries (the x-linked Balance strip
+        # pair clears together)
+        for pw in (self._bal_plot, self._bal_exc_plot):
+            self._add_clear_action(pw, "bal")
+        self._add_clear_action(self._pos_plot, "pos")
+
         self._build_subpanels()
         self._discover()
 
@@ -124,6 +133,16 @@ class MonitorPanel(QTabWidget):
         self._timer.setInterval(SAMPLE_MS)
         self._timer.timeout.connect(self._sample)
         self._timer.start()
+
+    # ── clear plot (display watermark on the deque history) ─────────────
+    def _add_clear_action(self, pw, key: str) -> None:
+        vb = pw.getPlotItem().getViewBox()
+        vb.menu.addSeparator()
+        vb.menu.addAction("Clear plot").triggered.connect(
+            lambda: self._clear_plot(key))
+
+    def _clear_plot(self, key: str) -> None:
+        self._clear_marks[key] = time.monotonic() - self._t0
 
     # ── detach / re-dock ─────────────────────────────────────────────────
     def _tab_context_menu(self, pos) -> None:
@@ -198,6 +217,8 @@ class MonitorPanel(QTabWidget):
         self.manager = manager
         self._hist.clear()
         self._t0 = time.monotonic()
+        # t restarts at 0 — stale marks would blank the new history
+        self._clear_marks = {"bal": float("-inf"), "pos": float("-inf")}
         self._discover()
         for panel in self._subpanels:
             panel.set_manager(manager)
@@ -312,17 +333,22 @@ class MonitorPanel(QTabWidget):
         self._redraw()
 
     def _redraw(self) -> None:
-        def data(key):
+        def data(key, mark):
             h = self._hist.get(key)
             if not h:
                 return [], []
-            ts, vs = zip(*h)
+            pts = [(t, v) for t, v in h if t > mark]
+            if not pts:
+                return [], []
+            ts, vs = zip(*pts)
             return list(ts), list(vs)
 
+        bal_mark = self._clear_marks["bal"]
+        pos_mark = self._clear_marks["pos"]
         for name, (curve, _plot) in self._bal_curves.items():
-            curve.setData(*data(f"bal:{name}"))
+            curve.setData(*data(f"bal:{name}", bal_mark))
         for key, curve in self._pos_curves.items():
-            curve.setData(*data(key), connect="finite")
+            curve.setData(*data(key, pos_mark), connect="finite")
 
     def point_done(self, path) -> None:
         """Forward a freshly written point to the Results panel."""

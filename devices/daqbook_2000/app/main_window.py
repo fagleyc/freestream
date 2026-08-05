@@ -243,6 +243,9 @@ class DaqbookPanel(QWidget):
         self.tabs.addTab(self.channels_panel, "Channels")
         root.addWidget(self.tabs, 1)
 
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
+
     # ── connect / disconnect ──
     def _handle_connect(self):
         self.config.device_name = self.name_edit.text().strip() or \

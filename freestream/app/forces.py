@@ -51,13 +51,18 @@ def _lowpass(x: np.ndarray, rate_hz: float, cutoff_hz: float
     """Monitor-grade low-pass: moving-average FIR sized to
     ``rate/cutoff`` (first null ~cutoff). Same filter as the NI device
     app's display LPF; kept local so freestream does not import a
-    device app module. NOT applied to recorded data."""
+    device app module. NOT applied to recorded data.
+
+    Edge-hold padded so the kernel never runs onto implicit zeros —
+    plain ``convolve(mode="same")`` rolls the trace off toward zero
+    over the kernel half-window at both ends of every window."""
     if cutoff_hz <= 0 or rate_hz <= 0:
         return x
     n = int(round(rate_hz / cutoff_hz))
     if n < 2 or x.size < n:
         return x
-    return np.convolve(x, np.full(n, 1.0 / n), mode="same")
+    xp = np.pad(x, (n // 2, n - 1 - n // 2), mode="edge")
+    return np.convolve(xp, np.full(n, 1.0 / n), mode="valid")
 #: rolling window for the peak-hold marker on the load bars
 PEAK_HOLD_S = 30.0
 

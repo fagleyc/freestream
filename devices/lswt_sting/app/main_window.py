@@ -19,8 +19,9 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QBoxLayout, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
-    QLabel, QMainWindow, QMessageBox, QPushButton, QSpinBox, QStatusBar,
-    QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
+    QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
 from lswt_sting import about, theme
@@ -360,6 +361,9 @@ class StingPanel(QWidget):
         self.tabs.addTab(self._build_limits_tab(), "Limits")
         root.addWidget(self.tabs, 1)
 
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
+
     def _com_ports(self) -> list:
         try:
             from serial.tools import list_ports
@@ -476,8 +480,25 @@ class StingPanel(QWidget):
             "Beta": pi.plot([], [], name="Beta",
                             pen=pg.mkPen(theme.series_color(1), width=1)),
         }
+        # clear watermark: only ring samples newer than this are drawn.
+        # The pg menu is disabled on this plot, so "Clear plot" rides a
+        # plain Qt context menu (ring/recorded data untouched).
+        self._plot_clear_t = float("-inf")
+        self._plot_last_t = None
+        self.plot.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.plot.customContextMenuRequested.connect(self._plot_menu)
         hl.addWidget(self.plot, 1)
         return hist
+
+    def _plot_menu(self, pos):
+        menu = QMenu(self.plot)
+        menu.addAction("Clear plot").triggered.connect(self._clear_plot)
+        menu.exec(self.plot.mapToGlobal(pos))
+
+    def _clear_plot(self):
+        if self._plot_last_t is not None:
+            self._plot_clear_t = self._plot_last_t
 
     def _build_limits_tab(self) -> QWidget:
         lim = QWidget()
@@ -847,8 +868,9 @@ class StingPanel(QWidget):
         data = self.device.ring.tail(n)
         t = data["t"]
         if t.size >= 2 and self.plot.isVisible():
+            self._plot_last_t = float(t[-1])
             x = t - t[-1]
-            keep = x >= -window
+            keep = (x >= -window) & (t > self._plot_clear_t)
             for name, curve in self._curves.items():
                 curve.setData(x[keep], data[name][keep])
             self.plot.getPlotItem().setXRange(-window, 0.0, padding=0)

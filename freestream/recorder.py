@@ -78,6 +78,18 @@ point 7 of 40 leaves a valid manifest of those 7), written ATOMICALLY
 already exists, and a re-taken run number REPLACES its entry. A manifest
 failure is logged at warning and swallowed — it must never interrupt an
 acquisition, the point file is what matters.
+
+Balance-cal hand-off (:meth:`Hdf5Recorder.stage_balance_cal`)
+-------------------------------------------------------------
+At run start the active balance ``.vol`` is COPIED into the config
+folder, beside the run files, and recorded in the manifest as an
+optional top-level ``"balance_cal"`` object (``vol_file`` = the local
+copy's name, ``vol_source`` = the original path, plus whatever balance
+identity the caller supplies — cal_type/balance_config/balance_type/
+balance_serial). Streamlined's reduction resolves the run-local .vol
+from this entry, so the calibration in effect at capture travels WITH
+the data (still never applied here — raw stays raw). Same hard rule as
+the manifest itself: staging never raises.
 """
 
 from __future__ import annotations
@@ -86,6 +98,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Union
@@ -569,6 +582,50 @@ class Hdf5Recorder:
         # the point file is safely on disk — index it (never raises)
         self._update_manifest(root, path.name, config_snapshot)
         return path
+
+    # ── balance-cal hand-off ─────────────────────────────────────────────
+    def stage_balance_cal(self, vol_path: Union[str, Path],
+                          meta: Optional[Mapping[str, Any]] = None
+                          ) -> Optional[Path]:
+        """Copy the active balance ``.vol`` beside the run files and record
+        it in ``manifest.json`` (top-level ``"balance_cal"``: the local
+        filename + the balance identity in *meta*), so Streamlined's
+        reduction picks up the exact calibration in effect at capture.
+
+        Nothing is ever APPLIED here — the .vol travels as data. Returns
+        the run-local copy's Path, or None when there is no usable .vol.
+        Same rule as the manifest: this NEVER raises (a cal-copy problem
+        must not stop a run; the point files are what matter).
+        """
+        try:
+            src = Path(str(vol_path or ""))
+            if not str(vol_path or "") or not src.is_file():
+                return None
+            dest = self.config_dir / src.name
+            if src.resolve() != dest.resolve():
+                shutil.copy2(src, dest)
+            entry: Dict[str, Any] = {"vol_file": src.name,
+                                     "vol_source": str(src)}
+            for key, val in (meta or {}).items():
+                if val not in (None, ""):
+                    entry[str(key)] = val
+            data = self._load_manifest()
+            now = datetime.now().isoformat()
+            data["schema_version"] = MANIFEST_SCHEMA_VERSION
+            data["config_name"] = self.config_name
+            data["output_format"] = self.output_format
+            data.setdefault("created", now)
+            data["updated"] = now
+            data.setdefault("config", {})
+            data.setdefault("points", [])
+            data["balance_cal"] = entry
+            self._manifest = data                # later points keep the entry
+            self._write_manifest(data)
+            return dest
+        except Exception:                        # noqa: BLE001
+            log.warning("balance cal staging failed for %s", vol_path,
+                        exc_info=True)
+            return None
 
     # ── run manifest ─────────────────────────────────────────────────────
     def _update_manifest(self, root_attrs: Mapping[str, Any], filename: str,

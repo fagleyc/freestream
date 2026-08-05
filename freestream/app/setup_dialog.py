@@ -309,6 +309,9 @@ class MeasurementSetupDialog(QDialog):
             lambda: setattr(self, "defaults_requested", True))
         lay.addWidget(buttons)
 
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
+
     # ── speed unit / tolerance (freestream.speed hint tables) ────────────
     def _range_tolerance_spin(self, unit: str) -> None:
         """Re-range/relabel the ONE tolerance spin from the per-unit GUI

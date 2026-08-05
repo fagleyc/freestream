@@ -195,6 +195,28 @@ class DeviceManager:
                 except Exception:                      # noqa: BLE001
                     log.exception("stop_all failed on %s", dev.id)
 
+    def estop_all(self) -> None:
+        """E-stop path: stop EVERY device — all Positioners immediately,
+        then every tunnel SetpointDevice to stop/zero speed (rig-found:
+        E-stop left the LSWT fan running). Per-device failures are logged
+        and never block the remaining stops."""
+        self.stop_all_motion()
+        for dev in self.devices.values():
+            if not isinstance(dev, SetpointDevice):
+                continue
+            # adapter-native hard stop when available (lswt/tunnel estop,
+            # LSWT fan_stop); else zero the speed command
+            stop = (getattr(dev, "estop", None)
+                    or getattr(dev, "fan_stop", None))
+            try:
+                if callable(stop):
+                    stop()
+                else:
+                    dev.set_target(rpm=0.0)
+            except Exception:                          # noqa: BLE001
+                log.exception("tunnel stop failed on %s",
+                              getattr(dev, "id", "?"))
+
     # ── capability queries ───────────────────────────────────────────────
     def by_role(self, role: str) -> Optional[DeviceBase]:
         dev_id = self.roles.get(role)

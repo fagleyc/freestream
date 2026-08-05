@@ -253,3 +253,59 @@ def test_next_run_number_ignores_run_prefixed_json(rec):
     (rec.config_dir / "run_0099_notes.json").touch()
     (rec.config_dir / (MANIFEST_NAME + ".bad")).touch()
     assert rec.next_run_number() == 1
+
+
+# ── balance-cal hand-off (stage_balance_cal) ─────────────────────────────
+def make_vol(tmp_path, name="50lb 2026_07_24.vol"):
+    vol = tmp_path / "CalFiles" / name
+    vol.parent.mkdir(exist_ok=True)
+    vol.write_text("Voltage Calibration File\nDate-->28-Feb-2023\n",
+                   encoding="utf-8")
+    return vol
+
+
+def test_stage_copies_vol_and_records_manifest_entry(rec, tmp_path):
+    vol = make_vol(tmp_path)
+    dest = rec.stage_balance_cal(vol, {
+        "cal_type": "Linear", "balance_config": "Moment",
+        "balance_type": "internal", "balance_serial": "50 lb",
+        "empty_is_skipped": ""})
+    assert dest == rec.config_dir / vol.name     # beside the run files
+    assert dest.read_text(encoding="utf-8") == \
+        vol.read_text(encoding="utf-8")
+    m = load_manifest(rec)
+    assert m["schema_version"] == MANIFEST_SCHEMA_VERSION
+    assert m["points"] == []                     # staged BEFORE any point
+    assert m["balance_cal"] == {
+        "vol_file": vol.name, "vol_source": str(vol),
+        "cal_type": "Linear", "balance_config": "Moment",
+        "balance_type": "internal", "balance_serial": "50 lb"}
+
+
+def test_staged_entry_survives_point_writes(rec, tmp_path):
+    vol = make_vol(tmp_path)
+    rec.stage_balance_cal(vol, {"cal_type": "Linear"})
+    write_default(rec)
+    write_default(rec, alpha=0.0)
+    m = load_manifest(rec)
+    assert m["balance_cal"]["vol_file"] == vol.name
+    assert len(m["points"]) == 2
+    assert set(m) == TOP_KEYS | {"balance_cal"}  # additive, schema stays 1
+
+
+def test_stage_missing_or_empty_vol_is_a_noop(rec, tmp_path):
+    assert rec.stage_balance_cal("") is None
+    assert rec.stage_balance_cal(tmp_path / "nope.vol") is None
+    assert rec.stage_balance_cal(None) is None
+    assert not rec.manifest_path.exists()
+
+
+def test_stage_failure_never_raises(rec, tmp_path, monkeypatch):
+    import freestream.recorder as recorder_mod
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    vol = make_vol(tmp_path)
+    monkeypatch.setattr(recorder_mod.shutil, "copy2", boom)
+    assert rec.stage_balance_cal(vol) is None    # logged, swallowed

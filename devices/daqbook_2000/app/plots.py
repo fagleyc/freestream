@@ -13,8 +13,9 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pyqtgraph as pg
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget,
 )
 
 from daqbook_2000 import theme
@@ -126,6 +127,21 @@ class ChannelTiles(QWidget):
                                   float(np.mean(data[f"{name}_V"])))
 
 
+def add_clear_action(pw: pg.PlotWidget, callback) -> None:
+    """'Clear plot' via a plain Qt context menu (the pyqtgraph menu is
+    deliberately disabled on these plots). Plots draw from the device
+    ring buffer, so clearing is a display watermark — stored/recorded
+    samples are untouched."""
+    pw.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def _show(pos):
+        menu = QMenu(pw)
+        menu.addAction("Clear plot").triggered.connect(callback)
+        menu.exec(pw.mapToGlobal(pos))
+
+    pw.customContextMenuRequested.connect(_show)
+
+
 class ChannelHistory(QWidget):
     """Stacked scrolling plots, one per channel, full scan rate."""
 
@@ -135,6 +151,9 @@ class ChannelHistory(QWidget):
         self.paused = False
         self.show_volts = False
         self._rate = 1000.0
+        # clear watermark: only samples newer than this are drawn
+        self._clear_t = -np.inf
+        self._last_t: Optional[float] = None
         self._ring: Optional[ScanRingBuffer] = None
         self._curves: Dict[str, pg.PlotDataItem] = {}
         self._plots: List[pg.PlotWidget] = []
@@ -169,6 +188,7 @@ class ChannelHistory(QWidget):
             self._curves[ch.name] = pi.plot(
                 [], [], antialias=False,
                 pen=pg.mkPen(theme.series_color(i), width=1))
+            add_clear_action(pw, self.clear_plot)
             if self._plots:
                 pw.setXLink(self._plots[0])
                 self._plots[-1].getPlotItem().getAxis("bottom") \
@@ -183,6 +203,14 @@ class ChannelHistory(QWidget):
         if hz > 1.0:
             self._rate = hz
 
+    def clear_plot(self) -> None:
+        """Display watermark: only samples newer than 'now' are drawn
+        from here on (the ring buffer / recorded data are untouched).
+        The stacked per-channel plots share one x-axis, so one clear
+        applies to all of them."""
+        if self._last_t is not None:
+            self._clear_t = self._last_t
+
     def refresh(self) -> None:
         if self.paused or self._ring is None or not self._curves:
             return
@@ -193,8 +221,9 @@ class ChannelHistory(QWidget):
         t = data["t"]
         if t.size < 2:
             return
+        self._last_t = float(t[-1])
         x = t - t[-1]
-        keep = x >= -self.window_s
+        keep = (x >= -self.window_s) & (t > self._clear_t)
         x = x[keep]
         for name, curve in self._curves.items():
             field = f"{name}_V" if self.show_volts else name

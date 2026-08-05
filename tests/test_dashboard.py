@@ -173,6 +173,41 @@ def test_attitude_pad_is_prominent_and_band_adapts(app, tunnel):
         dash.shutdown()
 
 
+def test_dashboard_lswt_speed_display_is_hz_max_60(app):
+    """LSWT configuration: the fan speed tile/chart/gauge speak Hz with
+    the drive's 60 Hz ceiling — never RPM (per-configuration display)."""
+    from freestream.adapters.lswt import LswtTunnelAdapter
+    lswt = LswtTunnelAdapter(sim=True)
+    lswt.connect()
+    dash = TunnelDashboard(_StubManager(lswt))
+    try:
+        assert _wait(lambda: lswt.connected, 5.0)
+        assert dash.tiles["rpm"]._cap_text == "FAN HZ / SET"
+        assert dash._speed_max == 60.0
+        assert "Hz" in dash._p_rpm.getAxis("left").labelText
+        dash.active = True
+        dash._sample()
+        if dash.gauge is not None:           # tunnel_plc widgets present
+            assert dash.gauge.unit == "Hz"
+            # gauge ranged to the 60 Hz ceiling, not the 1000-RPM default
+            assert dash.gauge._rpm_max == 60.0
+    finally:
+        dash.shutdown()
+        lswt.disconnect()
+
+
+def test_dashboard_swt_speed_display_stays_rpm(app, tunnel):
+    """SWT configuration keeps its historical units/limits exactly."""
+    dash = TunnelDashboard(_StubManager(tunnel))
+    try:
+        assert dash.tiles["rpm"]._cap_text == "FAN RPM / SET"
+        assert dash._speed_max == 1000.0     # sim arms rpm_max = 1000
+        if dash.gauge is not None:
+            assert dash.gauge.unit == "RPM"
+    finally:
+        dash.shutdown()
+
+
 def test_dashboard_survives_fakes_without_snapshot(app):
     """FakeTunnel (no .snapshot) must not crash the dashboard."""
     from freestream._fakes import FakeTunnel
