@@ -38,8 +38,10 @@ def test_default_channel_set():
                      "Excitation", "Spare"]
     for c in cfg.channels[:6]:                     # bridges + Axial/Roll
         assert c.balance and c.enabled and c.terminal == "DIFF"
+    # tightest range on ALL balance bridges (mV signals, no instrument
+    # amp — 2026-07-24 SNR work)
     assert [c.native_range for c in cfg.channels[:6]] == \
-        [0.2, 0.2, 0.2, 0.2, 0.5, 0.5]
+        [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
     exc = cfg.channels[6]
     assert not exc.balance and exc.enabled and exc.native_range == 10.0
     spare = cfg.channels[7]
@@ -421,16 +423,18 @@ def test_hw_channels_ranges_and_timing():
                 [f"Dev2/ai{i}" for i in range(7)]
             assert [c["name"] for c in task.ai_calls] == \
                 ["N1", "N2", "Y1", "Y2", "Axial", "Roll", "Excitation"]
-            # symmetric ±native_range limits, snapped from the requested span
+            # symmetric ±native_range limits: all six balance bridges on
+            # the TIGHTEST range (mV signals — 2026-07-24 SNR work)
             for call, r in zip(task.ai_calls,
-                               (0.2, 0.2, 0.2, 0.2, 0.5, 0.5, 10.0)):
+                               (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 10.0)):
                 assert call["min_val"] == -r and call["max_val"] == r
             assert all(c["terminal"] == _FakeTC.DIFF for c in task.ai_calls)
-            # continuous hardware-timed clock at scan_hz, ≥5 s buffer
+            # hardware clock at scan_hz x oversample; delivered rate is
+            # still scan_hz after the mean-decimation
             t = task.timing_calls[0]
-            assert t["rate"] == 1000.0
+            assert t["rate"] == 1000.0 * 16
             assert t["sample_mode"] == _FakeAcqType.CONTINUOUS
-            assert t["samps_per_chan"] == 5000
+            assert t["samps_per_chan"] == 5000 * 16
             assert dev.actual_hz == 1000.0
             # immediate trigger → NO trigger configuration at all
             assert task.dig_trig_calls == [] and task.anlg_trig_calls == []

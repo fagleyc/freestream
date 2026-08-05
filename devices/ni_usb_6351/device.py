@@ -52,6 +52,32 @@ except ImportError:                     # pragma: no cover
 log = logging.getLogger(__name__)
 
 
+#: NI USB-6351 aggregate multichannel sample-rate ceiling [S/s]
+_AGGREGATE_MAX = 1_000_000
+
+
+def _decimate(carry: Optional[np.ndarray], data: np.ndarray,
+              oversample: int):
+    """Mean-decimate ``data`` (n_ch, n) by ``oversample`` with a carry
+    for samples that don't fill a complete group yet.
+
+    Returns ``(out, new_carry)`` — ``out`` is (n_ch, m) averaged
+    samples (m may be 0), ``new_carry`` the leftover (n_ch, k<os).
+    """
+    if oversample <= 1:
+        return data, None
+    if carry is not None and carry.size:
+        data = np.concatenate([carry, data], axis=1)
+    n = data.shape[1]
+    m = n // oversample
+    if m == 0:
+        return data[:, :0], data
+    used = m * oversample
+    out = data[:, :used].reshape(data.shape[0], m, oversample).mean(axis=2)
+    new_carry = data[:, used:] if used < n else None
+    return out, new_carry
+
+
 def _terminal_const(terminal: str):
     """Map a config terminal string to the nidaqmx enum (version-safe)."""
     names = {"DIFF": ("DIFF", "DIFFERENTIAL"),
@@ -95,6 +121,10 @@ class NiUsb6351:
 
         # software tare (volts subtracted per balance channel)
         self._tare: Dict[str, float] = {}
+
+        # oversample-decimation state (hardware path)
+        self._oversample = 1
+        self._carry: Optional[np.ndarray] = None
 
     # ── public state ─────────────────────────────────────────────────────
     @property
@@ -184,6 +214,7 @@ class NiUsb6351:
         self._stop.clear()
         self._scan_total = 0
         self._triggered = False
+        self._carry = None
         self._chans = self.config.enabled_channels()
         self._ao_chans = self.config.enabled_ao_channels()
         if not self._chans:
@@ -232,12 +263,28 @@ class NiUsb6351:
                     name_to_assign_to_channel=ch.name,
                     terminal_config=_terminal_const(ch.terminal),
                     min_val=-r, max_val=r)
-            buf_samps = max(int(cfg.buffer_seconds * cfg.scan_hz), 1000)
+            # oversample: ADC at scan_hz*oversample, averaged back down
+            # to scan_hz in the poll loop (sqrt(N) noise gain + AA)
+            self._oversample = max(1, int(getattr(cfg, "oversample", 1)))
+            n_ch = len(self._chans)
+            while (self._oversample > 1 and
+                   cfg.scan_hz * self._oversample * n_ch > _AGGREGATE_MAX):
+                self._oversample //= 2
+            if self._oversample != max(1, int(getattr(cfg, "oversample",
+                                                      1))):
+                self._status(f"Oversample reduced to "
+                             f"{self._oversample}x to respect the "
+                             f"device aggregate rate")
+            hw_rate = cfg.scan_hz * self._oversample
+            buf_samps = max(int(cfg.buffer_seconds * hw_rate), 1000)
             self._task.timing.cfg_samp_clk_timing(
-                rate=cfg.scan_hz,
+                rate=hw_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
                 samps_per_chan=buf_samps)
-            self.actual_hz = float(self._task.timing.samp_clk_rate)
+            # actual_hz is the DELIVERED rate — ring timestamps, tare
+            # windows, monitors and the recorder all consume this
+            self.actual_hz = float(
+                self._task.timing.samp_clk_rate) / self._oversample
             self._configure_trigger(self._task)
             self._reader = _readers.AnalogMultiChannelReader(
                 self._task.in_stream)
@@ -491,10 +538,16 @@ class NiUsb6351:
                 self._triggered = True
                 if self.config.trigger.mode != "immediate":
                     self._status("Trigger received — acquiring")
-                t0_wall = time.time() - got / self.actual_hz
-            t = t0_wall + (self._scan_total +
-                           np.arange(got)) / self.actual_hz
-            self._publish(t, data[:, :got])
+                t0_wall = time.time() - got / (self.actual_hz *
+                                               self._oversample)
+            out, self._carry = _decimate(self._carry, data[:, :got],
+                                         self._oversample)
+            m = out.shape[1]
+            if m == 0:
+                self._stop.wait(period)
+                continue
+            t = t0_wall + (self._scan_total + np.arange(m)) / self.actual_hz
+            self._publish(t, out)
             self._stop.wait(period)
 
     def _rearm(self) -> bool:
@@ -506,6 +559,7 @@ class NiUsb6351:
             self._task.stop()
             self._task.start()
             self._triggered = self.config.trigger.mode == "immediate"
+            self._carry = None      # sample stream is discontinuous now
             return True
         except DaqError as exc:
             self._status(f"Re-arm failed: {exc}")

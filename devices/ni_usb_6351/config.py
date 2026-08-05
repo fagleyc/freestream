@@ -142,12 +142,17 @@ class TriggerConfig:
 def default_channels(balance_config: str = "Force") -> List[ChannelConfig]:
     bridge = BRIDGE_NAMES.get(balance_config, BRIDGE_NAMES["Force"])
     chans = []
+    # All balance bridges on the TIGHTEST range (±0.1 V — the 6351 has
+    # no instrument amp): the LSWT 50lb balance signals are only
+    # 2.4-5.8 mV full-scale (33-233 uV per unit load at 5 V
+    # excitation), so every factor of range is a factor of resolution.
+    # The old ±0.5 V default on Axial/Roll threw away 5x.
     for ai, name in zip((0, 1, 2, 3), bridge):
         chans.append(ChannelConfig(channel=ai, name=name, balance=True,
-                                   v_min=-0.2, v_max=0.2))
+                                   v_min=-0.1, v_max=0.1))
     for ai, name in ((4, "Axial"), (5, "Roll")):
         chans.append(ChannelConfig(channel=ai, name=name, balance=True,
-                                   v_min=-0.5, v_max=0.5))
+                                   v_min=-0.1, v_max=0.1))
     chans.append(ChannelConfig(channel=6, name="Excitation",
                                v_min=-10.0, v_max=10.0))
     chans.append(ChannelConfig(channel=7, name="Spare", enabled=False,
@@ -168,7 +173,16 @@ class NiDaqConfig:
     device_name: str = "Dev2"          # NI-MAX device alias
 
     # ── Acquisition ──────────────────────────────────────────────────────
-    scan_hz: float = 1000.0            # per-channel sample rate
+    scan_hz: float = 1000.0            # per-channel DELIVERED rate
+    #: hardware oversampling: the ADC runs at ``scan_hz * oversample``
+    #: and the driver averages every ``oversample`` samples down to
+    #: ``scan_hz`` before publishing. Gains sqrt(N) on random noise and
+    #: acts as an anti-alias filter — the 6351 has neither an
+    #: instrument amp nor an analog AA filter, and mV bridge signals
+    #: need every bit of it (16x → ~4x SNR). Ring, recorder and
+    #: monitors all see the cleaner scan_hz stream. Auto-reduced at
+    #: connect if the aggregate rate would exceed the device maximum.
+    oversample: int = 16
     buffer_seconds: float = 5.0        # DAQmx input buffer length
     poll_ms: int = 25                  # poll-thread read period
 
