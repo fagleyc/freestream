@@ -208,6 +208,15 @@ def test_init_reset_on_by_default(tmp_path, monkeypatch):
     — and position restore re-derives the zero after the counter
     wipe. (Sim test helpers pass init_reset=False explicitly.)"""
     assert StingConfig().init_reset is True
+    # stale persisted False (defaults.json / Freestream bundles from
+    # the opt-in era) must NOT resurrect — embedded connects after a
+    # power cycle depend on the Z (rig-found 2026-08-05)
+    assert StingConfig.from_dict({"init_reset": False}).init_reset is True
+    cfg_off = StingConfig(init_reset=False,
+                          state_path=str(tmp_path / "s.json"))
+    p = tmp_path / "cfg.json"
+    cfg_off.save(p)
+    assert StingConfig.load(p).init_reset is True
     created = _WireRecorder.install(monkeypatch)
     cfg = StingConfig(force_sim=True, poll_ms=50,
                       park_on_disconnect=False, restore_position=False,

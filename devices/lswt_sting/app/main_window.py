@@ -526,6 +526,11 @@ class StingPanel(QWidget):
         comms = QGroupBox("Comms (next connect)")
         cf = QFormLayout(comms)
         self.init_reset_chk = QCheckBox("Send Z (drive reset) at connect")
+        self.init_reset_chk.setToolTip(
+            "The drives need the Z after a power cycle, so this always "
+            "starts ON (position restore re-derives the zero after the "
+            "counter wipe). Unchecking applies to this session only — "
+            "it is deliberately not restored from saved defaults.")
         self.init_reset_chk.setChecked(self.config.init_reset)
         self.init_reset_chk.toggled.connect(self._limits_changed)
         cf.addRow(self.init_reset_chk)

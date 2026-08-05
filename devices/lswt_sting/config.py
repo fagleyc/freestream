@@ -225,6 +225,16 @@ class StingConfig:
     @classmethod
     def from_dict(cls, d: dict) -> "StingConfig":
         d = dict(d)
+        # init_reset is NOT restored from saved configs (2026-08-05):
+        # defaults files / Freestream config bundles saved while the Z
+        # reset was opt-in (2026-07-23..08-04) persisted False and kept
+        # resurrecting it through load_startup_config — so an embedded
+        # Freestream connect after a drive power cycle failed until the
+        # operator toggled Z in the standalone app. The drives NEED the
+        # Z after a power cycle and position restore covers the counter
+        # wipe, so Z-at-connect always starts ON; the Limits-tab switch
+        # remains a per-session override.
+        d.pop("init_reset", None)
         known = {f for f in cls.__dataclass_fields__}      # noqa: E1101
         ax_fields = {f for f in
                      StingAxisConfig.__dataclass_fields__}  # noqa: E1101
