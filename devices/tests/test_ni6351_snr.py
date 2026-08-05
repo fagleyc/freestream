@@ -16,7 +16,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ni_usb_6351.config import NiDaqConfig, default_channels
-from ni_usb_6351.device import _AGGREGATE_MAX, _decimate
+from ni_usb_6351.device import (_AGGREGATE_MAX, _decimate,
+                                effective_oversample)
 
 
 def test_default_bridge_ranges_are_tightest():
@@ -29,7 +30,7 @@ def test_default_bridge_ranges_are_tightest():
 
 def test_oversample_default_and_round_trip(tmp_path):
     cfg = NiDaqConfig()
-    assert cfg.oversample == 16
+    assert cfg.oversample == 0     # 0 = AUTO: fill the aggregate budget
     cfg.oversample = 8
     p = tmp_path / "cfg.json"
     cfg.save(p)
@@ -72,13 +73,23 @@ def test_decimate_passthrough_at_1():
     assert out is data and carry is None
 
 
-def test_aggregate_clamp_math():
-    """7 ch x 1 kHz x 16 = 112 kS/s — well under the 1 MS/s aggregate;
-    a pathological request must be halved until it fits."""
-    assert 7 * 1000.0 * 16 < _AGGREGATE_MAX
-    os_ = 64
-    n_ch, scan = 8, 10_000.0            # 5.12 MS/s requested
-    while os_ > 1 and scan * os_ * n_ch > _AGGREGATE_MAX:
-        os_ //= 2
-    assert scan * os_ * n_ch <= _AGGREGATE_MAX
-    assert os_ == 8
+def test_effective_oversample_auto_fills_budget():
+    """AUTO (0) uses the whole 1 MS/s aggregate: the rig's 7 channels
+    at 1 kHz get 142x (994 kS/s), ~12x noise reduction on the
+    uncorrelated floor."""
+    assert effective_oversample(0, 1000.0, 7) == 142
+    assert 1000.0 * 142 * 7 <= _AGGREGATE_MAX
+    # one channel at 1 kHz: 1000x fits inside the aggregate
+    assert effective_oversample(0, 1000.0, 1) == 1000
+    # rates that already saturate the budget degrade gracefully to 1x
+    assert effective_oversample(0, 200_000.0, 8) == 1
+
+
+def test_effective_oversample_clamps_requests():
+    """An explicit request is honoured when it fits and clamped to the
+    aggregate budget when it doesn't."""
+    assert effective_oversample(16, 1000.0, 7) == 16
+    assert effective_oversample(64, 10_000.0, 8) == 12   # 5.12 MS/s ask
+    assert 10_000.0 * 12 * 8 <= _AGGREGATE_MAX
+    assert effective_oversample(1, 1000.0, 7) == 1       # averaging off
+    assert effective_oversample(4, 0.0, 7) == 1          # degenerate

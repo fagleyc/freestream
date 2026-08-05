@@ -176,13 +176,17 @@ class NiDaqConfig:
     scan_hz: float = 1000.0            # per-channel DELIVERED rate
     #: hardware oversampling: the ADC runs at ``scan_hz * oversample``
     #: and the driver averages every ``oversample`` samples down to
-    #: ``scan_hz`` before publishing. Gains sqrt(N) on random noise and
-    #: acts as an anti-alias filter — the 6351 has neither an
-    #: instrument amp nor an analog AA filter, and mV bridge signals
-    #: need every bit of it (16x → ~4x SNR). Ring, recorder and
-    #: monitors all see the cleaner scan_hz stream. Auto-reduced at
-    #: connect if the aggregate rate would exceed the device maximum.
-    oversample: int = 16
+    #: ``scan_hz`` before publishing — the delivered stream IS the data
+    #: of record. Gains sqrt(N) on uncorrelated noise and acts as an
+    #: anti-alias filter — the 6351 has neither an instrument amp nor
+    #: an analog AA filter, and mV bridge signals need every bit of it.
+    #: 0 = AUTO (default): use the device's full aggregate budget —
+    #: e.g. 7 channels @ 1 kHz → 142x (994 kS/s), ~12x noise
+    #: reduction. An explicit value is clamped to the budget at
+    #: connect. The balance noise floor was measured highly
+    #: uncorrelated (2026-08-05), which is exactly what averaging
+    #: rejects.
+    oversample: int = 0
     buffer_seconds: float = 5.0        # DAQmx input buffer length
     poll_ms: int = 25                  # poll-thread read period
 

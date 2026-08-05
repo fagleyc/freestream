@@ -300,7 +300,8 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
         # motion tokens.)
         axis_skip=("unit", "enabled", "steps_per_degree", "steps_per_rev",
                    "direction", "zero_offset_deg", "zeroed", "min_deg",
-                   "max_deg", "tolerance_deg", "brake_output"),
+                   "max_deg", "tolerance_deg", "brake_output",
+                   "idle_shutdown"),   # live editor: panel Limits tab
         # the embedded panel's Limits tab is the single live editor for
         # the soft travel limits, park behaviour, poll period and the
         # connect-time Z reset — a second Settings-form editor would
@@ -316,6 +317,10 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
     "ni_daq": _spec(
         sections=(
             ("Communication", ("device_name",)),
+            # oversample: 0 = auto (fill the 1 MS/s aggregate budget);
+            # the ADC runs scan_hz*oversample and averages down to the
+            # suite sample rate — the record stream IS the average
+            ("Acquisition", ("oversample",)),
             ("Buffering", ("buffer_seconds", "poll_ms")),
             ("Analog output", ("ao_update_hz",)),
             ("Balance identity", ("balance_type", "balance_serial")),

@@ -27,6 +27,7 @@ from ni_usb_6351.config import NiDaqConfig
 from ni_usb_6351.device import NiUsb6351
 
 from .channels_panel import ChannelsPanel
+from .filter_panel import FilterPanel
 from .forces_panel import ForcesPanel
 from .output_trigger_panel import OutputTriggerPanel
 from .plots import ChannelHistory, ChannelTiles
@@ -36,6 +37,11 @@ log = logging.getLogger(__name__)
 
 _WINDOWS = [("10 s", 10.0), ("30 s", 30.0), ("2 min", 120.0),
             ("5 min", 300.0)]
+
+#: oversample picks for the Connection row (config value 0 = auto/max)
+_OVERSAMPLE_CHOICES = [("Avg: auto (max)", 0), ("Avg: off", 1),
+                       ("Avg: 4×", 4), ("Avg: 16×", 16),
+                       ("Avg: 64×", 64), ("Avg: 128×", 128)]
 
 
 class NiDaqPanel(QWidget):
@@ -114,6 +120,17 @@ class NiDaqPanel(QWidget):
         self.rate_spin.setValue(self.config.scan_hz)
         self.rate_spin.setSuffix(" Hz")
         cl.addWidget(self.rate_spin)
+        self.os_combo = QComboBox()
+        for label, val in _OVERSAMPLE_CHOICES:
+            self.os_combo.addItem(label, val)
+        self.os_combo.setToolTip(
+            "Hardware oversampling: the ADC runs this many times faster "
+            "than the scan rate and each group is averaged down to one "
+            "sample — the averaged stream IS the data of record. "
+            "Auto = fill the device's 1 MS/s aggregate budget "
+            "(~142× for 7 ch @ 1 kHz, ~12× less uncorrelated noise).")
+        self._sync_os_combo()
+        cl.addWidget(self.os_combo)
         self.sim = QCheckBox("Simulate")
         self.sim.setChecked(self.config.force_sim)
         cl.addWidget(self.sim)
@@ -202,6 +219,9 @@ class NiDaqPanel(QWidget):
             self._on_balance_config_changed)
         self.tabs.addTab(self.forces_panel, "Forces")
 
+        self.filter_panel = FilterPanel()
+        self.tabs.addTab(self.filter_panel, "Filter Study")
+
         self.channels_panel = ChannelsPanel(self.config)
         self.tabs.addTab(self.channels_panel, "Channels")
 
@@ -225,10 +245,21 @@ class NiDaqPanel(QWidget):
         self.channels_panel.reload()
 
     # ── connect / disconnect ──
+    def _sync_os_combo(self):
+        """Point the oversample combo at the config value (custom values
+        from a loaded config get their own entry)."""
+        idx = self.os_combo.findData(self.config.oversample)
+        if idx < 0:
+            self.os_combo.addItem(f"Avg: {self.config.oversample}×",
+                                  self.config.oversample)
+            idx = self.os_combo.count() - 1
+        self.os_combo.setCurrentIndex(idx)
+
     def _handle_connect(self):
         self.config.device_name = self.name_edit.text().strip() or \
             self.config.device_name
         self.config.scan_hz = float(self.rate_spin.value())
+        self.config.oversample = int(self.os_combo.currentData())
         self.config.force_sim = self.sim.isChecked()
         try:
             self.device.connect()
@@ -246,6 +277,7 @@ class NiDaqPanel(QWidget):
         chans = self.config.enabled_channels()
         self.tiles.set_channels(chans)
         self.history.set_channels(chans, self.device.ring)
+        self.filter_panel.set_channels(chans, self.device.ring)
         self._last_count = 0
         self._last_time = time.perf_counter()
 
@@ -258,18 +290,21 @@ class NiDaqPanel(QWidget):
         self.disconnect_btn.setEnabled(connected)
         self.tare_btn.setEnabled(connected)
         self.clear_tare_btn.setEnabled(connected)
-        for w in (self.name_edit, self.rate_spin, self.sim):
+        for w in (self.name_edit, self.rate_spin, self.os_combo, self.sim):
             w.setEnabled(not connected)
+        os_ = getattr(self.device, "oversample_actual", 1)
+        avg = f" × {os_} avg" if connected and os_ > 1 else ""
         if not connected:
             self._set_lamp("DISCONNECTED", theme.TEXT_DIM)
         elif self.device.sim_mode:
             self._set_lamp("SIMULATION", theme.WARNING)
         elif self.device.waiting_for_trigger:
-            self._set_lamp(f"ARMED @ {self.device.actual_hz:.0f} Hz",
+            self._set_lamp(f"ARMED @ {self.device.actual_hz:.0f} Hz{avg}",
                            theme.WARNING)
         else:
-            self._set_lamp(f"ACQUIRING @ {self.device.actual_hz:.0f} Hz",
-                           theme.SUCCESS)
+            self._set_lamp(
+                f"ACQUIRING @ {self.device.actual_hz:.0f} Hz{avg}",
+                theme.SUCCESS)
 
     def _set_lamp(self, text: str, color: str):
         self.lamp.setText(text)
@@ -323,6 +358,7 @@ class NiDaqPanel(QWidget):
             self._set_connected_ui(True)
         self.tiles.refresh(self.device.ring, self.device.actual_hz)
         self.history.refresh()
+        self.filter_panel.refresh(self.device.actual_hz)
         self.forces_panel.refresh(self.device.ring, self.device.actual_hz,
                                   self.history.window_s)
         if self.forces_panel.overstress:
@@ -348,6 +384,7 @@ class NiDaqPanel(QWidget):
         self.history.window_s = self.config.plot_window_s
         self.rate_spin.setValue(self.config.scan_hz)
         self.name_edit.setText(self.config.device_name)
+        self._sync_os_combo()
 
 
 class _AboutDialog(QDialog):

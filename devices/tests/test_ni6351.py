@@ -429,13 +429,15 @@ def test_hw_channels_ranges_and_timing():
                                (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 10.0)):
                 assert call["min_val"] == -r and call["max_val"] == r
             assert all(c["terminal"] == _FakeTC.DIFF for c in task.ai_calls)
-            # hardware clock at scan_hz x oversample; delivered rate is
-            # still scan_hz after the mean-decimation
+            # hardware clock at scan_hz x oversample (default AUTO fills
+            # the 1 MS/s aggregate: 7 ch @ 1 kHz -> 142x); delivered
+            # rate is still scan_hz after the mean-decimation
             t = task.timing_calls[0]
-            assert t["rate"] == 1000.0 * 16
+            assert t["rate"] == 1000.0 * 142
             assert t["sample_mode"] == _FakeAcqType.CONTINUOUS
-            assert t["samps_per_chan"] == 5000 * 16
+            assert t["samps_per_chan"] == 5000 * 142
             assert dev.actual_hz == 1000.0
+            assert dev.oversample_actual == 142
             # immediate trigger → NO trigger configuration at all
             assert task.dig_trig_calls == [] and task.anlg_trig_calls == []
             assert task.started

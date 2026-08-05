@@ -56,6 +56,23 @@ log = logging.getLogger(__name__)
 _AGGREGATE_MAX = 1_000_000
 
 
+def effective_oversample(requested: int, scan_hz: float, n_channels: int,
+                         aggregate_max: int = _AGGREGATE_MAX) -> int:
+    """Resolve the configured oversample to what the hardware can run.
+
+    ``requested <= 0`` means AUTO: the largest factor whose aggregate
+    rate ``scan_hz * oversample * n_channels`` fits the device ceiling
+    (maximum background data, averaged back down to ``scan_hz``). An
+    explicit request is clamped to the same ceiling.
+    """
+    if scan_hz <= 0 or n_channels <= 0:
+        return 1
+    ceiling = max(1, int(aggregate_max // (scan_hz * n_channels)))
+    if requested <= 0:
+        return ceiling
+    return max(1, min(int(requested), ceiling))
+
+
 def _decimate(carry: Optional[np.ndarray], data: np.ndarray,
               oversample: int):
     """Mean-decimate ``data`` (n_ch, n) by ``oversample`` with a carry
@@ -146,6 +163,11 @@ class NiUsb6351:
                 self.config.trigger.mode != "immediate")
 
     @property
+    def oversample_actual(self) -> int:
+        """The oversample factor actually running (resolved at connect)."""
+        return self._oversample
+
+    @property
     def ao_wave_running(self) -> bool:
         return self._ao_wave_task is not None
 
@@ -224,6 +246,7 @@ class NiUsb6351:
         if self.config.force_sim:
             self._sim = True
             self._core = SimCore(self._chans)
+            self._oversample = 1            # sim generates at scan_hz
             self.actual_hz = self.config.scan_hz
             self._thread = threading.Thread(target=self._sim_loop,
                                             name="ni6351-sim", daemon=True)
@@ -244,9 +267,11 @@ class NiUsb6351:
         self._connected = True
         trig = self.config.trigger
         if trig.mode == "immediate":
+            extra = (f" ({self._oversample}× oversampled)"
+                     if self._oversample > 1 else "")
             self._status(f"Acquiring '{self.config.device_name}' at "
                          f"{self.actual_hz:.1f} Hz × "
-                         f"{len(self._chans)} channels")
+                         f"{len(self._chans)} channels{extra}")
         else:
             self._status(f"Armed at {self.actual_hz:.1f} Hz — waiting for "
                          f"{trig.mode.replace('_', ' ')} on {trig.source}")
@@ -265,17 +290,19 @@ class NiUsb6351:
                     min_val=-r, max_val=r)
             # oversample: ADC at scan_hz*oversample, averaged back down
             # to scan_hz in the poll loop (sqrt(N) noise gain + AA)
-            self._oversample = max(1, int(getattr(cfg, "oversample", 1)))
+            req = int(getattr(cfg, "oversample", 1))
             n_ch = len(self._chans)
-            while (self._oversample > 1 and
-                   cfg.scan_hz * self._oversample * n_ch > _AGGREGATE_MAX):
-                self._oversample //= 2
-            if self._oversample != max(1, int(getattr(cfg, "oversample",
-                                                      1))):
+            self._oversample = effective_oversample(req, cfg.scan_hz, n_ch)
+            hw_rate = cfg.scan_hz * self._oversample
+            if req <= 0:
+                self._status(
+                    f"Auto-oversample {self._oversample}x — ADC at "
+                    f"{hw_rate * n_ch / 1e3:.0f} kS/s aggregate, averaged "
+                    f"to {cfg.scan_hz:.0f} Hz for the data of record")
+            elif self._oversample != req:
                 self._status(f"Oversample reduced to "
                              f"{self._oversample}x to respect the "
                              f"device aggregate rate")
-            hw_rate = cfg.scan_hz * self._oversample
             buf_samps = max(int(cfg.buffer_seconds * hw_rate), 1000)
             self._task.timing.cfg_samp_clk_timing(
                 rate=hw_rate,

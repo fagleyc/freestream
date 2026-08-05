@@ -36,6 +36,16 @@ class SettingsDialog(QDialog):
         self.scan_hz.setValue(cfg.scan_hz)
         self.scan_hz.setSuffix(" Hz")
         af.addRow("Scan rate", self.scan_hz)
+        self.oversample = QSpinBox()
+        self.oversample.setRange(0, 1024)
+        self.oversample.setValue(cfg.oversample)
+        self.oversample.setSuffix("×")
+        self.oversample.setSpecialValueText("Auto (max)")
+        self.oversample.setToolTip(
+            "ADC oversampling averaged down to the scan rate. 0 = auto: "
+            "fill the device's aggregate rate budget. Clamped at connect "
+            "if the budget is exceeded.")
+        af.addRow("Oversample", self.oversample)
         self.buffer_s = QDoubleSpinBox()
         self.buffer_s.setRange(1.0, 60.0)
         self.buffer_s.setDecimals(0)
@@ -80,6 +90,7 @@ class SettingsDialog(QDialog):
         cfg = self._cfg
         cfg.device_name = self.device_name.text().strip() or cfg.device_name
         cfg.scan_hz = float(self.scan_hz.value())
+        cfg.oversample = int(self.oversample.value())
         cfg.buffer_seconds = float(self.buffer_s.value())
         cfg.poll_ms = self.poll_ms.value()
         cfg.ao_update_hz = float(self.ao_update_hz.value())
