@@ -112,6 +112,14 @@ class FreestreamConfig:
     cal_type: str = "Linear"         # Linear | Quadratic | Cubic
     balance_config: str = "Force"    # Force | Moment balance layout
     warn_utilization: float = 0.8    # amber threshold (fraction of rated)
+    #: monitoring low-pass [Hz] applied to the raw balance volts before
+    #: the live reduction (tiles, utilization bars, overstress record
+    #: blocker). 0 = off. Mechanical loads live well below 10 Hz;
+    #: without this, raw 1 kHz electrical noise peaks inflate the
+    #: peak-based utilization above 100% and BLOCK RUNS while the
+    #: displayed mean loads sit comfortably in range (field
+    #: 2026-07-24, LSWT 50lb moment balance). Recorded data stays raw.
+    display_lpf_hz: float = 10.0
     ref_area: float = 1.0            # S — reference area (coefficient denom)
     ref_chord: float = 1.0           # c — reference chord
     ref_span: float = 1.0            # b — reference span

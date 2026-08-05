@@ -44,6 +44,20 @@ from ..hal import Streaming
 
 SAMPLE_MS = 200
 WINDOW_S = 1.0
+
+
+def _lowpass(x: np.ndarray, rate_hz: float, cutoff_hz: float
+             ) -> np.ndarray:
+    """Monitor-grade low-pass: moving-average FIR sized to
+    ``rate/cutoff`` (first null ~cutoff). Same filter as the NI device
+    app's display LPF; kept local so freestream does not import a
+    device app module. NOT applied to recorded data."""
+    if cutoff_hz <= 0 or rate_hz <= 0:
+        return x
+    n = int(round(rate_hz / cutoff_hz))
+    if n < 2 or x.size < n:
+        return x
+    return np.convolve(x, np.full(n, 1.0 / n), mode="same")
 #: rolling window for the peak-hold marker on the load bars
 PEAK_HOLD_S = 30.0
 
@@ -431,6 +445,15 @@ class ForcesPanel(QWidget):
             self.info.setText("calibration loaded, waiting for balance "
                               "channels…")
             return
+        # monitoring low-pass BEFORE the reduction: utilization (and the
+        # overstress record blocker) are peak-based, so raw 1 kHz noise
+        # spikes read as over-range loads and refuse runs while the mean
+        # tiles sit in range. Recorded data is untouched — this filters
+        # the monitor's view only.
+        lpf = getattr(self.config, "display_lpf_hz", 0.0)
+        if lpf > 0:
+            raw = {k: _lowpass(np.asarray(v, dtype=float), rate, lpf)
+                   for k, v in raw.items()}
         alpha, beta = self._alpha_beta()
         geom = Geometry(self.config.ref_area, self.config.ref_chord,
                         self.config.ref_span)
