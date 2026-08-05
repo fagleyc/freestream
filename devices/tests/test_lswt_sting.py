@@ -26,6 +26,7 @@ def _sim_config(**kw) -> StingConfig:
     move, and restore/save must not touch the real state file."""
     kw.setdefault("park_on_disconnect", False)
     kw.setdefault("restore_position", False)
+    kw.setdefault("energize_settle_s", 0.0)      # no sleeps in sim tests
     kw.setdefault("state_path", str(Path(tempfile.gettempdir())
                                     / "sting_state_test.json"))
     return StingConfig(force_sim=True, poll_ms=50, init_reset=False, **kw)

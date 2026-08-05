@@ -472,6 +472,18 @@ class StingPanel(QWidget):
         self.park_deg.setSuffix("°")
         self.park_deg.valueChanged.connect(self._limits_changed)
         bf.addRow("Park Alpha at", self.park_deg)
+        self.a_shutdown_chk = QCheckBox(
+            "De-energize Alpha when idle (ST shutdown — REQUIRES the "
+            "brake; kills stepper EMI in the balance wiring)")
+        self.a_shutdown_chk.setChecked(self.config.alpha.idle_shutdown)
+        self.a_shutdown_chk.toggled.connect(self._limits_changed)
+        bf.addRow(self.a_shutdown_chk)
+        self.b_shutdown_chk = QCheckBox(
+            "De-energize Beta when idle (NO brake fitted — leave off "
+            "unless the mechanism is self-locking)")
+        self.b_shutdown_chk.setChecked(self.config.beta.idle_shutdown)
+        self.b_shutdown_chk.toggled.connect(self._limits_changed)
+        bf.addRow(self.b_shutdown_chk)
         ll.addWidget(beh)
 
         comms = QGroupBox("Comms (next connect)")
@@ -657,6 +669,8 @@ class StingPanel(QWidget):
         cfg.beta.max_deg = max(self.b_min.value(), self.b_max.value())
         cfg.park_on_disconnect = self.park_chk.isChecked()
         cfg.park_alpha_deg = self.park_deg.value()
+        cfg.alpha.idle_shutdown = self.a_shutdown_chk.isChecked()
+        cfg.beta.idle_shutdown = self.b_shutdown_chk.isChecked()
         cfg.init_reset = self.init_reset_chk.isChecked()
         cfg.poll_ms = self.poll_ms.value()
         self.device.set_config(cfg)     # limits/zero take effect at once
@@ -676,6 +690,8 @@ class StingPanel(QWidget):
             w.setValue(value)
             w.blockSignals(False)
         for w, value in ((self.park_chk, cfg.park_on_disconnect),
+                         (self.a_shutdown_chk, cfg.alpha.idle_shutdown),
+                         (self.b_shutdown_chk, cfg.beta.idle_shutdown),
                          (self.init_reset_chk, cfg.init_reset)):
             w.blockSignals(True)
             w.setChecked(value)

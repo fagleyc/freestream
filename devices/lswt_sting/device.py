@@ -60,6 +60,7 @@ class _AxisState:
         self.target: Optional[float] = None
         self.deadline = 0.0
         self.responding = False
+        self.energized = True       # SX ST shutdown state (drive current)
 
     def update_from_counts(self, counts: int) -> None:
         self.counts = counts
@@ -246,6 +247,36 @@ class StingDrive:
                     f"to Moving/Not-Moving (released while moving, "
                     f"engaged at rest)")
         p.command_blind("", "FSD1")     # broadcast — echo not guaranteed
+        # idle shutdown: de-energize configured axes now that init is
+        # done (brake engaged since not moving) — kills the stepper
+        # holding-current chopping EMI in the balance wiring
+        for st in self._axes():
+            st.energized = True
+            if st.cfg.enabled and st.cfg.idle_shutdown:
+                self._shutdown_axis(st)
+
+    def _shutdown_axis(self, st: "_AxisState") -> None:
+        """SX ``ST1`` — remove motor current (brake must hold)."""
+        try:
+            self._proto.command(st.cfg.unit, "ST1")
+            st.energized = False
+            self._status(f"{st.cfg.name} drive de-energized "
+                         f"(idle — brake holding, EMI quiet)")
+        except StingError as exc:
+            self._status(f"{st.cfg.name} shutdown failed: {exc}")
+
+    def _energize_axes(self, states) -> None:
+        """SX ``ST0`` on any shut-down axis about to move, then one
+        settle wait for the current loop to stabilize."""
+        woke = False
+        for st in states:
+            if st.cfg.idle_shutdown and not st.energized:
+                self._proto.command(st.cfg.unit, "ST0")
+                st.energized = True
+                woke = True
+                self._status(f"{st.cfg.name} drive energized")
+        if woke and self.config.energize_settle_s > 0:
+            time.sleep(self.config.energize_settle_s)
 
     def disconnect(self) -> None:
         if not self._connected:
@@ -393,6 +424,7 @@ class StingDrive:
                                    f"stop first")
             req.append((st, float(value)))
         with self._cmd_lock:
+            self._energize_axes([st for st, _v in req])
             started = []
             for st, value in req:
                 delta = st.cfg.angle_to_counts(value) - st.counts
@@ -436,6 +468,7 @@ class StingDrive:
         if steps == 0:
             return
         with self._cmd_lock:
+            self._energize_axes([st])
             self._proto.move_steps(st.cfg.unit, steps)
             st.target = (st.angle + delta_deg) if st.cfg.zeroed else None
             st.moving = True
@@ -457,6 +490,9 @@ class StingDrive:
             st.target = None
         self._proto.stop_all_now([st.cfg.unit for st in self._axes()])
         self._status("STOP issued to both axes")
+        for st in self._axes():
+            if st.cfg.enabled and st.cfg.idle_shutdown and st.energized:
+                self._shutdown_axis(st)
 
     def stop_axis(self, name: str) -> None:
         st = self._axis(name)
@@ -466,6 +502,8 @@ class StingDrive:
         st.target = None
         self._proto.stop_all_now([st.cfg.unit])
         self._status(f"{st.cfg.name} stopped")
+        if st.cfg.enabled and st.cfg.idle_shutdown and st.energized:
+            self._shutdown_axis(st)
 
     # ── zero / fault management ──────────────────────────────────────────
     def set_current_angle(self, name: str, angle: float) -> None:
@@ -542,6 +580,11 @@ class StingDrive:
                                     self._proto.position(st.cfg.unit))
                                 st.moving = False
                                 completed.append(st.cfg.name)
+                                # settle done → brake engaged (O3
+                                # dropped) → safe to kill the motor
+                                # current and its EMI
+                                if st.cfg.idle_shutdown:
+                                    self._shutdown_axis(st)
                             elif time.monotonic() > st.deadline:
                                 self._trip(
                                     f"{st.cfg.name} move TIMED OUT — "

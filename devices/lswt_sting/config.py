@@ -109,6 +109,15 @@ class StingAxisConfig:
     #: power-to-release through this output so it fails safe.
     brake_output: int = 0
 
+    #: de-energize the motor windings (SX ``ST1`` shutdown) whenever
+    #: the axis is idle, re-energizing (``ST0`` + settle) before any
+    #: move. Kills the stepper holding-current chopping that couples
+    #: EMI into the balance wiring. ONLY safe with a brake (or a
+    #: self-locking mechanism) — a shut-down stepper has ZERO holding
+    #: torque. The position counter lives in the indexer, so no
+    #: re-zero is needed across shutdown cycles.
+    idle_shutdown: bool = False
+
     def counts_to_angle(self, counts: int) -> float:
         return (self.zero_offset_deg
                 + self.direction * counts / self.steps_per_degree)
@@ -134,7 +143,9 @@ def _alpha() -> StingAxisConfig:
                            steps_per_degree=ALPHA_STEPS_PER_DEG,
                            acceleration="10.8528", deceleration="10.8528",
                            velocity=".108", min_deg=-15.0, max_deg=30.0,
-                           brake_output=3)     # brake on O3 (2026-07)
+                           brake_output=3,     # brake on O3 (2026-07)
+                           idle_shutdown=True)  # brake holds; kill the
+    # holding-current EMI that couples into the balance wiring
 
 
 def _beta() -> StingAxisConfig:
@@ -158,6 +169,11 @@ class StingConfig:
     com_port: str = "COM1"
     baud: int = 9600                # drives are fixed 9600-8N1, CR newline
     serial_timeout_s: float = 0.5
+    #: settle time after re-energizing a shut-down drive (``ST0``)
+    #: before motion is commanded — the SX needs a moment for the
+    #: current loop to stabilize
+    energize_settle_s: float = 0.5
+
     #: send Z (drive reset) during connect init, like the legacy
     #: InitHw. OFF by default (2026-07-23): Z wipes the indexer step
     #: counter — which fights the position-restore safety feature —
