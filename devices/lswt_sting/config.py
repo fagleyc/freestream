@@ -175,13 +175,12 @@ class StingConfig:
     energize_settle_s: float = 0.5
 
     #: send Z (drive reset) during connect init, like the legacy
-    #: InitHw. OFF by default (2026-07-23): Z wipes the indexer step
-    #: counter — which fights the position-restore safety feature —
-    #: and the legacy manual warns the reset may cause uncontrolled
-    #: movement. Enable per-session (Limits tab / settings) when a
-    #: genuine drive re-boot is wanted; reinitialize() still offers
-    #: the full legacy sequence with an explicit confirmation.
-    init_reset: bool = False
+    #: InitHw. ON by default (restored 2026-07-24): the drives NEED the
+    #: Z after a power cycle to come up clean, and power-cycling is the
+    #: normal daily sequence. The cost — Z wipes the indexer counter —
+    #: is covered by the position-restore feature, which re-derives the
+    #: zero reference from the saved state after the reset.
+    init_reset: bool = True
 
     # ── control/poll loop ────────────────────────────────────────────────
     poll_ms: int = 250              # status/position poll period

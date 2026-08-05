@@ -256,7 +256,8 @@ def test_connect_and_state_shape():
         assert set(st) == {"Alpha", "Beta", "fault"}
         for name in ("Alpha", "Beta"):
             assert set(st[name]) == {"angle", "counts", "moving", "target",
-                                     "zeroed", "enabled", "responding"}
+                                     "zeroed", "enabled", "responding",
+                                     "energized"}
             assert st[name]["responding"]
             assert not st[name]["moving"]
     finally:

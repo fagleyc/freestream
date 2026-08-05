@@ -118,9 +118,41 @@ class _AxisBox(QGroupBox):
             "counter (PZ) — required before absolute moves")
         g.addWidget(self.zero_btn, 4, 0, 1, 4)
 
+        # manual drive-current toggle (ST0/ST1) — the balance-noise
+        # A/B switch. checked = energized.
+        self.motor_btn = QPushButton()
+        self.motor_btn.setCheckable(True)
+        self.motor_btn.setToolTip(
+            "Toggle the drive holding current (SX ST0/ST1) to A/B-test "
+            "stepper EMI on the balance. De-energized = ZERO holding "
+            "torque (Alpha's brake holds; Beta may drift — jog back). "
+            "Any move re-energizes automatically.")
+        g.addWidget(self.motor_btn, 5, 0, 1, 4)
+        self._energized = True
+        self._moving = False
+        self._sync_motor_btn()
+
+    def _sync_motor_btn(self):
+        self.motor_btn.blockSignals(True)
+        self.motor_btn.setChecked(self._energized)
+        self.motor_btn.blockSignals(False)
+        if self._energized:
+            self.motor_btn.setText("Drive Current: ON")
+            self.motor_btn.setStyleSheet("")
+        else:
+            self.motor_btn.setText("Drive Current: OFF (noise test)")
+            self.motor_btn.setStyleSheet(
+                f"color: {theme.WARNING}; font-weight: bold;")
+
+    def set_energized(self, on: bool):
+        if on != self._energized:
+            self._energized = on
+            self._sync_motor_btn()
+
     def set_state(self, angle: float, counts: int, moving: bool,
                   target, zeroed: bool):
         self._zeroed = zeroed
+        self._moving = moving
         if zeroed:
             self.big_lbl.setText(f"{angle:+8.3f}")
             self.sub_lbl.setText(f"{counts:+d} steps")
@@ -150,6 +182,7 @@ class _AxisBox(QGroupBox):
         for w in (self.step_minus, self.step_plus, self.step_size,
                   self.stop_btn, self.zero_btn):
             w.setEnabled(motion)
+        self.motor_btn.setEnabled(motion and not self._moving)
 
     def set_limits(self, lo: float, hi: float):
         self.target.setRange(lo, hi)
@@ -359,6 +392,10 @@ class StingPanel(QWidget):
                 lambda _=False, b=box: self._step(b, -1))
             box.zero_btn.clicked.connect(
                 lambda _=False, n=name: self._ask_zero(n))
+            # clicked (not toggled) — fires only on user interaction,
+            # so programmatic state sync can't loop back into the device
+            box.motor_btn.clicked.connect(
+                lambda checked, n=name: self._set_motor(n, checked))
         # the two axis boxes reflow (side-by-side ↔ stacked) with width
         self.axes_container = _ReflowAxes(self.alpha_box, self.beta_box)
         boxes.addWidget(self.axes_container, 2)
@@ -643,6 +680,13 @@ class StingPanel(QWidget):
             return
         self._refresh_ui()
 
+    def _set_motor(self, name: str, on: bool):
+        try:
+            self.device.set_energized(name, on)
+        except (ValueError, RuntimeError, StingError) as exc:
+            self.statusSignal.emit(str(exc))
+        self._refresh_ui()
+
     def _handle_reset_fault(self):
         try:
             self.device.reset_fault()
@@ -779,6 +823,8 @@ class StingPanel(QWidget):
                                  a["target"], a["zeroed"])
         self.beta_box.set_state(b["angle"], b["counts"], b["moving"],
                                 b["target"], b["zeroed"])
+        self.alpha_box.set_energized(a.get("energized", True))
+        self.beta_box.set_energized(b.get("energized", True))
         self._update_motion_enables()
 
         moving = [n for n in ("Alpha", "Beta") if state[n]["moving"]]

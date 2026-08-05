@@ -115,7 +115,7 @@ class StingDrive:
                 "angle": st.angle, "counts": st.counts,
                 "moving": st.moving, "target": st.target,
                 "zeroed": st.cfg.zeroed, "enabled": st.cfg.enabled,
-                "responding": st.responding,
+                "responding": st.responding, "energized": st.energized,
             }
         out["fault"] = self._fault
         return out
@@ -266,17 +266,44 @@ class StingDrive:
             self._status(f"{st.cfg.name} shutdown failed: {exc}")
 
     def _energize_axes(self, states) -> None:
-        """SX ``ST0`` on any shut-down axis about to move, then one
-        settle wait for the current loop to stabilize."""
+        """SX ``ST0`` on ANY shut-down axis about to move (idle-
+        shutdown or manual toggle), then one settle wait for the
+        current loop to stabilize."""
         woke = False
         for st in states:
-            if st.cfg.idle_shutdown and not st.energized:
+            if not st.energized:
                 self._proto.command(st.cfg.unit, "ST0")
                 st.energized = True
                 woke = True
                 self._status(f"{st.cfg.name} drive energized")
         if woke and self.config.energize_settle_s > 0:
             time.sleep(self.config.energize_settle_s)
+
+    def set_energized(self, name: str, on: bool) -> None:
+        """Manual drive-current toggle (SX ``ST0``/``ST1``) — the
+        noise A/B switch: kill an axis's holding current and watch the
+        balance floor. A de-energized axis has ZERO holding torque
+        (fine for Alpha with its brake; Beta relies on mechanism
+        friction — jog it back if it drifts). Any commanded move
+        re-energizes automatically."""
+        self._require_ready()
+        st = self._axis(name)
+        if st.moving:
+            raise RuntimeError(f"{st.cfg.name} is moving — stop first")
+        with self._cmd_lock:
+            if on and not st.energized:
+                self._proto.command(st.cfg.unit, "ST0")
+                st.energized = True
+                if self.config.energize_settle_s > 0:
+                    time.sleep(self.config.energize_settle_s)
+                self._status(f"{st.cfg.name} drive energized (manual)")
+            elif not on and st.energized:
+                self._proto.command(st.cfg.unit, "ST1")
+                st.energized = False
+                note = "" if st.cfg.brake_output else \
+                    " — NO brake on this axis: zero holding torque!"
+                self._status(f"{st.cfg.name} drive de-energized "
+                             f"(manual){note}")
 
     def disconnect(self) -> None:
         if not self._connected:
