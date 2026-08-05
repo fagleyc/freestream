@@ -123,13 +123,15 @@ def test_brake_output_disabled_sends_nothing(tmp_path, monkeypatch):
 
 
 def test_idle_shutdown_lifecycle(tmp_path, monkeypatch):
-    """EMI fix (2026-07-24): the stepper holding current couples noise
-    into the balance wiring, and the brake now holds Alpha at rest —
-    so the drive is de-energized (ST1) whenever idle and re-energized
-    (ST0) before motion. Beta has no brake → never shut down."""
+    """Idle shutdown (opt-in since 2026-08-05 — the A/B test cleared
+    the steppers as the balance-noise source): when enabled, the drive
+    is de-energized (ST1) whenever idle and re-energized (ST0) before
+    motion. Beta has no brake → never shut down."""
     created = _WireRecorder.install(monkeypatch)
-    dev = StingDrive(_cfg(tmp_path, park_on_disconnect=False,
-                          restore_position=False))
+    cfg = _cfg(tmp_path, park_on_disconnect=False,
+               restore_position=False)
+    cfg.alpha.idle_shutdown = True
+    dev = StingDrive(cfg)
     try:
         dev.connect()
         sent = created[0].sent
@@ -152,8 +154,10 @@ def test_idle_shutdown_lifecycle(tmp_path, monkeypatch):
 
 def test_idle_shutdown_after_stop_all(tmp_path, monkeypatch):
     created = _WireRecorder.install(monkeypatch)
-    dev = StingDrive(_cfg(tmp_path, park_on_disconnect=False,
-                          restore_position=False))
+    cfg = _cfg(tmp_path, park_on_disconnect=False,
+               restore_position=False)
+    cfg.alpha.idle_shutdown = True
+    dev = StingDrive(cfg)
     try:
         dev.connect()
         dev.set_current_angle("alpha", 0.0)
@@ -167,10 +171,11 @@ def test_idle_shutdown_after_stop_all(tmp_path, monkeypatch):
 
 
 def test_idle_shutdown_disabled_sends_no_st(tmp_path, monkeypatch):
+    """Default behavior (legacy-style): motors stay energized — no ST
+    traffic at all through connect/move/settle."""
     created = _WireRecorder.install(monkeypatch)
     cfg = _cfg(tmp_path, park_on_disconnect=False,
                restore_position=False)
-    cfg.alpha.idle_shutdown = False
     dev = StingDrive(cfg)
     try:
         dev.connect()
@@ -185,8 +190,10 @@ def test_idle_shutdown_disabled_sends_no_st(tmp_path, monkeypatch):
 
 def test_idle_shutdown_config_round_trip(tmp_path):
     cfg = _cfg(tmp_path)
-    assert cfg.alpha.idle_shutdown is True     # brake fitted (2026-07)
-    assert cfg.beta.idle_shutdown is False     # no brake
+    # OFF by default (2026-08-05): the drives-off A/B test showed the
+    # steppers are not the balance-noise source — stay engaged
+    assert cfg.alpha.idle_shutdown is False
+    assert cfg.beta.idle_shutdown is False
     p = tmp_path / "cfg.json"
     cfg.beta.idle_shutdown = True
     cfg.save(p)

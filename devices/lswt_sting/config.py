@@ -138,14 +138,18 @@ class StingAxisConfig:
 
 def _alpha() -> StingAxisConfig:
     """Alpha axis defaults (unit 1). Travel guess −15…+30° — the legacy
-    limits come from the Tunnel Default File; park position is ~+29.3°."""
+    limits come from the Tunnel Default File; park position is ~+29.3°.
+
+    idle_shutdown back OFF (2026-08-05): a manual A/B test with BOTH
+    drives de-energized left the balance noise unchanged — the stepper
+    holding current is not the noise source — so the motors stay
+    engaged like the legacy tool. The manual Drive Current buttons /
+    ``set_energized`` remain for future diagnostics."""
     return StingAxisConfig(name="Alpha", unit="1",
                            steps_per_degree=ALPHA_STEPS_PER_DEG,
                            acceleration="10.8528", deceleration="10.8528",
                            velocity=".108", min_deg=-15.0, max_deg=30.0,
-                           brake_output=3,     # brake on O3 (2026-07)
-                           idle_shutdown=True)  # brake holds; kill the
-    # holding-current EMI that couples into the balance wiring
+                           brake_output=3)     # brake on O3 (2026-07)
 
 
 def _beta() -> StingAxisConfig:
