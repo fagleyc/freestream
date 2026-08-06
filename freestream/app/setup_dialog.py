@@ -233,21 +233,10 @@ class MeasurementSetupDialog(QDialog):
             "recorded metadata inherit them. NEVER applied to the raw "
             "data at capture time.")
         bal.addRow("Balance .vol file", self.vol_note)
-        geom_row = QHBoxLayout()
-        geom_row.setSpacing(8)
-        self.area_spin = self._geom_spin(config.ref_area, " in²")
-        self.chord_spin = self._geom_spin(config.ref_chord, " in")
-        self.span_spin = self._geom_spin(config.ref_span, " in")
-        for lbl, spin, tip in (
-                ("S", self.area_spin, "Reference area"),
-                ("c", self.chord_spin, "Reference chord"),
-                ("b", self.span_spin, "Reference span")):
-            tag = QLabel(lbl)
-            tag.setToolTip(tip)
-            spin.setToolTip(tip)
-            geom_row.addWidget(tag)
-            geom_row.addWidget(spin, 1)
-        bal.addRow("Ref S / c / b", geom_row)
+        # reference dims were duplicated here (ref_area/ref_chord/
+        # ref_span) AND in Model/Test (Sref/cref/bref) — unified
+        # 2026-08-06: the Model/Test "Ref dims" row is the ONE editor;
+        # the legacy display fields are mirrored from it on apply.
         grid.addWidget(bal_box, 2, 0, 1, 2)
 
         # ── Model / Test (inherited from an imported run sheet; §5) ──────
@@ -439,12 +428,9 @@ class MeasurementSetupDialog(QDialog):
         config.mach_check_enabled = self.mach_check_chk.isChecked()
         # config.vol_path is DEVICE-OWNED (StrainBook panel → Forces tab);
         # the Forces page mirrors it into the config each tick
-        config.ref_area = self.area_spin.value()
-        config.ref_chord = self.chord_spin.value()
-        config.ref_span = self.span_spin.value()
-        # run-sheet reference set + MRC, now editable here; mirror into
-        # the display fields when set so BOTH key families Streamlined
-        # accepts (Sref/cref/bref and ref_area/ref_chord/ref_span) agree
+        # ONE reference-dimension editor (Sref/cref/bref + MRC below);
+        # the legacy ref_area/ref_chord/ref_span display fields are
+        # mirrors kept for old readers of the config snapshot
         config.Sref = self.sref_spin.value()
         config.cref = self.cref_spin.value()
         config.bref = self.bref_spin.value()
@@ -453,13 +439,10 @@ class MeasurementSetupDialog(QDialog):
         config.MRC_z = self.mrc_z_spin.value()
         if config.Sref > 0:
             config.ref_area = config.Sref
-            self.area_spin.setValue(config.Sref)
         if config.cref > 0:
             config.ref_chord = config.cref
-            self.chord_spin.setValue(config.cref)
         if config.bref > 0:
             config.ref_span = config.bref
-            self.span_spin.setValue(config.bref)
         config.test_name = self.test_name_edit.text().strip()
         config.model_name = self.model_name_edit.text().strip()
         config.engineer = self.engineer_edit.text().strip()

@@ -84,9 +84,13 @@ class _Tile(QFrame):
         head.addStretch(1)
         lay.addLayout(head)
         self.value = QLabel("--")
+        # monospace + fixed width: proportional digits made the tile
+        # (and the whole tile row) resize with every value change
         self.value.setStyleSheet(
-            "font-family: 'Segoe UI', sans-serif; font-size: 18pt; "
+            "font-family: Consolas, monospace; font-size: 17pt; "
             f"font-weight: 600; color: {theme.TEXT};")
+        self.value.setMinimumWidth(
+            self.value.fontMetrics().horizontalAdvance("+00000.0000"))
         lay.addWidget(self.value)
         self.sub = QLabel(unit)
         self.sub.setStyleSheet(f"color: {theme.TEXT_DIM};")
@@ -94,9 +98,9 @@ class _Tile(QFrame):
         self._unit = unit
 
     def update_value(self, eng: float) -> None:
-        mag = abs(eng)
-        decimals = 4 if mag < 1 else (3 if mag < 100 else 2)
-        self.value.setText(f"{eng:+,.{decimals}f}")
+        # FIXED format: a value hopping between decimal counts resized
+        # the tile every refresh (window-size bounce)
+        self.value.setText(f"{eng:+11.4f}")
         self.sub.setText(self._unit)
 
 
@@ -134,6 +138,19 @@ class ChannelTiles(QWidget):
                 tile.update_value(float(np.mean(data[name])))
 
 
+def trim_lpf_edges(x: np.ndarray, y: np.ndarray, rate_hz: float,
+                   cutoff_hz: float):
+    """Drop the kernel-length ends of a filtered trace so only fully
+    supported samples are drawn — the edge-hold padding keeps levels
+    sane but the outermost half-kernel is still visibly biased."""
+    if cutoff_hz <= 0 or rate_hz <= 0:
+        return x, y
+    n = int(round(rate_hz / cutoff_hz))
+    if n < 2 or x.size <= 3 * n:
+        return x, y
+    return x[n:-n], y[n:-n]
+
+
 def lowpass(x: np.ndarray, rate_hz: float, cutoff_hz: float) -> np.ndarray:
     """Display-grade low-pass: moving-average FIR with the window sized
     to ``rate/cutoff`` (first null at ~cutoff). Vectorized, zero-lag
@@ -162,6 +179,8 @@ class ChannelHistory(QWidget):
         self.paused = False
         self.follow = True        # x pinned to now; user zoom/pan unpins
         self.lpf_hz = 0.0         # display low-pass (0 = off)
+        self._yr = None           # sticky Y range (hysteresis autorange)
+        self._yr_shrink = 0
         self._rate = 200.0
         self._ring: Optional[ScanRingBuffer] = None
         self._curves: Dict[str, pg.PlotDataItem] = {}
@@ -208,6 +227,28 @@ class ChannelHistory(QWidget):
         if hz > 1.0:
             self._rate = hz
 
+    def _apply_sticky_y(self, pi, lo: float, hi: float) -> None:
+        """Hysteresis Y autorange: per-frame pyqtgraph autorange made
+        the axis limits chase every noise excursion (distracting).
+        Expand IMMEDIATELY when data leaves the current range; shrink
+        only after the data has occupied well under half the span for
+        ~3 s of consecutive refreshes."""
+        pad = (hi - lo) * 0.1 or abs(hi) * 0.1 or 1e-6
+        want = (lo - pad, hi + pad)
+        cur = self._yr
+        if cur is None or lo < cur[0] or hi > cur[1]:
+            self._yr = want
+            self._yr_shrink = 0
+        elif (want[1] - want[0]) < 0.5 * (cur[1] - cur[0]):
+            self._yr_shrink += 1
+            if self._yr_shrink >= 30:          # ~3 s at 10 Hz refresh
+                self._yr = want
+                self._yr_shrink = 0
+        else:
+            self._yr_shrink = 0
+        pi.getViewBox().enableAutoRange(y=False)
+        pi.setYRange(self._yr[0], self._yr[1], padding=0)
+
     # ── per-channel visibility ───────────────────────────────────────────
     def channel_visible(self, name: str) -> bool:
         return self._visible.get(name, True)
@@ -246,12 +287,22 @@ class ChannelHistory(QWidget):
         x = t - t[-1]
         keep = (x >= -self.window_s) & (t > self._clear_t)
         x = x[keep]
+        lo = hi = None
         for name, curve in self._curves.items():
             key = f"{name}_V"
             if key in data and self.channel_visible(name):
                 y = lowpass(data[key][keep], self._rate, self.lpf_hz)
-                xd, yd = _envelope(x, y)
+                # only fully supported filter samples are drawn — the
+                # half-kernel ends are visibly biased (edge effects)
+                xt, yt = trim_lpf_edges(x, y, self._rate, self.lpf_hz)
+                xd, yd = _envelope(xt, yt)
                 curve.setData(xd, yd)
+                if yd.size:
+                    m0, m1 = float(np.min(yd)), float(np.max(yd))
+                    lo = m0 if lo is None else min(lo, m0)
+                    hi = m1 if hi is None else max(hi, m1)
         if self.follow:
-            self._plot.getPlotItem().setXRange(-self.window_s, 0.0,
-                                               padding=0)
+            pi = self._plot.getPlotItem()
+            pi.setXRange(-self.window_s, 0.0, padding=0)
+            if lo is not None:
+                self._apply_sticky_y(pi, lo, hi)

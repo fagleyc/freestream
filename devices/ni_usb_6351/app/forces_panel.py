@@ -61,9 +61,9 @@ class _ForceTile(QFrame):
         lay.addWidget(u)
 
     def update_value(self, v: float):
-        mag = abs(v)
-        dec = 4 if mag < 1 else (3 if mag < 10 else 2)
-        self.value.setText(f"{v:+,.{dec}f}")
+        # FIXED format: hopping decimal counts resized the tile row
+        # every refresh (window-size bounce)
+        self.value.setText(f"{v:+9.3f}")
 
 
 class ForcesPanel(QWidget):
