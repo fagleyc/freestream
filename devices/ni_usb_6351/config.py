@@ -187,6 +187,14 @@ class NiDaqConfig:
     #: uncorrelated (2026-08-05), which is exactly what averaging
     #: rejects.
     oversample: int = 0
+    #: mux settling guard (F16_Val find, 2026-08-05): when a big-range
+    #: channel is followed in the WRAPPED scan order by a ±0.1/0.2 V
+    #: bridge, the multiplexer leaves a settling ghost on the bridge
+    #: (measured: Pdiff 0.84 V on AI7 → +0.45 mV DC on Aft_Pitch AI0 =
+    #: phantom 5 lb Fz, only when air is on). ON: insert a sacrificial
+    #: duplicate read of the victim channel and discard it — the kept
+    #: read is clean. Costs one scan slot per boundary.
+    mux_settle_reread: bool = True
     buffer_seconds: float = 5.0        # DAQmx input buffer length
     poll_ms: int = 25                  # poll-thread read period
 

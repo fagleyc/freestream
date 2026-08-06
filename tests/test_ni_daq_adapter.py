@@ -140,3 +140,27 @@ def test_balance_layout_rename_keeps_extras():
          "Axial", "Roll", "Excitation", "Pdiff"]
     a.balance_config = "Force"
     assert [c.name for c in a.channels()][:4] == ["N1", "N2", "Y1", "Y2"]
+
+
+def test_extra_meta_stamps_active_tare():
+    """The recorded <name>_V arrays are tare-SUBTRACTED by the driver
+    (F16_Val find, 2026-08-05), so the active tare must ride with the
+    run metadata: extra_meta() emits tare_V_json when a tare is set,
+    and nothing when untared (untared files unchanged)."""
+    import json
+    a = NiDaqAdapter(sim=True)
+    a.connect()
+    try:
+        a.start()
+        deadline = time.perf_counter() + 5.0
+        while (time.perf_counter() < deadline
+               and a._dev.frame_count() < 100):
+            time.sleep(0.02)
+        assert "tare_V_json" not in a.extra_meta()
+        a._dev.tare(seconds=0.1)
+        meta = a.extra_meta()
+        tare = json.loads(meta["tare_V_json"])
+        assert set(tare) == set(BRIDGES)
+        assert all(isinstance(v, float) for v in tare.values())
+    finally:
+        a.disconnect()

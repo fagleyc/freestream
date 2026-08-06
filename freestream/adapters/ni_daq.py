@@ -29,6 +29,7 @@ via the channel's scale/offset while ``drain_block`` stays raw volts.
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -185,11 +186,20 @@ class NiDaqAdapter(ConfigurableAdapter):
           Streamlined can reduce forces without ever opening the .vol — the
           matrix is memoised, computed once. A missing/unreadable .vol
           degrades to the pointer only."""
+        meta: Dict[str, object] = {}
+        # Active software tare (F16_Val find, 2026-08-05): the recorded
+        # <name>_V arrays are tare-SUBTRACTED by the driver, so the
+        # tare must ride with the data (raw = recorded + tare). Only
+        # emitted when a tare is active — untared files are unchanged.
+        tare = getattr(self._dev, "tare_values", None) or {}
+        if tare:
+            meta["tare_V_json"] = json.dumps(
+                {k: float(v) for k, v in tare.items()})
         vol = str(self.vol_path or "")
         if not vol:
-            return {}
-        meta: Dict[str, object] = {"vol_path": vol,
-                                   "cal_type": str(self.cal_type or "")}
+            return meta
+        meta.update({"vol_path": vol,
+                     "cal_type": str(self.cal_type or "")})
         if self.balance_type == "internal":
             meta.update(balance_cal_meta(
                 balcal, vol, self.cal_type,

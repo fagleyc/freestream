@@ -85,6 +85,41 @@ def test_effective_oversample_auto_fills_budget():
     assert effective_oversample(0, 200_000.0, 8) == 1
 
 
+def test_mux_settle_reread_default_and_round_trip(tmp_path):
+    """The mux settling guard defaults ON (F16_Val: Pdiff on AI7
+    ghosted +0.45 mV into Aft_Pitch on AI0 across the scan wrap) and
+    round-trips through save/load."""
+    cfg = NiDaqConfig()
+    assert cfg.mux_settle_reread is True
+    cfg.mux_settle_reread = False
+    p = tmp_path / "cfg.json"
+    cfg.save(p)
+    assert NiDaqConfig.load(p).mux_settle_reread is False
+
+
+def test_tare_values_exposed_and_baked_into_stream():
+    """The recorded <name>_V stream is tare-subtracted, so the active
+    tare MUST be inspectable for run metadata (raw = recorded+tare)."""
+    import time as _time
+    from ni_usb_6351.device import NiUsb6351
+    dev = NiUsb6351(NiDaqConfig(force_sim=True, scan_hz=500.0))
+    try:
+        dev.connect()
+        dev.start()
+        deadline = _time.perf_counter() + 5.0
+        while (_time.perf_counter() < deadline
+               and dev.frame_count() < 100):
+            _time.sleep(0.02)
+        assert dev.tare_values == {}
+        tare = dev.tare(seconds=0.1)
+        assert dev.tare_values == tare
+        assert set(tare) == {"N1", "N2", "Y1", "Y2", "Axial", "Roll"}
+        dev.clear_tare()
+        assert dev.tare_values == {}
+    finally:
+        dev.disconnect()
+
+
 def test_effective_oversample_clamps_requests():
     """An explicit request is honoured when it fits and clamped to the
     aggregate budget when it doesn't."""

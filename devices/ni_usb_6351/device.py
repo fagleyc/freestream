@@ -142,6 +142,10 @@ class NiUsb6351:
         # oversample-decimation state (hardware path)
         self._oversample = 1
         self._carry: Optional[np.ndarray] = None
+        # task-row layout (hardware path): rows read from the task vs
+        # the rows that are real channels (mux-settle absorbers dropped)
+        self._n_rows = 0
+        self._keep_rows: Optional[np.ndarray] = None
 
     # ── public state ─────────────────────────────────────────────────────
     @property
@@ -166,6 +170,15 @@ class NiUsb6351:
     def oversample_actual(self) -> int:
         """The oversample factor actually running (resolved at connect)."""
         return self._oversample
+
+    @property
+    def tare_values(self) -> Dict[str, float]:
+        """The active software tare (volts per balance channel).
+
+        The published/recorded ``<name>_V`` stream is tare-SUBTRACTED,
+        so hosts must stamp this into run metadata for reproducibility
+        (raw = recorded + tare)."""
+        return dict(self._tare)
 
     @property
     def ao_wave_running(self) -> bool:
@@ -276,29 +289,67 @@ class NiUsb6351:
             self._status(f"Armed at {self.actual_hz:.1f} Hz — waiting for "
                          f"{trig.mode.replace('_', ' ')} on {trig.source}")
 
+    def _scan_list(self):
+        """The physical scan order incl. mux-settle absorber re-reads.
+
+        Field-found on the F16_Val LSWT run (2026-08-05): a high-voltage
+        channel followed in the WRAPPED scan order by a ±0.1/0.2 V
+        bridge leaves a settling ghost on the bridge — Pdiff (0.84 V on
+        AI7) coupled -65 dB into Aft_Pitch (AI0, next in the wrap),
+        i.e. a +0.45 mV air-on-only offset = phantom 5 lb Fz. The fix
+        is a sacrificial duplicate read of the victim channel: the
+        first conversion absorbs the ghost and is DISCARDED, the second
+        is clean and published. Costs one mux slot per boundary.
+
+        Returns ``[(ChannelConfig, keep)]`` — ``keep=False`` rows are
+        dropped in the poll loop before decimation/publishing.
+        """
+        chans = self._chans
+        scan = []
+        guard = bool(getattr(self.config, "mux_settle_reread", True))
+        for i, ch in enumerate(chans):
+            prev = chans[i - 1]              # i=0 wraps to the last channel
+            if (guard and len(chans) > 1 and ch.native_range <= 0.2
+                    and prev.native_range >= 1.0):
+                scan.append((ch, False))     # ghost absorber (discarded)
+            scan.append((ch, True))
+        return scan
+
     def _open_hardware(self) -> None:
         cfg = self.config
         dev = cfg.device_name
         try:
             self._task = nidaqmx.Task(f"ni6351-ai-{dev}")
-            for ch in self._chans:
+            scan = self._scan_list()
+            for ch, keep in scan:
                 r = ch.native_range
                 self._task.ai_channels.add_ai_voltage_chan(
                     f"{dev}/{ch.physical}",
-                    name_to_assign_to_channel=ch.name,
+                    name_to_assign_to_channel=(
+                        ch.name if keep else f"_settle_{ch.name}"),
                     terminal_config=_terminal_const(ch.terminal),
                     min_val=-r, max_val=r)
+            self._n_rows = len(scan)
+            self._keep_rows = np.array(
+                [j for j, (_c, keep) in enumerate(scan) if keep])
+            if self._n_rows > len(self._chans):
+                self._status(f"Mux settle guard: "
+                             f"{self._n_rows - len(self._chans)} absorber "
+                             f"re-read(s) in the scan list")
             # oversample: ADC at scan_hz*oversample, averaged back down
-            # to scan_hz in the poll loop (sqrt(N) noise gain + AA)
+            # to scan_hz in the poll loop (sqrt(N) noise gain + AA).
+            # Budgeted on TASK rows (incl. absorbers), not channels.
             req = int(getattr(cfg, "oversample", 1))
-            n_ch = len(self._chans)
-            self._oversample = effective_oversample(req, cfg.scan_hz, n_ch)
+            n_rows = self._n_rows
+            self._oversample = effective_oversample(req, cfg.scan_hz,
+                                                    n_rows)
             hw_rate = cfg.scan_hz * self._oversample
             if req <= 0:
                 self._status(
                     f"Auto-oversample {self._oversample}x — ADC at "
-                    f"{hw_rate * n_ch / 1e3:.0f} kS/s aggregate, averaged "
-                    f"to {cfg.scan_hz:.0f} Hz for the data of record")
+                    f"{hw_rate * n_rows / 1e3:.0f} kS/s aggregate, "
+                    f"averaged to {cfg.scan_hz:.0f} Hz for the data of "
+                    f"record")
             elif self._oversample != req:
                 self._status(f"Oversample reduced to "
                              f"{self._oversample}x to respect the "
@@ -308,6 +359,13 @@ class NiUsb6351:
                 rate=hw_rate,
                 sample_mode=AcquisitionType.CONTINUOUS,
                 samps_per_chan=buf_samps)
+            try:
+                # spread the AI convert clock evenly across the scan
+                # interval — maximum mux settling for the range steps
+                # that remain (DAQmx may otherwise burst conversions)
+                self._task.timing.ai_conv_rate = hw_rate * n_rows
+            except Exception as exc:                   # noqa: BLE001
+                log.debug("ai_conv_rate not applied: %s", exc)
             # actual_hz is the DELIVERED rate — ring timestamps, tare
             # windows, monitors and the recorder all consume this
             self.actual_hz = float(
@@ -529,7 +587,7 @@ class NiUsb6351:
     # ── poll loop (real hardware) ────────────────────────────────────────
     def _poll_loop(self) -> None:
         assert self._task is not None and self._reader is not None
-        n_ch = len(self._chans)
+        n_ch = self._n_rows or len(self._chans)   # TASK rows incl absorbers
         period = self.config.poll_ms / 1000.0
         t0_wall = 0.0
         recoveries = 0
@@ -567,7 +625,10 @@ class NiUsb6351:
                     self._status("Trigger received — acquiring")
                 t0_wall = time.time() - got / (self.actual_hz *
                                                self._oversample)
-            out, self._carry = _decimate(self._carry, data[:, :got],
+            rows = data[:, :got]
+            if self._keep_rows is not None and self._keep_rows.size != n_ch:
+                rows = rows[self._keep_rows]      # drop absorber re-reads
+            out, self._carry = _decimate(self._carry, rows,
                                          self._oversample)
             m = out.shape[1]
             if m == 0:

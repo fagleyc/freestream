@@ -134,6 +134,14 @@ class Strainbook616:
         self.tare_count += 1
         self._status("Tare cleared")
 
+    @property
+    def tare_values(self) -> Dict[str, float]:
+        """The active software tare (volts per bridge channel). The
+        published/recorded ``<name>_V`` stream is tare-SUBTRACTED, so
+        hosts must stamp this into run metadata (raw = recorded +
+        tare)."""
+        return dict(self._tare)
+
     # ── lifecycle ────────────────────────────────────────────────────────
     def connect(self) -> None:
         if self._connected:
