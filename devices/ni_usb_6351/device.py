@@ -95,6 +95,18 @@ def _decimate(carry: Optional[np.ndarray], data: np.ndarray,
     return out, new_carry
 
 
+def _ghost_estimate(rows: np.ndarray, pairs) -> Dict[str, float]:
+    """Mean mux-settling residual per guarded channel [V].
+
+    Each guarded channel is converted twice back-to-back; the absorber
+    read minus the kept read of the SAME channel in the SAME scan is a
+    direct, live measurement of the surviving ghost — ~0 when the
+    front end settles, the coupling amplitude when it does not.
+    """
+    return {name: float(np.mean(rows[a] - rows[k]))
+            for a, k, name in pairs}
+
+
 def _terminal_const(terminal: str):
     """Map a config terminal string to the nidaqmx enum (version-safe)."""
     names = {"DIFF": ("DIFF", "DIFFERENTIAL"),
@@ -146,6 +158,10 @@ class NiUsb6351:
         # the rows that are real channels (mux-settle absorbers dropped)
         self._n_rows = 0
         self._keep_rows: Optional[np.ndarray] = None
+        # live ghost monitor: (absorber_row, kept_row, name) per guarded
+        # channel and the latest absorber-minus-kept residual [V]
+        self._ghost_pairs: list = []
+        self._ghost_v: Dict[str, float] = {}
 
     # ── public state ─────────────────────────────────────────────────────
     @property
@@ -170,6 +186,14 @@ class NiUsb6351:
     def oversample_actual(self) -> int:
         """The oversample factor actually running (resolved at connect)."""
         return self._oversample
+
+    @property
+    def settle_ghost_v(self) -> Dict[str, float]:
+        """Live mux-ghost residual per guarded channel [V] — the
+        absorber read minus the kept read of the same channel. ~0 when
+        the front end settles; the coupling amplitude when it doesn't.
+        Empty in sim or with mux_settle_reread off."""
+        return dict(self._ghost_v)
 
     @property
     def tare_values(self) -> Dict[str, float]:
@@ -332,6 +356,10 @@ class NiUsb6351:
             self._n_rows = len(scan)
             self._keep_rows = np.array(
                 [j for j, (_c, keep) in enumerate(scan) if keep])
+            self._ghost_pairs = [(j, j + 1, scan[j + 1][0].name)
+                                 for j, (_c, keep) in enumerate(scan)
+                                 if not keep]
+            self._ghost_v = {}
             if self._n_rows > len(self._chans):
                 self._status(f"Mux settle guard: "
                              f"{self._n_rows - len(self._chans)} absorber "
@@ -627,6 +655,9 @@ class NiUsb6351:
                                                self._oversample)
             rows = data[:, :got]
             if self._keep_rows is not None and self._keep_rows.size != n_ch:
+                # the absorber reads are a live measurement of the
+                # surviving mux ghost before they are dropped
+                self._ghost_v = _ghost_estimate(rows, self._ghost_pairs)
                 rows = rows[self._keep_rows]      # drop absorber re-reads
             out, self._carry = _decimate(self._carry, rows,
                                          self._oversample)

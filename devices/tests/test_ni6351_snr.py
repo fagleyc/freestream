@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ni_usb_6351.config import NiDaqConfig, default_channels
 from ni_usb_6351.device import (_AGGREGATE_MAX, _decimate,
-                                effective_oversample)
+                                _ghost_estimate, effective_oversample)
 
 
 def test_default_bridge_ranges_are_tightest():
@@ -95,6 +95,20 @@ def test_mux_settle_reread_default_and_round_trip(tmp_path):
     p = tmp_path / "cfg.json"
     cfg.save(p)
     assert NiDaqConfig.load(p).mux_settle_reread is False
+
+
+def test_ghost_estimate_measures_absorber_residual():
+    """The absorber pre-read minus the kept read of the same channel is
+    the live mux-ghost measurement: exact when the residual is constant,
+    ~0 when the front end settles."""
+    rows = np.zeros((3, 100))
+    rows[0] = 450e-6          # absorber read of N1 still carries ghost
+    rows[1] = 0.0             # kept N1 read, settled
+    rows[2] = 5.0             # unrelated channel
+    est = _ghost_estimate(rows, [(0, 1, "N1")])
+    assert est["N1"] == pytest.approx(450e-6)
+    est0 = _ghost_estimate(np.zeros((2, 10)), [(0, 1, "N1")])
+    assert est0["N1"] == 0.0
 
 
 def test_tare_values_exposed_and_baked_into_stream():

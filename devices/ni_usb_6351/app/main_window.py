@@ -205,6 +205,18 @@ class NiDaqPanel(QWidget):
             "utilization bars (0 = off). Recorded data stays raw.")
         self.lpf_spin.valueChanged.connect(self._lpf_changed)
         bar.addWidget(self.lpf_spin)
+        bar.addSpacing(24)
+        # live mux-ghost readout: the settle-guard absorber read minus
+        # the kept read of the same channel — proof the fix is working
+        # (should sit near the noise floor; F16_Val defect was ~450 µV)
+        self.ghost_lbl = QLabel("")
+        self.ghost_lbl.setProperty("mono", "true")
+        self.ghost_lbl.setToolTip(
+            "Mux settling residual measured by the guard channel's "
+            "absorbed pre-read (absorber − kept, same channel, same "
+            "scan). Near the noise floor = front end settling; large "
+            "and air-on-correlated = the AI7→AI0 coupling is back.")
+        bar.addWidget(self.ghost_lbl)
         bar.addStretch(1)
         ll.addLayout(bar)
 
@@ -397,6 +409,16 @@ class NiDaqPanel(QWidget):
         self.tiles.refresh(self.device.ring, self.device.actual_hz)
         self.history.refresh()
         self.filter_panel.refresh(self.device.actual_hz)
+        ghost = getattr(self.device, "settle_ghost_v", None) or {}
+        if ghost:
+            worst = max(ghost.items(), key=lambda kv: abs(kv[1]))
+            self.ghost_lbl.setText(
+                f"mux ghost {worst[0]}: {worst[1] * 1e6:+,.0f} µV")
+            color = (theme.WARNING if abs(worst[1]) > 50e-6
+                     else theme.TEXT_DIM)
+            self.ghost_lbl.setStyleSheet(f"color: {color};")
+        elif self.ghost_lbl.text():
+            self.ghost_lbl.setText("")
         self.forces_panel.refresh(self.device.ring, self.device.actual_hz,
                                   self.history.window_s)
         if self.forces_panel.overstress:

@@ -451,8 +451,10 @@ def test_hw_channels_ranges_and_timing():
                                (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 10.0)):
                 assert call["min_val"] == -r and call["max_val"] == r
             assert all(c["terminal"] == _FakeTC.DIFF for c in task.ai_calls)
-            # absorber row dropped from the published stream
+            # absorber row dropped from the published stream, and the
+            # (absorber, kept) pair registered for the ghost monitor
             assert list(dev._keep_rows) == list(range(1, 8))
+            assert dev._ghost_pairs == [(0, 1, "N1")]
             # hardware clock at scan_hz x oversample (default AUTO fills
             # the 1 MS/s aggregate over the 8 TASK rows: 125x);
             # delivered rate is still scan_hz after the mean-decimation
