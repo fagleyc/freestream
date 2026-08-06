@@ -259,49 +259,131 @@ def process_run(run_dir, config=None, facility: str = "",
         tmpl.replace("/*%%DATA%%*/null", json.dumps(payload)),
         encoding="utf-8")
 
-    # ── exports via Streamlined-style writers ────────────────────────────
-    cond = {k: np.array([p[k] for p in points])
-            for k in ("q", "mach", "re", "uinf", "rho", "T")}
+    # ── exports in Streamlined's OWN shapes (TablePanel writers) ─────────
+    # per-point means, tare-subtracted, exactly like the GUI table
+    def _m(x):
+        return float(np.mean(np.atleast_1d(x)))
+
+    name_case = payload["name"]
+    e_names = (["AftPitch", "AftYaw", "FwdPitch", "FwdYaw", "Axial",
+                "Roll"] if balance_config == "Moment"
+               else ["N1", "N2", "Y1", "Y2", "Axial", "Roll"])
+    rows = []
+    for r in red:
+        elems = (np.mean(r.brf_on.elements, axis=0)
+                 - np.mean(r.brf_off.elements, axis=0))
+        brf_a = {k: _m(getattr(r.brf_on, k)) - _m(getattr(r.brf_off, k))
+                 for k in ("Fx", "Fy", "Fz", "Mx", "My", "Mz")}
+        cl, cd = _m(r.coeffs.Cl), _m(r.coeffs.Cd)
+        rows.append({
+            "Alpha": _m(r.alpha), "Beta": _m(r.beta),
+            "Cl": cl, "Cd": cd, "Cs": _m(r.coeffs.Cs),
+            "CRoll": _m(r.coeffs.CRoll), "CPitch": _m(r.coeffs.CPitch),
+            "CYaw": _m(r.coeffs.CYaw),
+            "L/D": cl / cd if cd else 0.0,
+            "Lift": _m(r.wrf_aero.Lift), "Drag": _m(r.wrf_aero.Drag),
+            "Side": _m(r.wrf_aero.Side),
+            "M_Roll": _m(r.wrf_aero.Roll),
+            "M_Pitch": _m(r.wrf_aero.Pitch),
+            "M_Yaw": _m(r.wrf_aero.Yaw),
+            "elems": [float(v) for v in elems], "brf": brf_a,
+            "Q": _m(r.tunnel.Q), "Mach": _m(r.tunnel.Mach),
+            "Re": _m(r.tunnel.Re), "U_inf": _m(r.tunnel.U_inf),
+            "rho": _m(r.tunnel.rho), "T": _m(r.tunnel.T),
+            "P_tot": _m(r.tunnel.P_tot) / 6894.757,      # Pa → psi
+        })
+    rows.sort(key=lambda x: (x["Alpha"], x["Beta"]))
+    alphas = [x["Alpha"] for x in rows]
+    betas = sorted({round(x["Beta"], 1) for x in rows})
+
+    # Excel: TablePanel layout — one sheet per case, key/value header
+    # block in cols A/B, data table below (same column labels, IPS)
     try:
         import pandas as pd
+        cols = ([("Alpha", "Alpha [deg]"), ("Beta", "Beta [deg]"),
+                 ("Cl", "CL"), ("Cd", "CD"), ("Cs", "CY"),
+                 ("CRoll", "Cl (roll)"), ("CPitch", "Cm"),
+                 ("CYaw", "Cn"), ("L/D", "L/D"),
+                 ("Lift", "Lift [lbf]"), ("Drag", "Drag [lbf]"),
+                 ("Side", "Side [lbf]"), ("M_Roll", "M_Roll [in-lbf]"),
+                 ("M_Pitch", "M_Pitch [in-lbf]"),
+                 ("M_Yaw", "M_Yaw [in-lbf]")]
+                + [(f"e{i}", f"{n} [lbf]")
+                   for i, n in enumerate(e_names)]
+                + [("Q", "Q [psi]"), ("Mach", "Mach"), ("Re", "Re"),
+                   ("U_inf", "U_inf [m/s]"), ("rho", "rho [kg/m^3]"),
+                   ("T", "T [C]"), ("P_tot", "P_tot [psi]")])
+        header = [("Case Name", name_case),
+                  ("Alpha Range",
+                   f"{min(alphas):.1f} to {max(alphas):.1f} deg"),
+                  ("Beta Values",
+                   ", ".join(f"{v:.1f}" for v in betas) + " deg"),
+                  ("Data Points", str(len(rows))),
+                  ("Mach", f"{np.mean([x['Mach'] for x in rows]):.4f}"),
+                  ("Reynolds Number",
+                   f"{np.mean([x['Re'] for x in rows]):.2e}"),
+                  ("Dynamic Pressure (Q) [psi]",
+                   f"{np.mean([x['Q'] for x in rows]):.4f}"),
+                  ("Total Pressure [psi]",
+                   f"{np.mean([x['P_tot'] for x in rows]):.4f}")]
+        table = {lab: [x[key] if not key.startswith("e")
+                       else x["elems"][int(key[1])] for x in rows]
+                 for key, lab in cols}
         with pd.ExcelWriter(paths["xlsx"], engine="openpyxl") as xw:
-            df.to_excel(xw, sheet_name="Coefficients", index=False)
-            pd.DataFrame({"Alpha": df.get("Alpha"),
-                          "Q_psi": cond["q"], "Mach": cond["mach"],
-                          "Re": cond["re"], "U_inf_mps": cond["uinf"],
-                          "rho_kgm3": cond["rho"], "T_C": cond["T"]}
-                         ).to_excel(xw, sheet_name="Conditions",
-                                    index=False)
-            pd.DataFrame(
-                {"key": list(payload["meta"]) + ["facility", "cal_file",
-                                                 "S", "C", "b", "MRC"],
-                 "value": [str(v) for v in payload["meta"].values()]
-                 + [facility, payload["cal"]["file"], S, C, b,
-                    str(mrc)]}).to_excel(xw, sheet_name="Meta",
-                                         index=False)
-        log(f"exported {Path(paths['xlsx']).name}")
+            pd.DataFrame(table).to_excel(
+                xw, sheet_name=name_case[:31] or "Case",
+                index=False, startrow=len(header) + 1)
+            ws = xw.sheets[name_case[:31] or "Case"]
+            for i, (k, v) in enumerate(header, start=1):
+                ws.cell(row=i, column=1, value=k)
+                ws.cell(row=i, column=2, value=v)
+        log(f"exported {Path(paths['xlsx']).name} (Streamlined layout)")
     except Exception as exc:                               # noqa: BLE001
         log(f"xlsx export skipped: {exc}")
         paths["xlsx"] = ""
 
+    # MAT: TablePanel categorized case struct + case_index
+    def _col(key):
+        return np.array([x[key] for x in rows])
+
     import scipy.io
-    scipy.io.savemat(paths["mat"], {"case_001": {
-        "Coefficients": {k: np.asarray(getattr(ss, k)) for k in
+    run_numbers = np.array([p["run"] for p in points])
+    case = {
+        "name": name_case, "key": name_case,
+        "run_number": int(run_numbers[0]) if run_numbers.size else 0,
+        "Tunnel_Conditions": {k: _col(k) for k in
+                              ("Q", "Mach", "Re", "U_inf", "rho", "T",
+                               "P_tot")},
+        "BRF_Forces": {k: np.array([x["brf"][k] for x in rows])
+                       for k in ("Fx", "Fy", "Fz", "Mx", "My", "Mz")},
+        "WRF_Forces": {"Lift": _col("Lift"), "Drag": _col("Drag"),
+                       "Side": _col("Side"), "Roll": _col("M_Roll"),
+                       "Pitch": _col("M_Pitch"), "Yaw": _col("M_Yaw")},
+        "Coefficients": {k: _col(k) for k in
                          ("Cl", "Cd", "Cs", "CRoll", "CPitch", "CYaw")},
-        "Position": {"alpha": np.asarray(ss.alphas),
-                     "beta": np.asarray(ss.betas)},
-        "Tunnel_Conditions": {"Q": cond["q"], "Mach": cond["mach"],
-                              "Re": cond["re"], "U_inf": cond["uinf"],
-                              "rho": cond["rho"], "T": cond["T"]},
-        "WRF_Forces": {n: np.array([float(np.mean(getattr(p.wrf_aero, n)))
-                                    for p in red])
-                       for n in ("Lift", "Drag", "Side", "Roll",
-                                 "Pitch", "Yaw")},
-        "meta": {"geometry": {"mac": C, "ref_area": S, "span": b,
-                              "mrc": np.asarray(mrc)},
-                 "facility": facility,
-                 "balance_config": balance_config},
-    }}, long_field_names=False)
-    log(f"exported {Path(paths['mat']).name}")
+        "Balance_Channels": {n: np.array([x["elems"][i] for x in rows])
+                             for i, n in enumerate(e_names)},
+        "Position": {"alpha": _col("Alpha"), "beta": _col("Beta")},
+        "Geometry": {"MAC": C, "ref_area": S, "span": b,
+                     "mrc": np.asarray(mrc)},
+        "meta": {"name": name_case,
+                 "Mach": float(np.mean(_col("Mach"))),
+                 "Reynolds": float(np.mean(_col("Re"))),
+                 "Q": float(np.mean(_col("Q"))),
+                 "calibration": {"file": payload["cal"]["file"],
+                                 "cal_type": payload["cal"]["type"],
+                                 "balance_config": balance_config},
+                 "geometry": {"mac": C, "ref_area": S, "span": b,
+                              "mrc": np.asarray(mrc),
+                              "input_units": "IPS",
+                              "output_units": "IPS"},
+                 "facility": facility},
+    }
+    scipy.io.savemat(paths["mat"], {
+        "case_001": case,
+        "case_index": {"keys": [name_case], "names": [name_case],
+                       "run_numbers": run_numbers, "count": 1},
+    }, long_field_names=False)
+    log(f"exported {Path(paths['mat']).name} (Streamlined structure)")
     log(f"report: {paths['report']}")
     return paths
