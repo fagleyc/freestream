@@ -93,7 +93,10 @@ class _WireRecorder:
 def test_brake_output_configured_at_connect(tmp_path, monkeypatch):
     """Alpha brake on O3: connect must send OUT3B (Moving/Not-Moving
     output — SX manual ch.4) so the DRIVE releases/engages the brake
-    with motion. Beta has no brake → no OUT command for unit 2."""
+    with motion. Beta has no brake → no OUT command for unit 2.
+    OUT3B is the LAST init command (rig-found 2026-08-06: sent
+    mid-burst with the Z reset live, it was lost and the brake never
+    released — nothing may follow it)."""
     created = _WireRecorder.install(monkeypatch)
     dev = StingDrive(_cfg(tmp_path, park_on_disconnect=False,
                           restore_position=False))
@@ -102,9 +105,9 @@ def test_brake_output_configured_at_connect(tmp_path, monkeypatch):
         sent = created[0].sent
         assert "1OUT3B" in sent, sent
         assert not any(s.startswith("2OUT") for s in sent), sent
-        # configured with the motion parameters, before the final FSD1
-        assert sent.index("1V.108") < sent.index("1OUT3B") \
-            < sent.index("FSD1")
+        # after the motion parameters AND after the blind FSD broadcast
+        assert sent.index("1V.108") < sent.index("FSD1") \
+            < sent.index("1OUT3B")
     finally:
         dev.disconnect()
 

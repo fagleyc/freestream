@@ -235,18 +235,28 @@ class StingDrive:
             p.command(st.cfg.unit, f"A{st.cfg.acceleration}")
             p.command(st.cfg.unit, f"AD{st.cfg.deceleration}")
             p.command(st.cfg.unit, f"V{st.cfg.velocity}")
-            if st.cfg.brake_output:
-                # OUT<n>B = output n follows Moving/Not-Moving: the
-                # DRIVE releases the brake while stepping and engages
-                # it when stopped/faulted/off. RAM setting on the SX —
-                # (re)sent at every connect on purpose.
-                p.command(st.cfg.unit,
-                          f"OUT{st.cfg.brake_output}B")
+        p.command_blind("", "FSD1")     # broadcast — echo not guaranteed
+        # Brake output LAST (rig-found 2026-08-06): with the Z reset
+        # live at connect, OUT3B sent mid-burst could be lost to the
+        # reboot tail / clobbered by the blind FSD broadcast — O3 then
+        # never asserted 24 V and the motor fought the engaged brake.
+        # OUT<n>B = output n follows Moving/Not-Moving: the DRIVE
+        # releases the brake while stepping and engages it when
+        # stopped/faulted/off. RAM setting on the SX — (re)sent at
+        # every connect, after a settle, as the FINAL init command so
+        # nothing later can wipe it.
+        if any(st.cfg.enabled and st.cfg.brake_output
+               for st in self._axes()):
+            time.sleep(0.2)
+            p.clear_input()
+            for st in self._axes():
+                if not (st.cfg.enabled and st.cfg.brake_output):
+                    continue
+                p.command(st.cfg.unit, f"OUT{st.cfg.brake_output}B")
                 self._status(
                     f"{st.cfg.name} brake: O{st.cfg.brake_output} set "
                     f"to Moving/Not-Moving (released while moving, "
                     f"engaged at rest)")
-        p.command_blind("", "FSD1")     # broadcast — echo not guaranteed
         # idle shutdown: de-energize configured axes now that init is
         # done (brake engaged since not moving) — kills the stepper
         # holding-current chopping EMI in the balance wiring
