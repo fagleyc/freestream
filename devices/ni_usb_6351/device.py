@@ -349,8 +349,10 @@ class NiUsb6351:
                 r = ch.native_range
                 self._task.ai_channels.add_ai_voltage_chan(
                     f"{dev}/{ch.physical}",
+                    # DAQmx forbids a leading underscore in virtual
+                    # channel names — 'settle_' prefix, not '_settle_'
                     name_to_assign_to_channel=(
-                        ch.name if keep else f"_settle_{ch.name}"),
+                        ch.name if keep else f"settle_{ch.name}"),
                     terminal_config=_terminal_const(ch.terminal),
                     min_val=-r, max_val=r)
             self._n_rows = len(scan)

@@ -442,8 +442,10 @@ def test_hw_channels_ranges_and_timing():
             # discarded ghost-absorbing re-read first (F16_Val find)
             assert [c["physical"] for c in task.ai_calls] == \
                 ["Dev2/ai0"] + [f"Dev2/ai{i}" for i in range(7)]
+            # 'settle_' prefix: DAQmx rejects names with a leading
+            # underscore (rig-found on Dev3, 2026-08-06)
             assert [c["name"] for c in task.ai_calls] == \
-                ["_settle_N1", "N1", "N2", "Y1", "Y2", "Axial", "Roll",
+                ["settle_N1", "N1", "N2", "Y1", "Y2", "Axial", "Roll",
                  "Excitation"]
             # symmetric ±native_range limits: all six balance bridges on
             # the TIGHTEST range (mV signals — 2026-07-24 SNR work)
