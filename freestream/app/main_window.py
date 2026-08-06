@@ -580,6 +580,14 @@ class FreestreamMainWindow(QMainWindow):
                        "Freestream is connected; standalone otherwise.")
         act.triggered.connect(self._open_balance_cal)
         adv_menu.addAction(act)
+        self.process_report_act = QAction("&Process && Report…", self)
+        self.process_report_act.setToolTip(
+            "Headlessly reduce the current configuration's run directory "
+            "with Streamlined (calibration + geometry/MRC from this "
+            "session), write Excel + MAT exports and an interactive HTML "
+            "report into a processed/ subdirectory, and open the report.")
+        self.process_report_act.triggered.connect(self._process_report)
+        adv_menu.addAction(self.process_report_act)
 
         # Help — always the LAST menu in the bar
         help_menu = self.menuBar().addMenu("&Help")
@@ -605,6 +613,67 @@ class FreestreamMainWindow(QMainWindow):
         """Help ▸ About — shared-template About dialog."""
         dlg = AboutDialog(self)
         dlg.exec()
+
+    def _process_report(self) -> None:
+        """Advanced ▸ Process & Report — headless Streamlined reduction
+        of the current configuration's run directory, in a worker
+        thread; opens the interactive HTML report when done."""
+        from .. import processing
+        run_dir = Path(self.recorder.config_dir)
+        if not (run_dir / "manifest.json").exists():
+            QMessageBox.warning(
+                self, "Process & Report",
+                f"No recorded runs found for this configuration:\n"
+                f"{run_dir}\n\nRun a sweep first.")
+            return
+        if getattr(self, "_proc_thread", None) is not None:
+            self.console.log("processing already running")
+            return
+        self.process_report_act.setEnabled(False)
+        self.console.log(f"processing {run_dir} …")
+        facility = processing.facility_for_mode(self.manager.mode)
+
+        class _ProcWorker(QObject):
+            logEvent = pyqtSignal(str)
+            done = pyqtSignal(object)      # dict of paths | Exception
+
+            def __init__(self, run_dir, config, facility):
+                super().__init__()
+                self._args = (run_dir, config, facility)
+
+            def run(self):
+                run_dir, config, facility = self._args
+                try:
+                    paths = processing.process_run(
+                        run_dir, config=config, facility=facility,
+                        log=self.logEvent.emit)
+                    self.done.emit(paths)
+                except Exception as exc:               # noqa: BLE001
+                    log.exception("process & report failed")
+                    self.done.emit(exc)
+
+        thread = QThread(self)
+        worker = _ProcWorker(run_dir, self.config, facility)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.logEvent.connect(self.console.log)
+        worker.done.connect(self._on_process_done)
+        worker.done.connect(lambda _r: thread.quit())
+        thread.finished.connect(thread.deleteLater)
+        self._proc_thread, self._proc_worker = thread, worker
+        thread.start()
+
+    def _on_process_done(self, result) -> None:
+        self._proc_thread = None
+        self._proc_worker = None
+        self.process_report_act.setEnabled(True)
+        if isinstance(result, Exception):
+            QMessageBox.warning(self, "Process & Report", str(result))
+            self.console.log(f"processing FAILED: {result}")
+            return
+        self.console.log("processing complete — opening report")
+        import webbrowser
+        webbrowser.open(Path(result["report"]).as_uri())
 
     def _open_balance_cal(self) -> None:
         """Advanced ▸ Balance Calibration — the balcal_gui window.

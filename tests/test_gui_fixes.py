@@ -374,22 +374,34 @@ def test_run_selection_inherits_config_name_and_model_settings(window, app):
     assert dlg.model_name_edit.text() == "NACA0012"
     assert dlg.engineer_edit.text() == "Casey"
     assert dlg.prefix_edit.text() == "n12"
-    assert "Sref 2.5" in dlg.ref_dims_lbl.text()
-    assert "bref 5" in dlg.ref_dims_lbl.text()
+    # ref dims are now EDITABLE spins (2026-08-06), seeded from config
+    assert dlg.sref_spin.value() == 2.5
+    assert dlg.bref_spin.value() == 5.0
     dlg.deleteLater()
 
 
 def test_setup_dialog_model_group_roundtrip(app):
     cfg = FreestreamConfig()
     dlg = MeasurementSetupDialog(cfg)
-    assert "not set" in dlg.ref_dims_lbl.text()      # no run sheet yet
+    assert dlg.sref_spin.value() == 0.0              # no run sheet yet
     dlg.test_name_edit.setText("T-9")
     dlg.model_name_edit.setText("X-29")
     dlg.engineer_edit.setText("Casey")
     dlg.prefix_edit.setText("x29")
+    # operator-editable reference dims + MRC shift
+    dlg.sref_spin.setValue(18.75)
+    dlg.cref_spin.setValue(2.86)
+    dlg.bref_spin.setValue(12.0)
+    dlg.mrc_x_spin.setValue(1.6)
+    dlg.mrc_z_spin.setValue(-0.25)
     dlg.apply_to(cfg)
     assert cfg.test_name == "T-9"
     assert cfg.model_name == "X-29"
     assert cfg.engineer == "Casey"
     assert cfg.data_prefix == "x29"
+    assert cfg.Sref == 18.75 and cfg.cref == 2.86 and cfg.bref == 12.0
+    assert cfg.MRC_x == 1.6 and cfg.MRC_y == 0.0 and cfg.MRC_z == -0.25
+    # mirrors kept in sync so both Streamlined key families agree
+    assert cfg.ref_area == 18.75 and cfg.ref_chord == 2.86
+    assert cfg.ref_span == 12.0
     dlg.deleteLater()
