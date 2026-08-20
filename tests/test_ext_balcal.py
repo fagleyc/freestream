@@ -19,7 +19,8 @@ from PyQt6.QtWidgets import QApplication                   # noqa: E402
 
 from freestream.app.ext_balcal import (CHANNELS,           # noqa: E402
                                        ExternalBalCalWindow, LB_PER_KG,
-                                       linfit, residual_analysis)
+                                       linfit, model_compare,
+                                       residual_analysis)
 
 
 @pytest.fixture(scope="module")
@@ -142,6 +143,86 @@ def test_advanced_menu_has_both_balance_cals(app, tmp_path):
         win._open_ext_balcal()                 # singleton
         assert win._ext_balcal_win is first
         first.close()
+    finally:
+        win.close()
+        app.processEvents()
+
+
+# ── %-of-reading vs %-of-full-scale discrimination ──────────────────────
+# Deterministic alternating-sign error so the two hypotheses are clean:
+# a proportional error must recover exponent p ~ 1, a constant error
+# p ~ 0, and the RMS model comparison must pick the matching law.
+_L = np.linspace(0.0, 10.0, 11)
+_SIGN = np.array([1, -1] * 6)[:11]
+
+
+def test_model_compare_picks_reading_for_proportional_error():
+    err = 0.02 * _L * _SIGN
+    mc = model_compare(_L, err, full_scale=25.0)
+    assert mc["prefers"] == "reading"
+    assert mc["margin"] > 40.0
+    assert 0.8 < mc["p"] < 1.4          # E = c*L**p, p ~ 1
+    assert mc["k"] == pytest.approx(0.02, rel=0.1)
+
+
+def test_model_compare_picks_full_scale_for_constant_error():
+    err = 0.05 * _SIGN
+    mc = model_compare(_L, err, full_scale=25.0)
+    assert mc["prefers"] == "full scale"
+    assert mc["margin"] > 40.0
+    assert abs(mc["p"]) < 0.2           # exponent collapses to 0
+    assert mc["c"] == pytest.approx(0.05, rel=0.05)
+
+
+def test_residual_analysis_reports_both_error_measures():
+    """The within-step sigma is the sharper instrument: backed by every
+    captured frame, it recovers the exponent exactly where the
+    one-per-step residual only gets close."""
+    means = 2.0 * _L + 0.02 * _L * _SIGN
+    fa = residual_analysis(_L, means, stds=0.02 * _L, full_scale=25.0)
+    assert fa["rdg"]["prefers"] == "reading"
+    assert fa["sig"]["prefers"] == "reading"
+    assert fa["sig"]["p"] == pytest.approx(1.0, abs=0.02)
+    # error/reading = 0.02L / 2.0L = 1 %, independent of load
+    assert fa["pct_reading_fit"] == pytest.approx(1.0, rel=0.1)
+
+    const = 2.0 * _L + 0.05 * _SIGN
+    fc = residual_analysis(_L, const, stds=np.full(_L.size, 0.05),
+                           full_scale=25.0)
+    assert fc["rdg"]["prefers"] == "full scale"
+    assert fc["sig"]["prefers"] == "full scale"
+    assert fc["pct_fs_fit"] == pytest.approx(0.2, rel=0.1)  # 0.05/25
+
+
+def test_residual_analysis_without_stds_still_works():
+    fa = residual_analysis(_L, 2.0 * _L + 0.05 * _SIGN)
+    assert fa["sig"] is None
+    assert fa["rdg"]["prefers"] == "full scale"
+
+
+def test_error_model_view_draws_both_candidate_laws(app, tmp_path):
+    win = ExternalBalCalWindow(sim=True, data_root=str(tmp_path))
+    try:
+        win._connect()
+        win.dur_spin.setValue(0.3)
+        for direction in ("zero", "up", "up", "up"):
+            win._capture(direction)
+            _pump(app, 0.6)
+        win.view_combo.setCurrentText("Error model")
+        _pump(app, 0.1)
+        for ch in CHANNELS:
+            xs, ys = win.curve_sc[ch].getData()          # |residual|
+            assert xs is not None and len(xs) == len(win.steps)
+            assert np.all(np.asarray(ys) >= 0)           # magnitudes
+            xg, _ = win.curve_sig[ch].getData()          # sigma series
+            assert xg is not None and len(xg) == len(win.steps)
+            xf, yf = win.curve_fit[ch].getData()         # E = k|L|
+            assert yf[0] == pytest.approx(0.0, abs=1e-12)
+            xa, ya = win.curve_alt[ch].getData()         # E = c
+            assert ya[0] == pytest.approx(ya[-1])
+        # the verdict cell is populated for every channel
+        for r in range(len(CHANNELS)):
+            assert win.table.item(r, 9).text() != "--"
     finally:
         win.close()
         app.processEvents()

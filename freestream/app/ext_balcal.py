@@ -6,10 +6,22 @@ ALL six channels at once via the loading fixture; the operator steps
 the load up and back down, capturing a window of unsteady data at each
 step. The window shows, per channel (3×2 grid):
 
-* step means ± std vs applied load, with a live linear fit + R²,
-* or the fit RESIDUALS vs load, with the |residual| growth fit —
-  the point of the exercise: if residual grows with the reading the
-  error is a %-of-READING; if it stays constant it is %-of-FULL-SCALE.
+* step means with sigma error bars vs applied load, plus a live
+  linear fit and R2,
+* the fit RESIDUALS vs load, or
+* the ERROR MODEL view, which is the point of the exercise: |residual|
+  and the within-step sigma are plotted against |load| and fitted
+  against two competing laws, ``E = c`` (constant, %-of-full-scale)
+  and ``E = k|L|`` (proportional, %-of-reading). The models are
+  ranked by RMS misfit and a free power law ``E = c|L|^p`` is fitted
+  as a second opinion: p near 1 means the error follows the reading,
+  p near 0 means it follows full scale.
+
+Both error measures are reported because they answer different
+questions. The residual of the step means carries systematic error
+(nonlinearity, hysteresis) but has one value per step. The within-step
+sigma is backed by every frame of the capture, so it pins the RANDOM
+error at each load far more tightly.
 
 ALL unsteady data (every frame of every step) is saved to one .mat
 organized like the suite's other IO files: device group ``ATE_Balance``
@@ -63,24 +75,113 @@ def linfit(x: np.ndarray, y: np.ndarray):
     return float(m), float(b), float(r2)
 
 
-def residual_analysis(loads: np.ndarray, means: np.ndarray) -> Dict:
-    """Fit means vs load, then characterize how |residual| GROWS with
-    |load|: growth slope ``resid_slope`` and its correlation. Expressed
-    also as a fraction of the reading (``pct_of_reading`` per unit) —
-    the %-of-reading vs %-of-full-scale discriminator."""
+def model_compare(loads: np.ndarray, err: np.ndarray,
+                  full_scale: float = 0.0) -> Dict:
+    """Decide whether an error magnitude scales with the READING or is
+    constant (%-of-full-scale).
+
+    Fits two competing models to ``err`` = |error| at applied |load|::
+
+        full scale:   E = c          (constant, load independent)
+        reading:      E = k * |L|    (proportional, through the origin)
+
+    and compares them by RMS misfit, so the winner is a direct model
+    selection rather than a correlation eyeball. Also fits the free
+    power law ``E = c * |L| ** p``: p near 1 is proportional to
+    reading, p near 0 is constant. Folding a signed residual through
+    ``abs()`` biases the SCALE (for Gaussian noise E|e| = 0.798 sigma)
+    but leaves the EXPONENT unbiased, which is why p is the robust
+    discriminator.
+    """
+    x = np.abs(np.asarray(loads, dtype=float))
+    e = np.abs(np.asarray(err, dtype=float))
+    ok = np.isfinite(x) & np.isfinite(e)
+    x, e = x[ok], e[ok]
+    out = {"c": 0.0, "k": 0.0, "rms_fs": 0.0, "rms_rdg": 0.0,
+           "p": float("nan"), "p_r2": 0.0, "corr": 0.0,
+           "prefers": "insufficient", "margin": 0.0}
+    if e.size < 3:
+        return out
+    c = float(np.mean(e))
+    out["c"] = c
+    out["rms_fs"] = float(np.sqrt(np.mean((e - c) ** 2)))
+    denom = float(np.sum(x * x))
+    k = float(np.sum(x * e) / denom) if denom > 0 else 0.0
+    out["k"] = k
+    out["rms_rdg"] = float(np.sqrt(np.mean((e - k * x) ** 2)))
+    if np.ptp(x) > 0 and np.ptp(e) > 0:
+        out["corr"] = float(np.corrcoef(x, e)[0, 1])
+    m = (x > 0) & (e > 0)
+    if int(m.sum()) >= 3 and np.ptp(x[m]) > 0:
+        p, _logc, p_r2 = linfit(np.log(x[m]), np.log(e[m]))
+        out["p"], out["p_r2"] = p, p_r2
+    # model selection: whichever model leaves less unexplained error,
+    # requiring a 20 % margin before calling it either way
+    lo, hi = sorted((out["rms_fs"], out["rms_rdg"]))
+    out["margin"] = (1.0 - lo / hi) * 100.0 if hi > 0 else 0.0
+    if out["rms_rdg"] < 0.8 * out["rms_fs"]:
+        out["prefers"] = "reading"
+    elif out["rms_fs"] < 0.8 * out["rms_rdg"]:
+        out["prefers"] = "full scale"
+    else:
+        out["prefers"] = "mixed"
+    return out
+
+
+def residual_analysis(loads: np.ndarray, means: np.ndarray,
+                      stds: Optional[np.ndarray] = None,
+                      full_scale: float = 0.0) -> Dict:
+    """Fit the calibration line, then ask what the leftover error
+    scales with.
+
+    Two independent error measures are tested against the same pair of
+    models (see :func:`model_compare`):
+
+    ``rdg``
+        |residual| of the step MEANS. Carries systematic error
+        (nonlinearity, hysteresis) plus step-to-step scatter. One
+        value per step, so it is the noisier of the two.
+    ``sig``
+        The within-step standard deviation from the unsteady capture.
+        Hundreds of samples back every point, so it measures the
+        RANDOM error at that load far more precisely. Only available
+        when ``stds`` is supplied.
+
+    ``pct_of_reading`` converts the proportional coefficient into a
+    unit-free percentage: the channel reads in N per lb of applied
+    load, so ``k / slope`` is dimensionless.
+    """
+    loads = np.asarray(loads, dtype=float)
+    means = np.asarray(means, dtype=float)
     slope, icpt, r2 = linfit(loads, means)
-    resid = np.asarray(means) - (slope * np.asarray(loads) + icpt)
+    resid = means - (slope * loads + icpt)
     a_l, a_r = np.abs(loads), np.abs(resid)
     r_slope, r_icpt, _ = linfit(a_l, a_r)
     corr = (float(np.corrcoef(a_l, a_r)[0, 1])
             if a_l.size > 2 and np.ptp(a_l) > 0 and np.ptp(a_r) > 0
             else 0.0)
     pct = abs(r_slope / slope) * 100.0 if slope else 0.0
-    return {"slope": slope, "intercept": icpt, "r_squared": r2,
-            "resid": resid, "resid_rms": float(np.sqrt(np.mean(resid**2)))
-            if resid.size else 0.0,
-            "resid_slope": r_slope, "resid_intercept": r_icpt,
-            "resid_corr": corr, "pct_of_reading": pct}
+    rdg = model_compare(loads, resid, full_scale)
+    sig = (model_compare(loads, stds, full_scale)
+           if stds is not None and np.size(stds) else None)
+    resid_rms = float(np.sqrt(np.mean(resid ** 2))) if resid.size else 0.0
+    out = {"slope": slope, "intercept": icpt, "r_squared": r2,
+           "resid": resid, "resid_rms": resid_rms,
+           "resid_slope": r_slope, "resid_intercept": r_icpt,
+           "resid_corr": corr, "pct_of_reading": pct,
+           "rdg": rdg, "sig": sig, "full_scale": float(full_scale)}
+    # percentages that stand on their own: proportional coefficient as
+    # a % of the reading, constant coefficient as a % of rated load
+    out["pct_reading_fit"] = (abs(rdg["k"] / slope) * 100.0
+                              if slope else 0.0)
+    out["pct_fs_fit"] = (rdg["c"] / full_scale * 100.0
+                         if full_scale else 0.0)
+    if sig is not None:
+        out["sig_pct_reading"] = (abs(sig["k"] / slope) * 100.0
+                                  if slope else 0.0)
+        out["sig_pct_fs"] = (sig["c"] / full_scale * 100.0
+                             if full_scale else 0.0)
+    return out
 
 
 class ExternalBalCalWindow(QMainWindow):
@@ -192,9 +293,16 @@ class ExternalBalCalWindow(QMainWindow):
         self.disc_btn = QPushButton("Disconnect")
         self.disc_btn.clicked.connect(self._disconnect)
         c.addWidget(self.disc_btn)
-        self.resid_chk = QCheckBox("Show residuals")
-        self.resid_chk.toggled.connect(self._redraw)
-        c.addWidget(self.resid_chk)
+        self.view_combo = QComboBox()
+        self.view_combo.addItems(["Means + fit", "Residuals",
+                                  "Error model"])
+        self.view_combo.setToolTip(
+            "Error model: |residual| and within-step sigma against "
+            "|load|, with both candidate laws overlaid — a flat line "
+            "is %-of-full-scale, a ray through the origin is "
+            "%-of-reading.")
+        self.view_combo.currentIndexChanged.connect(self._redraw)
+        c.addWidget(self.view_combo)
         bar.addWidget(conn)
         lay.addLayout(bar)
 
@@ -210,6 +318,8 @@ class ExternalBalCalWindow(QMainWindow):
         self.curve_pts: Dict[str, pg.ErrorBarItem] = {}
         self.curve_sc: Dict[str, pg.PlotDataItem] = {}
         self.curve_fit: Dict[str, pg.PlotDataItem] = {}
+        self.curve_sig: Dict[str, pg.PlotDataItem] = {}
+        self.curve_alt: Dict[str, pg.PlotDataItem] = {}
         for i, ch in enumerate(CHANNELS):
             pw = pg.PlotWidget()
             pi = pw.getPlotItem()
@@ -228,16 +338,23 @@ class ExternalBalCalWindow(QMainWindow):
             self.curve_fit[ch] = pi.plot(
                 [], [], pen=pg.mkPen(theme.TEXT_DIM, width=1,
                                      style=pg.QtCore.Qt.PenStyle.DashLine))
+            # error-model view: sigma points + the second candidate law
+            self.curve_sig[ch] = pi.plot(
+                [], [], pen=None, symbol="t", symbolSize=6,
+                symbolBrush=theme.TEXT_DIM)
+            self.curve_alt[ch] = pi.plot(
+                [], [], pen=pg.mkPen(theme.WARNING, width=1,
+                                     style=pg.QtCore.Qt.PenStyle.DotLine))
             self.plots[ch] = pw
             grid.addWidget(pw, i // 3, i % 3)
         lay.addWidget(grid_w, 1)
 
         # ── per-channel stats table ──
-        self.table = QTableWidget(len(CHANNELS), 9)
+        self.table = QTableWidget(len(CHANNELS), 10)
         self.table.setHorizontalHeaderLabels(
             ["Channel", "mean (last)", "σ (last)", "slope /lb",
-             "R²", "resid RMS", "|resid| ∝ load", "% of reading",
-             "verdict"])
+             "R²", "resid RMS", "exponent p", "% of reading",
+             "% of FS", "verdict"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -246,7 +363,7 @@ class ExternalBalCalWindow(QMainWindow):
         self.table.setMaximumHeight(230)
         for r, ch in enumerate(CHANNELS):
             self.table.setItem(r, 0, QTableWidgetItem(ch))
-            for c in range(1, 9):
+            for c in range(1, 10):
                 self.table.setItem(r, c, QTableWidgetItem("--"))
         lay.addWidget(self.table)
         theme.install_wheel_guard(self)
@@ -378,34 +495,62 @@ class ExternalBalCalWindow(QMainWindow):
 
     # ── analysis + plots ─────────────────────────────────────────────────
     def analyses(self) -> Dict[str, Dict]:
+        """Per-channel fit + error-model comparison. The within-step
+        sigma and the channel's rated load are handed in so the random
+        error gets its own model test and the constant term can be
+        quoted as a true %FS."""
         loads = np.array([s["load_lb"] for s in self.steps])
+        limits = self._limits()
         out = {}
         for ch in CHANNELS:
+            if loads.size < 2:
+                out[ch] = None
+                continue
             means = np.array([s["mean"][ch] for s in self.steps])
-            out[ch] = residual_analysis(loads, means) \
-                if loads.size >= 2 else None
+            stds = np.array([s["std"][ch] for s in self.steps])
+            out[ch] = residual_analysis(
+                loads, means, stds=stds,
+                full_scale=float(limits.get(ch, 0.0) or 0.0))
         return out
 
     def _redraw(self):
         loads = np.array([s["load_lb"] for s in self.steps])
-        show_resid = self.resid_chk.isChecked()
+        mode = self.view_combo.currentIndex()
         fits = self.analyses()
-        limits = self._limits()
         for r, ch in enumerate(CHANNELS):
             means = np.array([s["mean"][ch] for s in self.steps])
             stds = np.array([s["std"][ch] for s in self.steps])
             fa = fits[ch]
             pi = self.plots[ch].getPlotItem()
-            if show_resid and fa is not None:
+            unit = "N·m" if ch in ("Roll", "Pitch", "Yaw") else "N"
+            self.curve_sig[ch].setData([], [])
+            self.curve_alt[ch].setData([], [])
+            if mode == 2 and fa is not None:
+                # error magnitude vs |load|, both candidate laws drawn
+                a_l = np.abs(loads)
+                a_r = np.abs(fa["resid"])
+                self.curve_pts[ch].setData(x=np.array([]),
+                                           y=np.array([]),
+                                           height=np.array([]))
+                self.curve_sc[ch].setData(a_l, a_r)
+                self.curve_sig[ch].setData(a_l, stds)
+                xs = np.linspace(0.0, a_l.max(), 2) if a_l.size                     else np.array([])
+                rdg = fa["rdg"]
+                self.curve_fit[ch].setData(xs, rdg["k"] * xs)
+                self.curve_alt[ch].setData(xs, np.full(xs.shape,
+                                                       rdg["c"]))
+                pi.setLabel("bottom", "|applied load|  (lb)")
+                pi.setLabel("left", f"|error|  ({unit})")
+            elif mode == 1 and fa is not None:
                 y = fa["resid"]
                 self.curve_pts[ch].setData(x=loads, y=y, height=2 * stds)
                 self.curve_sc[ch].setData(loads, y)
-                xs = np.linspace(min(0, loads.min()), loads.max(), 2) \
-                    if loads.size else np.array([])
+                xs = np.linspace(min(0, loads.min()), loads.max(), 2)                     if loads.size else np.array([])
                 self.curve_fit[ch].setData(
                     xs, fa["resid_intercept"] + fa["resid_slope"]
                     * np.abs(xs))
-                pi.setLabel("left", f"{ch} residual")
+                pi.setLabel("bottom", "applied load  (lb)")
+                pi.setLabel("left", f"{ch} residual  ({unit})")
             else:
                 self.curve_pts[ch].setData(x=loads, y=means,
                                            height=2 * stds)
@@ -416,36 +561,41 @@ class ExternalBalCalWindow(QMainWindow):
                         xs, fa["slope"] * xs + fa["intercept"])
                 else:
                     self.curve_fit[ch].setData([], [])
-                unit = "N·m" if ch in ("Roll", "Pitch", "Yaw") else "N"
+                pi.setLabel("bottom", "applied load  (lb)")
                 pi.setLabel("left", f"{ch}  ({unit})")
             title = ch
             if fa is not None:
                 title += f"   R²={fa['r_squared']:.5f}"
+                if mode == 2:
+                    title += f"   p={fa['rdg']['p']:.2f}"
             pi.setTitle(title)
-            # stats table row
-            def _set(col, text):
-                self.table.item(r, col).setText(text)
-            if self.steps:
-                _set(1, f"{means[-1]:+.4f}")
-                _set(2, f"{stds[-1]:.4f}")
-            if fa is not None:
-                _set(3, f"{fa['slope']:+.5f}")
-                _set(4, f"{fa['r_squared']:.5f}")
-                _set(5, f"{fa['resid_rms']:.5f}")
-                _set(6, f"{fa['resid_slope']:+.5f}/lb "
-                        f"(r={fa['resid_corr']:+.2f})")
-                _set(7, f"{fa['pct_of_reading']:.3f} %")
-                lim = limits.get(ch, 0.0)
-                rms_fs = (fa["resid_rms"] / lim * 100.0) if lim else None
-                if fa["resid_corr"] > 0.5 and fa["pct_of_reading"] > 0:
-                    v = "∝ READING"
-                elif fa["resid_corr"] < 0.2:
-                    v = "∝ full scale (constant)"
-                else:
-                    v = "mixed"
-                if rms_fs is not None:
-                    v += f"  ({rms_fs:.3f} %FS rms)"
-                _set(8, v)
+            self._fill_row(r, ch, fa, means, stds)
+
+    def _fill_row(self, r: int, ch: str, fa, means, stds) -> None:
+        def _set(col, text):
+            self.table.item(r, col).setText(text)
+
+        if self.steps:
+            _set(1, f"{means[-1]:+.4f}")
+            _set(2, f"{stds[-1]:.4f}")
+        if fa is None:
+            return
+        rdg, sig = fa["rdg"], fa["sig"]
+        _set(3, f"{fa['slope']:+.5f}")
+        _set(4, f"{fa['r_squared']:.5f}")
+        _set(5, f"{fa['resid_rms']:.5f}")
+        _set(6, f"{rdg['p']:+.2f} (r²={rdg['p_r2']:.2f})")
+        _set(7, f"{fa['pct_reading_fit']:.3f} %")
+        _set(8, (f"{fa['pct_fs_fit']:.3f} %" if fa["full_scale"]
+                 else "no rated load"))
+        # verdict: the model comparison on the step means, plus the
+        # independent (and much better sampled) sigma test
+        verdict = {"reading": "∝ READING", "full scale": "∝ full scale",
+                   "mixed": "mixed", "insufficient": "need ≥3 steps"}
+        v = f"{verdict[rdg['prefers']]} ({rdg['margin']:.0f} %)"
+        if sig is not None and sig["prefers"] != "insufficient":
+            v += f"   σ: {verdict[sig['prefers']]}"
+        _set(9, v)
 
     # ── save ─────────────────────────────────────────────────────────────
     def _save(self):
@@ -527,10 +677,12 @@ class ExternalBalCalWindow(QMainWindow):
             },
         }
         if any(f is not None for f in fits.values()):
-            mat["Fits"] = {ch: {k: v for k, v in fa.items()
-                                if k != "resid"}
-                           | {"resid": np.asarray(fa["resid"])}
-                           for ch, fa in fits.items() if fa is not None}
+            def _clean(fa):
+                out = {k: v for k, v in fa.items() if v is not None}
+                out["resid"] = np.asarray(fa["resid"])
+                return out
+            mat["Fits"] = {ch: _clean(fa) for ch, fa in fits.items()
+                           if fa is not None}
         scipy.io.savemat(path, mat, long_field_names=True)
 
     # ── plumbing ─────────────────────────────────────────────────────────
