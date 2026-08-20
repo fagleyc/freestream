@@ -574,11 +574,19 @@ class FreestreamMainWindow(QMainWindow):
 
         # Advanced — specialist tools that live outside the sweep workflow
         adv_menu = self.menuBar().addMenu("&Advanced")
-        act = QAction("Balance &Calibration…", self)
+        act = QAction("&Internal Balance Calibration…", self)
         act.setToolTip("Open the balance_cal .vol-acquisition window "
                        "(balcal_gui). Shares the live StrainBook when "
                        "Freestream is connected; standalone otherwise.")
         act.triggered.connect(self._open_balance_cal)
+        adv_menu.addAction(act)
+        act = QAction("&External Balance Calibration…", self)
+        act.setToolTip(
+            "SPLAT dead-weight check for the ATE external balance: "
+            "step the same load up/down on all six channels, live "
+            "linear fits + residual analysis, full unsteady record "
+            "saved to .mat. Shares the live ATE when connected.")
+        act.triggered.connect(self._open_ext_balcal)
         adv_menu.addAction(act)
         self.process_report_act = QAction("&Process && Report…", self)
         self.process_report_act.setToolTip(
@@ -613,6 +621,32 @@ class FreestreamMainWindow(QMainWindow):
         """Help ▸ About — shared-template About dialog."""
         dlg = AboutDialog(self)
         dlg.exec()
+
+    def _open_ext_balcal(self) -> None:
+        """Advanced ▸ External Balance Calibration — SPLAT window.
+
+        One window per session; shares the live ATE adapter when
+        Freestream is connected in a configuration that has one,
+        otherwise the window owns a standalone (sim-capable) adapter."""
+        win = getattr(self, "_ext_balcal_win", None)
+        if win is not None:
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            return
+        from .ext_balcal import ExternalBalCalWindow
+        shared = None
+        ate = self.manager.devices.get("ate")
+        if self._connected and ate is not None:
+            shared = ate
+        self._ext_balcal_win = ExternalBalCalWindow(
+            adapter=shared, sim=self.manager.sim,
+            data_root=self.config.data_root)
+        self._ext_balcal_win.show()
+        self.console.log(
+            "external balance calibration window opened"
+            + (" — sharing the live ATE" if shared is not None
+               else " (standalone)"))
 
     def _process_report(self) -> None:
         """Advanced ▸ Process & Report — headless Streamlined reduction
