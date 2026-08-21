@@ -28,9 +28,11 @@ organized like the suite's other IO files: device group ``ATE_Balance``
 with per-channel sample arrays, a ``Time`` group, plus ``Steps``,
 ``Fits`` and ``meta`` structs.
 
-Loads are entered in lb or kg (stored canonically in lb); the ATE
-channels stay in their native N / N·m — the fit slope simply carries
-the mixed units. Uses the full ATE device driver via the freestream
+Loads are entered in lb or kg and stored canonically in lb. The ATE
+streams in whatever unit the OGI is configured for and never reports
+it on the wire; cross-checking a 2026-08-20 run against the SPLAT
+archive gives a sensitivity ratio of 0.998 against files that declare
+lb, so the stream is pounds and lb-ft. Uses the full ATE device driver via the freestream
 adapter (shared live adapter when Freestream is connected in an ATE
 mode, standalone otherwise — sim supported end to end).
 """
@@ -668,7 +670,15 @@ class ExternalBalCalWindow(QMainWindow):
                         "sim": bool(self.adapter.sim)},
                 "devices": {"ate": {
                     "balance_type": "external",
-                    "load_units": "N / N.m",
+                    # The OGI streams in whatever unit it is
+                    # configured for and does not report it on the
+                    # wire. Cross-checking the 2026-08-20 run against
+                    # the SPLAT archive (identical dead weights, same
+                    # fixture) gives a sensitivity ratio of 0.998
+                    # against files whose header declares Lb/.ft, so
+                    # the stream is POUNDS. An earlier hardcoded
+                    # "N / N.m" here was wrong by a factor of 4.448.
+                    "load_units": "lb / lb-ft",
                     **{k: str(v) for k, v in
                        (self.adapter.extra_meta() or {}).items()},
                     "load_limits": {k: float(v) for k, v in
