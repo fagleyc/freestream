@@ -191,7 +191,33 @@ def process_run(run_dir, config=None, facility: str = "",
         raw, _ = read_run_file(str(info.filepath))
         d = dict(raw.data)
         d["Time"] = raw.time
-        return copy_balance_markers(raw, d)
+        d = copy_balance_markers(raw, d)
+        # The COMMANDED speed setpoint, which is what a sweep steps
+        # through and what curves should be grouped by. Distinct from
+        # the MEASURED Mach further down: that is derived from q and
+        # varies point to point, so grouping on it makes every point its
+        # own group. Freestream writes the setpoint into the filename
+        # and the run metadata; both are read here.
+        d["_set"], d["_setunit"] = _setpoint(raw.properties, info)
+        return d
+
+    def _setpoint(props, info):
+        """(value, unit) of the commanded speed step, or (None, "")."""
+        # an explicit speed sweep (LSWT Hz, SWT RPM) declares BOTH a
+        # value and a unit; a mach sweep declares neither and carries the
+        # setpoint as the run's mach
+        value = props.get("speed_value")
+        unit = str(props.get("speed_unit") or "").strip().lower()
+        if value is None or not unit:
+            value, unit = props.get("mach"), "mach"
+        if value is None:
+            value, unit = getattr(info, "speed", None), unit or "mach"
+        if value is None:
+            return None, ""
+        try:
+            return round(float(value), 6), (unit or "mach")
+        except (TypeError, ValueError):
+            return None, ""
 
     key = lambda f: (f.alpha, f.beta)                       # noqa: E731
     ons = sorted([i for i in infos if i.air_state == "AirOn"], key=key)
@@ -274,6 +300,11 @@ def process_run(run_dir, config=None, facility: str = "",
             "beta": _mean(d_on, "Beta", on.beta),
             "speed": float(getattr(on, "speed", None)
                            or getattr(on, "speed_value", 0.0) or 0.0),
+            # commanded setpoint for this point — the report groups
+            # curves on it so a multi-speed sweep draws one curve per
+            # step instead of joining them all into a zig-zag
+            "set": d_on.get("_set"),
+            "setunit": d_on.get("_setunit", ""),
             "q": float(np.mean(t.Q)), "mach": float(np.mean(t.Mach)),
             "re": float(np.mean(t.Re)), "uinf": float(np.mean(t.U_inf)),
             "rho": float(np.mean(t.rho)), "T": float(np.mean(t.T)),

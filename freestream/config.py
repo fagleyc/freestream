@@ -119,7 +119,11 @@ class FreestreamConfig:
     #: peak-based utilization above 100% and BLOCK RUNS while the
     #: displayed mean loads sit comfortably in range (field
     #: 2026-07-24, LSWT 50lb moment balance). Recorded data stays raw.
-    display_lpf_hz: float = 10.0
+    # Display-only low-pass cutoff (Hz) for the live force readouts.
+    # 1 Hz: at the raw stream rate the last digits churn faster than
+    # they can be read, and peak-based overstress trips on noise
+    # spikes. Recorded data is never filtered.
+    display_lpf_hz: float = 1.0
     ref_area: float = 1.0            # S — reference area (coefficient denom)
     ref_chord: float = 1.0           # c — reference chord
     ref_span: float = 1.0            # b — reference span

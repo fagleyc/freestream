@@ -179,3 +179,53 @@ def test_resolved_path_inactive_decays_alarm(panel):
     p._sample()
     assert not p.overstress                         # stale blocker decayed
     assert p.record_blocker() is None
+
+
+# ── unit labels come from the balance, not from a constant ─────────────
+def test_tiles_relabel_from_the_balance_channel_units(panel):
+    """The tiles used to be hardcoded lb / in·lb, which is right for a
+    .vol reduction and wrong for an external balance streaming whatever
+    the OGI's Units menu is set to."""
+    p, bal = panel
+    bal.loads.update({"Lift": 12.0, "Pitch": 3.0})
+    p._sample()
+    assert p.tiles["Lift"].unit.text() == "N"
+    assert p.tiles["Pitch"].unit.text() == "N·m"      # N*m prettified
+
+    # flip the balance to pounds and the tiles follow on the next tick
+    def pounds():
+        from freestream.hal import ChannelSpec as CS
+        return [CS(name=n, unit=("lbf" if n in ("Lift", "Drag", "Side")
+                                 else "lbf*ft"),
+                   group="ATE_Balance", kind="raw", device_id="ate")
+                for n in NAMES]
+    bal.channels = pounds
+    p._sample()
+    assert p.tiles["Lift"].unit.text() == "lbf"
+    assert p.tiles["Pitch"].unit.text() == "lbf·ft"
+
+
+def test_display_filter_never_touches_the_recorded_stream(panel):
+    """The monitor low-pass reads a display-only tail. drain_block — what
+    the recorder consumes — must be unaffected by it."""
+    p, bal = panel
+    drained = []
+    real_drain = bal.drain_block
+    bal.drain_block = lambda: (drained.append(1), real_drain())[1]
+    p.config.display_lpf_hz = 1.0
+    for _ in range(3):
+        p._sample()
+    assert not drained, "the monitor consumed the recorder's samples"
+
+
+def test_display_filter_uses_the_tail_when_one_is_offered(panel):
+    """With a display_tail the tiles show a filtered mean, not the last
+    raw frame — that is the whole point of the 1 Hz monitor filter."""
+    p, bal = panel
+    tail = np.concatenate([np.full(40, 10.0), np.full(10, 110.0)])
+    bal.display_tail = lambda n: {"Lift": tail[-n:]}
+    bal.loads["Lift"] = 110.0            # newest frame is the spike
+    p.config.display_lpf_hz = 1.0
+    p._sample()
+    shown = float(p.tiles["Lift"].value.text().replace(",", ""))
+    assert 10.0 < shown < 110.0, shown   # smoothed, not the raw spike

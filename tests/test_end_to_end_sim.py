@@ -112,8 +112,11 @@ def test_mode2_files_reflect_the_true_device(tmp_path):
         # true device
         assert not any("StrainBook" in g for g in f.keys())
         # honest units on the resolved loads
-        assert f["ATE_Balance/Lift"].attrs["unit"] == "N"
-        assert f["ATE_Balance/Pitch"].attrs["unit"] == "N*m"
+        # the unit stamp follows AteConfig.load_units (this rig's
+        # OGI is on Lb / Lbft) — it is the reduction's only witness
+        # to what the streamed numbers mean
+        assert f["ATE_Balance/Lift"].attrs["unit"] == "lbf"
+        assert f["ATE_Balance/Pitch"].attrs["unit"] == "lbf*ft"
         # /Positioner = the ATE's own streamed positions, matching the
         # commanded point
         alpha = f["Positioner/Alpha"][()]

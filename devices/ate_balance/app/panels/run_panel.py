@@ -25,10 +25,20 @@ from ate_balance.device import AteBalanceDevice
 from ate_balance.app.plots import TimeHistory
 
 # Loads only — the balance measures forces and moments, nothing aerodynamic.
-_COLUMNS = ["alpha", "beta", "n",
-            "Lift (N)", "Drag (N)", "Side (N)",
-            "Roll (N·m)", "Pitch (N·m)", "Yaw (N·m)"]
 _MEAN_KEYS = ["Lift", "Drag", "Side", "Roll", "Pitch", "Yaw"]
+_FORCE_KEYS = ("Lift", "Drag", "Side")
+
+
+def _columns(force_u: str = "N", moment_u: str = "N·m") -> List[str]:
+    """Table headers carrying the CONFIGURED unit system — the OGI's
+    Units menu decides what the numbers mean, so nothing here is
+    hardcoded."""
+    return ["alpha", "beta", "n"] + [
+        f"{k} ({force_u if k in _FORCE_KEYS else moment_u})"
+        for k in _MEAN_KEYS]
+
+
+_COLUMNS = _columns()
 
 _WINDOWS = [("5 s", 5.0), ("10 s", 10.0), ("30 s", 30.0), ("60 s", 60.0)]
 
@@ -42,6 +52,12 @@ class RunPanel(QWidget):
         self._dev = device
         self._points: List[ReducedPoint] = []
         self._build(ring)
+
+    def set_units(self, force_u: str, moment_u: str) -> None:
+        """Relabel the results table and the trace axes for the
+        configured unit system."""
+        self.table.setHorizontalHeaderLabels(_columns(force_u, moment_u))
+        self.history.set_units(force_u, moment_u)
 
     def _build(self, ring: RingBuffer):
         root = QVBoxLayout(self)

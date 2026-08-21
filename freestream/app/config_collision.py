@@ -21,6 +21,7 @@ cancel
 
 from __future__ import annotations
 
+import re
 import string
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -53,14 +54,30 @@ def _suffixes():
             yield f"_{a}{b}"
 
 
-def next_free_name(data_root, config_name: str) -> str:
-    """First ``<name><suffix>`` whose folder holds no run files.
+#: a suffix this module itself appended: ``_a`` .. ``_z``, ``_aa`` .. ``_zz``
+_SUFFIX_RE = re.compile(r"_[a-z]{1,2}$")
 
-    Only the suffix moves, so repeating ``F16`` gives ``F16_a`` even if
-    ``F16_a`` was itself created by an earlier repeat.
+
+def strip_suffix(config_name: str) -> str:
+    """Drop a repeat suffix this module appended, if there is one.
+
+    Repeating a repeat has to walk the letters — ``F16`` -> ``F16_a`` ->
+    ``F16_b`` — not nest them into ``F16_a_a``. Only the exact shape this
+    module generates is stripped, so an operator's own ``F16_clean``
+    keeps its name and grows a suffix of its own.
+    """
+    return _SUFFIX_RE.sub("", config_name.rstrip("_"))
+
+
+def next_free_name(data_root, config_name: str) -> str:
+    """First ``<base><suffix>`` whose folder holds no run files.
+
+    The base is the configuration name with any suffix this module
+    previously appended removed, so repeating ``F16_a`` gives ``F16_b``,
+    not ``F16_a_a``.
     """
     root = Path(data_root)
-    base = config_name.rstrip("_")
+    base = strip_suffix(config_name)
     for suffix in _suffixes():
         candidate = f"{base}{suffix}"
         if not existing_runs(root / candidate):

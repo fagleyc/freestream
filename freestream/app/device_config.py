@@ -189,7 +189,8 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
                                "tmsd_port", "ogit_port", "connect_mode",
                                "auto_trigger")),
             ("Reduction reference", ("rho_kg_m3", "load_units")),
-            ("Display", ("plot_window_s", "bar_avg_ms")),
+            ("Display", ("plot_window_s", "bar_avg_ms",
+                         "display_lpf_hz")),
         ),
         choices={"connect_mode": ("listen", "dial"),
                  # must match the OGI's own Settings -> Units menu; the

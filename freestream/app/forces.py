@@ -119,12 +119,24 @@ class LoadBar(QWidget):
                                  else theme.TEXT), 2))
             p.drawLine(xp, 1, xp, h)
         p.end()
-#: wind-axis tiles (attr on AeroResult.means, label, unit)
+#: wind-axis tiles (attr on AeroResult.means, label, unit). The units
+#: here are the INTERNAL-balance path's: aero.compute_aero works in
+#: lb / in·lb because that is what a .vol calibration produces. An
+#: external balance streams whatever the OGI is set to, so that path
+#: relabels the tiles from the adapter's own channel units — see
+#: _sample_resolved. Hardcoding these for both was how the balance tab
+#: came to claim newtons were pounds.
 _TILES = [("Lift", "lb"), ("Drag", "lb"), ("Side", "lb"),
           ("Roll", "in·lb"), ("Pitch", "in·lb"), ("Yaw", "in·lb")]
 #: load-bar order for a resolved-load (external) balance — the six REAL
 #: channel names the ATE adapter streams
 _RESOLVED_ORDER = ("Lift", "Drag", "Side", "Pitch", "Yaw", "Roll")
+
+#: recorded unit string -> the form to show. The recorded strings stay
+#: ASCII and machine-parseable (the reduction keys off them); only the
+#: readout is prettified.
+_PRETTY_UNITS = {"N*m": "N·m", "lbf*ft": "lbf·ft", "kgf*m": "kgf·m",
+                 "in*lb": "in·lb"}
 
 
 class _Tile(QFrame):
@@ -154,9 +166,14 @@ class _Tile(QFrame):
         self.value.setStyleSheet("font-family: Consolas, monospace; "
                                  f"font-size: 16pt; color: {theme.TEXT};")
         lay.addWidget(self.value)
-        u = QLabel(unit)
-        u.setObjectName("dim")
-        lay.addWidget(u)
+        self.unit = QLabel(unit)
+        self.unit.setObjectName("dim")
+        lay.addWidget(self.unit)
+
+    def set_unit(self, unit: str) -> None:
+        """Relabel after the balance told us what it is streaming."""
+        if self.unit.text() != unit:
+            self.unit.setText(unit)
 
     def set_value(self, v: Optional[float]):
         if v is None:
@@ -471,21 +488,47 @@ class ForcesPanel(QWidget):
             self.info.setText(f"force computation failed: {exc}")
             return
         means = res.means()
-        for name, _u in _TILES:
+        for name, unit in _TILES:
             self.tiles[name].set_value(means.get(name))
+            # restore the calibrated path's units: a .vol reduction is in
+            # lb / in·lb no matter what an external balance shown earlier
+            # in the session had labelled these tiles
+            self.tiles[name].set_unit(unit)
         self._update_util(res)
+
+    def _resolved_units(self) -> Dict[str, str]:
+        """Channel -> unit as the balance itself declares it, prettified.
+
+        Recorded unit strings stay machine-parseable ('N*m', 'lbf*ft')
+        because the reduction keys off them; the readout shows the
+        typographic form."""
+        try:
+            units = {ch.name: ch.unit for ch in self._balance.channels()}
+        except Exception:                              # noqa: BLE001
+            return {}
+        return {k: _PRETTY_UNITS.get(v, v) for k, v in units.items()}
 
     def _sample_resolved(self) -> None:
         """External balance already streams resolved loads under their
         real names (Lift/Drag/Side/Pitch/Yaw/Roll) — show them, and run
-        the element-load bars against the adapter's ``load_limits``."""
+        the element-load bars against the adapter's ``load_limits``.
+
+        The tiles show a low-passed mean rather than the single newest
+        frame: at the raw stream rate the last digits churn faster than
+        they can be read. Nothing recorded is filtered — the tail this
+        reads is a display-only copy the recorder never sees."""
         try:
             vals = self._balance.latest()
         except Exception:                              # noqa: BLE001
             return
+        chan_units = self._resolved_units()
+        shown = self._display_means(vals)
         for name, _u in _TILES:
-            v = vals.get(name)
+            v = shown.get(name)
             self.tiles[name].set_value(None if v is None else float(v))
+            unit = chan_units.get(name)
+            if unit:
+                self.tiles[name].set_unit(unit)
         if not any(n in vals for n in _RESOLVED_ORDER):
             # no resolved loads to evaluate (e.g. raw-volt balance without
             # a cal) → a latched overstress must DECAY, not persist as a
@@ -495,7 +538,36 @@ class ForcesPanel(QWidget):
         if self.cal is None:
             self.info.setText("external balance streams resolved loads "
                               "(no .vol needed)")
-        self._update_resolved_bars(vals)
+        self._update_resolved_bars(shown or vals)
+
+    def _display_means(self, latest: Dict[str, float]) -> Dict[str, float]:
+        """Low-passed channel means for the monitor.
+
+        Uses the adapter's non-consuming ``display_tail`` when it offers
+        one (the ATE does), so the filter sees every streamed frame
+        instead of one sample per UI tick. Falls back to the newest
+        frame unchanged. DISPLAY ONLY — the recorder drains its own
+        buffer and is untouched by any of this."""
+        lpf = getattr(self.config, "display_lpf_hz", 0.0)
+        tail = getattr(self._balance, "display_tail", None)
+        if lpf <= 0 or not callable(tail):
+            return dict(latest)
+        try:
+            rate = float(self._balance.sample_rate()) or 0.0
+        except Exception:                              # noqa: BLE001
+            rate = 0.0
+        if rate <= 0:
+            return dict(latest)
+        try:
+            block = tail(int(max(rate / lpf, 2)) * 2)
+        except Exception:                              # noqa: BLE001
+            return dict(latest)
+        out = dict(latest)
+        for name, arr in block.items():
+            arr = np.asarray(arr, dtype=float)
+            if arr.size:
+                out[name] = float(np.mean(_lowpass(arr, rate, lpf)))
+        return out
 
     def _update_resolved_bars(self, vals: Dict[str, float]) -> None:
         """Element-load bars for the resolved-load path: |load| vs the

@@ -6,11 +6,12 @@ config on OK (network items take effect at the next Connect).
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QGroupBox, QLineEdit, QSpinBox, QVBoxLayout,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QFormLayout, QGroupBox, QLineEdit, QSpinBox, QVBoxLayout,
 )
 
-from ate_balance.config import AteConfig
+from ate_balance.config import (AteConfig, LOAD_UNITS,
+                                LOAD_UNIT_SYMBOLS)
 
 
 class SettingsDialog(QDialog):
@@ -67,10 +68,33 @@ class SettingsDialog(QDialog):
             "Averaging window for the live bars (10 ms = raw & twitchy,\n"
             "200 ms = calm). Time histories always show the raw stream.")
         df.addRow("Live bar smoothing", self.bar_avg)
+        self.lpf = QDoubleSpinBox()
+        self.lpf.setRange(0.0, 100.0)
+        self.lpf.setDecimals(2)
+        self.lpf.setSingleStep(0.5)
+        self.lpf.setValue(getattr(cfg, "display_lpf_hz", 1.0))
+        self.lpf.setSuffix(" Hz")
+        self.lpf.setToolTip(
+            "Low-pass cutoff for the LIVE bars and traces (0 = off).\n"
+            "Display only — the ring buffer, the dwell averages and\n"
+            "everything recorded stay raw.")
+        df.addRow("Display low-pass", self.lpf)
+        self.units = QComboBox()
+        for key in LOAD_UNITS:
+            f_u, m_u = LOAD_UNIT_SYMBOLS[key]
+            self.units.addItem(f"{f_u} / {m_u}", key)
+        idx = self.units.findData(getattr(cfg, "load_units", "lb"))
+        self.units.setCurrentIndex(max(idx, 0))
+        self.units.setToolTip(
+            "MUST match the OGI's Settings → Units selection.\n"
+            "The loads arrive as bare numbers with no unit tag, so a\n"
+            "mismatch is a silent scale error downstream (N read as lb\n"
+            "is 4.45x; lbf·ft read as in·lbf is 12x).")
+        df.addRow("Load units (match the OGI)", self.units)
         root.addWidget(disp)
 
         # ── Rated load maxima ──
-        lim = QGroupBox("Rated load maxima (0 = no limit)")
+        lim = QGroupBox("Rated load maxima  (N / N·m; 0 = no limit)")
         lf = QFormLayout(lim)
         self.max_spins = {}
         for axis, unit in (("Lift", " N"), ("Drag", " N"), ("Side", " N"),
@@ -79,10 +103,11 @@ class SettingsDialog(QDialog):
             sp = self._dbl(cfg.max_loads.get(axis, 0.0), 0.0, 100000.0,
                            1, unit)
             sp.setToolTip(
-                f"Rated maximum for the {axis} channel.  0 = no limit "
-                "configured.\nThe suite streams utilization bars against "
-                "these; the live panel\nflags an overstress when a load "
-                "exceeds a nonzero maximum.")
+                f"Rated maximum for the {axis} channel, in N / N·m\n"
+                "REGARDLESS of what the OGI is streaming — the bars\n"
+                "convert, so changing the unit setting cannot silently\n"
+                "invalidate these. Seeded from the balance's published\n"
+                "design ranges (AID-010-10015-1 §2.4). 0 = no limit.")
             lf.addRow(f"{axis} max", sp)
             self.max_spins[axis] = sp
         root.addWidget(lim)
@@ -110,5 +135,7 @@ class SettingsDialog(QDialog):
         cfg.default_sample_seconds = self.sample_secs.value()
         cfg.plot_window_s = float(self.plot_window.value())
         cfg.bar_avg_ms = self.bar_avg.value()
+        cfg.display_lpf_hz = float(self.lpf.value())
+        cfg.load_units = self.units.currentData()
         cfg.max_loads = {a: sp.value() for a, sp in self.max_spins.items()}
         super().accept()

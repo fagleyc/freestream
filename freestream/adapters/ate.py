@@ -41,6 +41,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -51,7 +52,8 @@ if str(_DEVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_DEVICES_DIR))
 
 from ate_balance import protocol as P                         # noqa: E402
-from ate_balance.config import AteConfig, LOAD_UNITS          # noqa: E402
+from ate_balance.config import (AteConfig, LOAD_UNITS,        # noqa: E402
+                                convert_loads)
 from ate_balance.device import AteBalanceDevice               # noqa: E402
 
 from ..hal import (AxisSpec, ChannelSpec, DeviceStatus,       # noqa: E402
@@ -96,6 +98,8 @@ class AteBalanceAdapter(ConfigurableAdapter):
 
         self._lock = threading.RLock()
         self._acc: Dict[str, list] = self._empty_acc()
+        self._disp: Dict[str, deque] = {
+            name: deque(maxlen=self.DISPLAY_TAIL_FRAMES) for name in self._map}
         self._latest: Dict[str, float] = {}
         self._last_frame_t: Optional[float] = None
 
@@ -124,12 +128,28 @@ class AteBalanceAdapter(ConfigurableAdapter):
         """True when the driver's span mapping exposes a beta axis."""
         return self._dev.beta_limits() is not None
 
+    # ── display-only tail ────────────────────────────────────────────────
+    #: frames kept purely so the monitor can low-pass its view. Separate
+    #: from ``_acc``, which the recorder DRAINS — peeking at that would
+    #: race the recording, and this must never affect what is recorded.
+    DISPLAY_TAIL_FRAMES = 2048
+
+    def display_tail(self, n: int) -> Dict[str, np.ndarray]:
+        """Last ``n`` frames per load channel, WITHOUT consuming them.
+
+        For live readouts only. Returns whatever is available (possibly
+        fewer than ``n``, possibly empty)."""
+        with self._lock:
+            return {name: np.asarray(list(buf)[-n:], dtype=np.float64)
+                    for name, buf in self._disp.items()}
+
     # ── driver callbacks (IO/timer threads) ──────────────────────────────
     def _on_frame(self, bf) -> None:
         with self._lock:
             for name, wire in self._map.items():
                 v = bf.loads.get(wire, 0.0)
                 self._acc[name].append(v)
+                self._disp[name].append(v)
                 self._latest[name] = v
             self._acc["Alpha"].append(self._alpha)
             self._latest["Alpha"] = self._alpha
@@ -263,20 +283,35 @@ class AteBalanceAdapter(ConfigurableAdapter):
 
     @property
     def load_limits(self) -> Dict[str, float]:
-        """Rated max per recorded load channel from the driver config's
-        ``max_loads`` field ({wire name: rated max, N / N.m}).
+        """Rated max per recorded load channel, IN THE STREAMED UNITS.
 
-        Defensive: the field may not exist yet on older driver configs
-        (``getattr`` default), and missing/zero/invalid entries mean
-        "no limit" (0.0) — the Forces page shows the raw value instead
-        of a fake utilization for those channels."""
+        The config holds the maxima in ``max_load_units`` (N / N*m by
+        default) so they survive a change to the OGI's unit setting;
+        this converts them into whatever ``load_units`` the balance is
+        actually sending, because that is what the utilization bars
+        divide. Without the conversion a pound-streaming balance judged
+        against newton maxima reads 4.45x low and the bars all but
+        vanish.
+
+        Defensive: fields may be missing on older driver configs
+        (``getattr`` defaults), and a zero/invalid entry means "no
+        limit" (0.0) — the Forces page shows the raw value instead of a
+        fake utilization for those channels."""
         raw = getattr(self._cfg, "max_loads", {}) or {}
+        basis = getattr(self._cfg, "max_load_units", "N")
+        streamed = getattr(self._cfg, "load_units", "N")
         limits: Dict[str, float] = {}
         for name, wire in self._map.items():
             try:
                 v = float(raw.get(wire, 0.0) or 0.0)
             except (TypeError, ValueError):
                 v = 0.0
+            if v > 0 and basis != streamed:
+                try:
+                    v = convert_loads(v, basis, streamed,
+                                      moment=wire not in _FORCE_AXES)
+                except KeyError:                       # unknown unit name
+                    pass
             limits[name] = v if v > 0 else 0.0
         return limits
 

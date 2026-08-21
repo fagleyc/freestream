@@ -183,7 +183,7 @@ def test_ate_positioner_and_zero():
 
 def test_ate_truth_naming_and_load_limits():
     """The ATE records the TRUE device: group ATE_Balance, real wire
-    names, honest N / N*m units — no StrainBook aliasing. load_limits
+    names, and whatever units the OGI is configured to send — no StrainBook aliasing. load_limits
     comes defensively from the driver config's max_loads (missing/0 =
     no limit)."""
     a = AteBalanceAdapter(sim=True)
@@ -192,8 +192,14 @@ def test_ate_truth_naming_and_load_limits():
     assert [c.name for c in load_specs] == \
         ["Lift", "Pitch", "Drag", "Side", "Yaw", "Roll"]
     units = {c.name: c.unit for c in load_specs}
-    assert units["Lift"] == units["Drag"] == units["Side"] == "N"
-    assert units["Pitch"] == units["Yaw"] == units["Roll"] == "N*m"
+    # the rig's OGI is on Lb / Lbft, so that is the default stamp;
+    # the units are NOT hardcoded, they follow AteConfig.load_units
+    assert units["Lift"] == units["Drag"] == units["Side"] == "lbf"
+    assert units["Pitch"] == units["Yaw"] == units["Roll"] == "lbf*ft"
+    a._cfg.load_units = "N"
+    si = {c.name: c.unit for c in a.channels() if c.group != "Positioner"}
+    assert si["Lift"] == "N" and si["Pitch"] == "N*m"
+    a._cfg.load_units = "lb"
     assert a.extra_meta()["balance_type"] == "external"
     assert a.balance_type == "external"
 
@@ -204,6 +210,8 @@ def test_ate_truth_naming_and_load_limits():
     if not hasattr(a.config, "max_loads"):
         assert all(v == 0.0 for v in limits.values())
     # a config carrying max_loads (partial / zero / junk) maps through
+    # basis == streamed here, so the numbers pass through unconverted
+    a._cfg.__dict__["max_load_units"] = "lb"
     a._cfg.__dict__["max_loads"] = {"Lift": 450.0, "Drag": 0,
                                     "Pitch": "junk"}
     try:
@@ -214,6 +222,7 @@ def test_ate_truth_naming_and_load_limits():
         assert limits["Roll"] == 0.0          # missing → no limit
     finally:
         a._cfg.__dict__.pop("max_loads", None)
+        a._cfg.__dict__.pop("max_load_units", None)
 
 
 def test_positioner_limit_refused():

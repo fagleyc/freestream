@@ -84,8 +84,10 @@ def _record(tmp_path, config_name, span="full", load_units="N"):
 
 
 # ── the driver config ───────────────────────────────────────────────────
-def test_load_units_defaults_to_newtons_and_is_validated():
-    assert AteConfig().load_units == "N"
+def test_load_units_defaults_to_pounds_and_is_validated():
+    """The OGI on this rig is set to Lb / Lbft, so that is the default.
+    Change it here if the OGI's Units menu is changed."""
+    assert AteConfig().load_units == "lb"
     assert set(LOAD_UNITS) == {"N", "lb", "kg"}
     # the OGI pairs pounds with FEET, not inches — the whole reason the
     # marker has to distinguish them
@@ -222,3 +224,90 @@ def test_embedded_loads_are_in_the_reductions_units(tmp_path):
     # base; a unit slip would be 4.45x, not 0.01%
     assert np.isclose(point["E"][0],        # WIRE order: Lift first
                       lift_n * N_TO_LBF, rtol=1e-3)
+
+
+# ── repeat suffixes walk the alphabet, they do not nest ─────────────────
+def test_repeat_suffixes_walk_a_b_c(tmp_path):
+    """A second repeat is _b, not _a_a.
+
+    The base has to have any suffix this module previously appended
+    stripped before the next letter is chosen; without that, repeating
+    F16_a produced F16_a_a and the third run F16_a_a_a.
+    """
+    from freestream.app.config_collision import next_free_name
+
+    def occupy(name):
+        d = tmp_path / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "manifest.json").write_text("{}", encoding="utf-8")
+
+    occupy("F16")
+    assert next_free_name(tmp_path, "F16") == "F16_a"
+    occupy("F16_a")
+    # repeating the ORIGINAL and repeating the REPEAT both land on _b
+    assert next_free_name(tmp_path, "F16") == "F16_b"
+    assert next_free_name(tmp_path, "F16_a") == "F16_b"
+    occupy("F16_b")
+    assert next_free_name(tmp_path, "F16_b") == "F16_c"
+
+
+def test_repeat_leaves_operator_suffixes_alone(tmp_path):
+    """Only the exact shape this module generates is stripped — an
+    operator's own trailing word is part of the name."""
+    from freestream.app.config_collision import next_free_name, strip_suffix
+
+    assert strip_suffix("F16_clean") == "F16_clean"
+    assert strip_suffix("F16_a") == "F16"
+    assert strip_suffix("F16_aa") == "F16"
+    assert strip_suffix("F16") == "F16"
+
+    d = tmp_path / "F16_clean"
+    d.mkdir()
+    (d / "manifest.json").write_text("{}", encoding="utf-8")
+    assert next_free_name(tmp_path, "F16_clean") == "F16_clean_a"
+
+
+# ── unit labels follow the configured system ────────────────────────────
+def test_rated_maxima_convert_into_the_streamed_units():
+    """The maxima are stored in N / N*m so the OGI's Units menu cannot
+    silently invalidate them; the bars divide by them in the STREAMED
+    units. Judging pound loads against newton maxima is what made the
+    Forces bars nearly invisible."""
+    from freestream.adapters.ate import AteBalanceAdapter
+    from ate_balance.config import RATED_LOADS_N
+
+    ad = AteBalanceAdapter(sim=True)
+    ad._cfg.load_units = "N"
+    assert ad.load_limits["Lift"] == pytest.approx(RATED_LOADS_N["Lift"])
+
+    ad._cfg.load_units = "lb"
+    assert ad.load_limits["Lift"] == pytest.approx(250.0, abs=0.5)
+    assert ad.load_limits["Drag"] == pytest.approx(150.0, abs=0.5)
+    assert ad.load_limits["Roll"] == pytest.approx(250.0, abs=0.5)
+    assert ad.load_limits["Pitch"] == pytest.approx(150.0, abs=0.5)
+
+
+def test_ate_panel_labels_follow_the_unit_setting(qt_app=None):
+    """The driver's own axis labels and table headers name whatever the
+    OGI is set to — they used to say N regardless."""
+    from PyQt6.QtWidgets import QApplication
+    from ate_balance.app.plots import LoadBars, axis_labels
+    from ate_balance.config import LOAD_UNIT_SYMBOLS
+
+    app = QApplication.instance() or QApplication([sys.argv[0]])
+    bars = LoadBars(force_u="lbf", moment_u="lbf\u00b7ft")
+    try:
+        f_lbl, m_lbl = axis_labels("lbf", "lbf\u00b7ft")
+        assert "lbf" in f_lbl and "lbf\u00b7ft" in m_lbl
+        bars.set_units(*LOAD_UNIT_SYMBOLS["N"])       # relabels live
+    finally:
+        bars.deleteLater()
+    app.processEvents()
+
+
+def test_run_panel_columns_carry_the_unit():
+    from ate_balance.app.panels.run_panel import _columns
+    cols = _columns("lbf", "lbf\u00b7ft")
+    assert "Lift (lbf)" in cols and "Pitch (lbf\u00b7ft)" in cols
+    si = _columns()
+    assert "Lift (N)" in si and "Pitch (N\u00b7m)" in si

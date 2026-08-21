@@ -24,8 +24,31 @@ from ate_balance.datamodel import RingBuffer
 
 theme.apply_pyqtgraph_theme()
 
-FORCES = ("Lift", "Drag", "Side")     # N
-MOMENTS = ("Roll", "Pitch", "Yaw")    # N·m
+FORCES = ("Lift", "Drag", "Side")     # force channels
+MOMENTS = ("Roll", "Pitch", "Yaw")    # moment channels
+
+#: axis labels are built from the CONFIGURED unit system, never hardcoded
+#: — the OGI's Units menu decides what the numbers mean and the client is
+#: only told through the config (see AteConfig.load_units)
+def axis_labels(force_u: str, moment_u: str):
+    return f"Force  ({force_u})", f"Moment  ({moment_u})"
+
+
+def display_lowpass(y, rate_hz: float, cutoff_hz: float):
+    """Monitor-grade low-pass for the LIVE TRACES ONLY.
+
+    Moving-average FIR sized to rate/cutoff (first null ~cutoff), edge-
+    padded so the kernel never runs onto implicit zeros and rolls the
+    trace toward zero at the window ends. The recorded stream is never
+    touched by this — the ring keeps every raw sample and the recorder
+    reads from the device, not from here."""
+    if cutoff_hz <= 0 or rate_hz <= 0:
+        return y
+    n = int(round(rate_hz / cutoff_hz))
+    if n < 2 or y.size < n:
+        return y
+    yp = np.pad(y, (n // 2, n - 1 - n // 2), mode="edge")
+    return np.convolve(yp, np.full(n, 1.0 / n), mode="valid")
 
 _GRID_PEN = pg.mkPen(theme.GRID, width=1)
 _AXIS_PEN = pg.mkPen(theme.AXIS, width=1)
@@ -61,6 +84,9 @@ def _style_plot(pw: pg.PlotWidget) -> None:
 
 class _BarGroup(pg.PlotWidget):
     """One bar plot for a group of channels sharing a unit."""
+
+    def set_unit_label(self, unit: str) -> None:
+        self.getPlotItem().setLabel("left", unit)
 
     def __init__(self, channels: Sequence[str], unit: str, parent=None):
         super().__init__(parent)
@@ -121,17 +147,25 @@ class _BarGroup(pg.PlotWidget):
 
 
 class LoadBars(QWidget):
-    """Side-by-side live bar graphs: forces (N) and moments (N·m)."""
+    """Side-by-side live bar graphs: forces and moments."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, force_u: str = "N",
+                 moment_u: str = "N·m"):
         super().__init__(parent)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
-        self._forces = _BarGroup(FORCES, "Force  (N)")
-        self._moments = _BarGroup(MOMENTS, "Moment  (N·m)")
+        f_lbl, m_lbl = axis_labels(force_u, moment_u)
+        self._forces = _BarGroup(FORCES, f_lbl)
+        self._moments = _BarGroup(MOMENTS, m_lbl)
         lay.addWidget(self._forces, 1)
         lay.addWidget(self._moments, 1)
+
+    def set_units(self, force_u: str, moment_u: str) -> None:
+        """Relabel both axes after the configured unit system changed."""
+        f_lbl, m_lbl = axis_labels(force_u, moment_u)
+        self._forces.set_unit_label(f_lbl)
+        self._moments.set_unit_label(m_lbl)
 
     def update_loads(self, loads: Dict[str, float]) -> None:
         self._forces.update_values([loads.get(c, 0.0) for c in FORCES])
@@ -151,12 +185,16 @@ class TimeHistory(QWidget):
     rendering cheap while preserving transients.
     """
 
-    def __init__(self, ring: RingBuffer, parent=None):
+    def __init__(self, ring: RingBuffer, parent=None,
+                 force_u: str = "N", moment_u: str = "N·m"):
         super().__init__(parent)
         self._ring = ring
         self.window_s = 10.0
         self.paused = False
         self._nominal_rate = 300.0            # refined live from the data
+        #: display-only low-pass cutoff (Hz); 0 disables. Applied to the
+        #: plotted traces, never to the ring or the recorded stream.
+        self.display_lpf_hz = 0.0
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -164,8 +202,9 @@ class TimeHistory(QWidget):
 
         self._curves: Dict[str, pg.PlotDataItem] = {}
         self._plots = []
-        for channels, unit in ((FORCES, "Force  (N)"),
-                               (MOMENTS, "Moment  (N·m)")):
+        self._axis_items = []
+        for channels, unit in zip((FORCES, MOMENTS),
+                                  axis_labels(force_u, moment_u)):
             pw = pg.PlotWidget()
             _style_plot(pw)
             pi = pw.getPlotItem()
@@ -185,6 +224,7 @@ class TimeHistory(QWidget):
                 self._curves[c] = curve
             lay.addWidget(pw, 1)
             self._plots.append(pw)
+            self._axis_items.append(pi)
 
         self._plots[1].setXLink(self._plots[0])
         self._plots[0].getPlotItem().getAxis("bottom").setStyle(showValues=False)
@@ -206,10 +246,20 @@ class TimeHistory(QWidget):
             return
         x = t - t[-1]                          # 0 at "now", negative history
         keep = x >= -self.window_s
-        x = x[keep]
+        # Filter over the FULL tail, then trim: filtering the trimmed
+        # window would let the kernel's edge-hold bias the oldest samples
+        # that are actually on screen.
+        rate = self._nominal_rate
         for c in self._curves:
-            self._curves[c].setData(x, data[c][keep])
+            y = display_lowpass(data[c], rate, self.display_lpf_hz)
+            self._curves[c].setData(x[keep], y[keep])
         self._plots[0].getPlotItem().setXRange(-self.window_s, 0.0, padding=0)
+
+    def set_units(self, force_u: str, moment_u: str) -> None:
+        """Relabel both y axes after the configured unit system changed."""
+        for pi, label in zip(self._axis_items,
+                             axis_labels(force_u, moment_u)):
+            pi.setLabel("left", label)
 
     def clear(self) -> None:
         for c in self._curves.values():

@@ -146,4 +146,8 @@ def test_lpf_unblocks_runs_with_same_data(app):
 
 
 def test_default_config_has_lpf_on():
-    assert FreestreamConfig(operator="t").display_lpf_hz == 10.0
+    """1 Hz since 2026-08-21 (was 10): at the raw stream rate the last
+    digits churn faster than an operator can read them, and the
+    peak-based overstress check trips on noise spikes. Display only —
+    the recorder never sees this filter."""
+    assert FreestreamConfig(operator="t").display_lpf_hz == 1.0

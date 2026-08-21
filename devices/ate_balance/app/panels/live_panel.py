@@ -48,9 +48,18 @@ class LivePanel(QWidget):
         super().__init__(parent)
         self._ring = ring
         self.avg_ms = 50            # smoothing window; kept in sync w/ config
-        self.max_loads: Dict[str, float] = {}   # rated maxima; 0 = no limit
+        #: display-only low-pass cutoff (Hz); widens the averaging window
+        #: to 1/cutoff when that is longer than ``avg_ms``. Never touches
+        #: the ring or anything recorded.
+        self.lpf_hz = 0.0
+        #: rated maxima IN THE STREAMED UNITS (the host converts); 0 = none
+        self.max_loads: Dict[str, float] = {}
         self._rate = 0.0
         self._build()
+
+    def set_units(self, force_u: str, moment_u: str) -> None:
+        """Relabel the bar axes for the configured unit system."""
+        self.bars.set_units(force_u, moment_u)
 
     def _build(self):
         root = QVBoxLayout(self)
@@ -92,7 +101,11 @@ class LivePanel(QWidget):
 
     # ── UI-timer refresh: smooth the last ``avg_ms`` of frames into bars ──
     def refresh(self) -> None:
-        n = max(2, int(self.avg_ms / 1000.0 * max(self._rate, 60.0)))
+        rate = max(self._rate, 60.0)
+        window_ms = self.avg_ms
+        if self.lpf_hz > 0:
+            window_ms = max(window_ms, 1000.0 / self.lpf_hz)
+        n = max(2, int(window_ms / 1000.0 * rate))
         data = self._ring.tail(n)
         if data["t"].size == 0:
             return
@@ -107,7 +120,7 @@ class LivePanel(QWidget):
                 "OVERSTRESS — above rated maximum: " + ", ".join(over))
         self.over_lbl.setVisible(bool(over))
         self._vals["sync"].setText(str(int(data["sync"][-1])))
-        self._vals["avg"].setText(f"{self.avg_ms}")
+        self._vals["avg"].setText(f"{window_ms:.0f}")
 
     # ── slow-path updates ──
     def set_rate(self, hz: float) -> None:

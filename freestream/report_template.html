@@ -87,6 +87,13 @@ table.pts th{color:var(--accent2);font-family:inherit}
    <option value="alpha">Alpha [deg]</option>
    <option value="beta">Beta [deg]</option>
    <option value="speed">Speed / Mach</option></select></div>
+  <div class="row" style="margin-top:6px"><label>Group</label>
+   <select id="gsel" style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px">
+    <option value="auto">Auto</option>
+    <option value="set">Speed / Mach step</option>
+    <option value="beta">Beta</option>
+    <option value="none">None (single curve)</option></select></div>
+  <div id="gnote" style="color:var(--dim);font-size:11px"></div>
  </div>
  <div class="box"><h2>Derived (primary dataset)</h2>
   <table id="stats"></table></div>
@@ -207,11 +214,12 @@ function reduce(ds,g){
     const W={}; for(const k in on) W[k]=on[k]-off[k];
     const qS=p.q*g.S||1e-12;
     return {alpha:p.alpha,beta:p.beta,speed:p.speed,mach:p.mach,run:p.run,
-      q:p.q,re:p.re,
+      set:(p.set===undefined||p.set===null)?null:+p.set,
+      setunit:p.setunit||"",q:p.q,re:p.re,
       Cl:W.Lift/qS,Cd:W.Drag/qS,Cs:W.Side/qS,
       CRoll:W.Roll/(qS*g.C),CPitch:W.Pitch/(qS*g.C),CYaw:W.Yaw/(qS*g.C),
       LD:W.Drag!==0?W.Lift/W.Drag:0};
-  }).sort((x,y)=>x.alpha-y.alpha||x.beta-y.beta||x.speed-y.speed);
+  }).sort((x,y)=>(x.set??0)-(y.set??0)||x.alpha-y.alpha||x.beta-y.beta);
 }
 function linfit(x,y){const n=x.length;if(n<2)return[0,0];
   const mx=x.reduce((a,v)=>a+v)/n,my=y.reduce((a,v)=>a+v)/n;
@@ -311,27 +319,96 @@ const CH=[
  makeChart("lat","Lateral-directional","x","C"),
 ];
 const XL={alpha:"Alpha [deg]",beta:"Beta [deg]",speed:"Speed"};
+
+/* ── curve grouping ────────────────────────────────────────────────────
+   A sweep that steps mach (or tunnel speed) produces one CURVE PER STEP.
+   Plotting every point as one series joins the steps into a zig-zag that
+   reads as noise. Rows are split on the COMMANDED setpoint (p.set), not
+   the measured mach, because the measurement drifts point to point and
+   would make every point its own group.                                */
+function setLabel(rows){
+  const u=(rows.find(r=>r.setunit)||{}).setunit||"";
+  return u==="mach"?(v=>"M "+(+v).toFixed(3).replace(/0+$/,"").replace(/\.$/,""))
+       : u? (v=>(+v).toFixed(2).replace(/\.?0+$/,"")+" "+u)
+       : (v=>String(v));
+}
+function groupKeys(rows,key){
+  const seen=new Set();
+  rows.forEach(r=>{const v=key==="set"?r.set:r[key];
+                   if(v!==null&&v!==undefined)seen.add(+v)});
+  return [...seen].sort((a,b)=>a-b);
+}
+/* Auto: group by the speed step when the run actually stepped it, else
+   by beta when the run swept beta, else not at all. */
+function autoGroupKey(rows,xk){
+  if(xk!=="speed"&&groupKeys(rows,"set").length>1)return "set";
+  if(xk!=="beta"&&groupKeys(rows,"beta").length>1)return "beta";
+  return "none";
+}
+/* Shade a dataset's base color across its groups so one run stays
+   visually one family while its steps stay distinguishable. */
+function shade(hex,t){
+  const n=parseInt(hex.slice(1),16);
+  const mix=(c)=>Math.round(c+(255-c)*t*0.55);
+  return "#"+[(n>>16)&255,(n>>8)&255,n&255].map(c=>
+    mix(c).toString(16).padStart(2,"0")).join("");
+}
+/* One dataset -> one or many named, colored series. */
+function split(r,gkey,pick){
+  if(gkey==="none")
+    return [{name:r.name,color:r.color,rows:r.rows}];
+  const keys=groupKeys(r.rows,gkey);
+  if(keys.length<2)return [{name:r.name,color:r.color,rows:r.rows}];
+  const lab=gkey==="set"?setLabel(r.rows):(v=>"β "+(+v).toFixed(1));
+  return keys.map((k,i)=>({
+    name:(datasets.length>1?r.name+" — ":"")+lab(k),
+    color:shade(r.color,keys.length>1?i/(keys.length-1):0),
+    rows:r.rows.filter(p=>+(gkey==="set"?p.set:p[gkey])===k)}));
+}
 function update(){
   geom.S=+el("gS").value||1;geom.C=+el("gC").value||1;geom.b=+el("gB").value||1;
   geom.mrc=[+el("mxs").value,+el("mys").value,+el("mzs").value];
   ["mx","my","mz"].forEach((k,i)=>el(k+"v").textContent=geom.mrc[i].toFixed(2));
-  const xk=el("xsel").value,xl=XL[xk];
+  const xk=el("xsel").value;
+  let xl=XL[xk];
   CH.forEach(c=>{if(c.id!=="polar"&&c.id!=="CmCl")c.xl=xl});
   const R=datasets.map((d,di)=>({di,name:d.label||d.payload.name,
                                  color:d.color,
                                  rows:reduce(d.payload,geom)}));
-  const ser=(key,xf)=>R.map(r=>({name:r.name,color:r.color,
-    x:r.rows.map(xf||(p=>p[xk])),y:r.rows.map(p=>p[key])}));
+  // one entry per (dataset x group) — this is what actually gets drawn
+  const allRows=R.flatMap(r=>r.rows);
+  let gk=el("gsel").value;
+  if(gk==="auto")gk=autoGroupKey(allRows,xk);
+  else if(gk===xk||(gk==="set"&&xk==="speed"))gk="none";  // x already is it
+  const G=R.flatMap(r=>split(r,gk,xk).map(g=>({...g,di:r.di})));
+  const steps=groupKeys(allRows,"set");
+  if(xk==="speed"){
+    const u=(allRows.find(r=>r.setunit)||{}).setunit||"";
+    xl=u==="mach"?"Mach":(u?`Speed [${u}]`:"Speed");
+    CH.forEach(c=>{if(c.id!=="polar"&&c.id!=="CmCl")c.xl=xl});
+  }
+  el("gnote").textContent = gk==="set"
+    ? `${steps.length} speed step(s), one curve each`
+    : (gk==="beta" ? "one curve per beta"
+       : (steps.length>1 ? `${steps.length} speed steps drawn as one curve`
+                         : ""));
+
+  const xof=(p)=>xk==="speed"?(p.set!==null&&p.set!==undefined?p.set
+                                                              :p.speed)
+                            :p[xk];
+  const ser=(key,xf)=>G.map(g=>({name:g.name,color:g.color,
+    x:g.rows.map(xf||xof),y:g.rows.map(p=>p[key])}));
   draw(CH[0],ser("Cl"));draw(CH[1],ser("Cd"));draw(CH[2],ser("CPitch"));
   draw(CH[3],ser("LD"));
-  draw(CH[4],R.map(r=>({name:r.name,color:r.color,
-    x:r.rows.map(p=>p.Cd),y:r.rows.map(p=>p.Cl)})));
-  draw(CH[5],R.map(r=>({name:r.name,color:r.color,
-    x:r.rows.map(p=>p.Cl),y:r.rows.map(p=>p.CPitch)})));
-  const lat=[];R.forEach(r=>{["Cs","CRoll","CYaw"].forEach((k,i)=>
-    lat.push({name:`${k} — ${r.name}`,
-      color:COLORS[(r.di*3+i)%COLORS.length],
-      x:r.rows.map(p=>p[xk]),y:r.rows.map(p=>p[k])}))});
+  draw(CH[4],G.map(g=>({name:g.name,color:g.color,
+    x:g.rows.map(p=>p.Cd),y:g.rows.map(p=>p.Cl)})));
+  draw(CH[5],G.map(g=>({name:g.name,color:g.color,
+    x:g.rows.map(p=>p.Cl),y:g.rows.map(p=>p.CPitch)})));
+  const lat=[];G.forEach((g,gi)=>{["Cs","CRoll","CYaw"].forEach((k,i)=>
+    lat.push({name:`${k} — ${g.name}`,
+      color:shade(COLORS[(g.di*3+i)%COLORS.length],
+                  G.length>1?gi/G.length:0),
+      x:g.rows.map(xof),y:g.rows.map(p=>p[k])}))});
   draw(CH[6],lat);
   stats(R[0]);xcheck(R[0]);ptable(R[0]);
 }
@@ -413,7 +490,7 @@ function init(){
   el("c-date").textContent=EMBED.generated;
   el("gS").value=g.S;el("gC").value=g.C;el("gB").value=g.b;
   el("mxs").value=g.mrc[0];el("mys").value=g.mrc[1];el("mzs").value=g.mrc[2];
-  ["gS","gC","gB","mxs","mys","mzs","xsel"].forEach(id=>
+  ["gS","gC","gB","mxs","mys","mzs","xsel","gsel"].forEach(id=>
     el(id).addEventListener("input",update));
   el("reset").onclick=()=>{el("gS").value=g.S;el("gC").value=g.C;
     el("gB").value=g.b;el("mxs").value=g.mrc[0];el("mys").value=g.mrc[1];

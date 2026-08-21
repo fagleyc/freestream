@@ -29,6 +29,7 @@ from ate_balance import protocol as P
 from ate_balance import theme
 from ate_balance.aux_source import SimAuxSource
 from ate_balance.config import AteConfig
+from ate_balance.config import LOAD_UNIT_SYMBOLS, convert_loads
 from ate_balance.datamodel import RingBuffer
 from ate_balance.device import AteBalanceDevice
 from ate_balance.reduction import DwellAccumulator, build_master_frame
@@ -211,14 +212,50 @@ class AteBalancePanel(QWidget):
         (self.device.on_status, self.device.on_reply,
          self.device.on_frame) = self._prev_callbacks
 
+    def _streamed_limits(self):
+        """Rated maxima converted into the units the OGI is streaming.
+
+        The config holds them in ``max_load_units`` so they survive a
+        change to the OGI's Units menu; the overstress test compares
+        them against live loads, which arrive in ``load_units``."""
+        basis = getattr(self.config, "max_load_units", "N")
+        streamed = getattr(self.config, "load_units", "N")
+        out = {}
+        for axis, value in (self.config.max_loads or {}).items():
+            try:
+                v = float(value or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if v > 0 and basis != streamed:
+                try:
+                    v = convert_loads(v, basis, streamed,
+                                      moment=axis in ("Roll", "Pitch", "Yaw"))
+                except KeyError:
+                    pass
+            out[axis] = v
+        return out
+
     def apply_settings(self):
         """Re-mirror config-driven widgets after the config was edited
         behind the panel's back (host dialogs call this on Apply/OK, and
         the standalone Settings dialog path funnels through here too)."""
         self.live_panel.avg_ms = self.config.bar_avg_ms
-        self.live_panel.max_loads = self.config.max_loads
+        self.live_panel.lpf_hz = getattr(self.config, "display_lpf_hz", 0.0)
+        self.live_panel.max_loads = self._streamed_limits()
         self.run_panel.history.window_s = self.config.plot_window_s
+        self.run_panel.history.display_lpf_hz = getattr(
+            self.config, "display_lpf_hz", 0.0)
+        self._apply_units()
         self.motion_panel.refresh_span()
+
+    def _apply_units(self):
+        """Push the configured unit symbols onto every label that names
+        one. Nothing in this app converts values — the OGI already sent
+        them in this system; the labels just have to say which."""
+        force_u, moment_u = LOAD_UNIT_SYMBOLS.get(
+            getattr(self.config, "load_units", "N"), ("N", "N·m"))
+        self.live_panel.set_units(force_u, moment_u)
+        self.run_panel.set_units(force_u, moment_u)
 
     # ── UI ──
     def _build_ui(self):
@@ -236,18 +273,18 @@ class AteBalancePanel(QWidget):
 
         self.tabs = QTabWidget()
         self.live_panel = LivePanel(self.ring)
-        self.live_panel.avg_ms = self.config.bar_avg_ms
-        self.live_panel.max_loads = self.config.max_loads
         self.live_panel.show_q(self._external_aux)
         self.motion_panel = MotionPanel(self.device)
         self.run_panel = RunPanel(self.device, self.ring)
-        self.run_panel.history.window_s = self.config.plot_window_s
         self.run_panel.startDwell.connect(self._begin_dwell)
         self.run_panel.stopDwell.connect(self._end_dwell)
         self.tabs.addTab(self.live_panel, "Live")
         self.tabs.addTab(self.motion_panel, "Motion")
         self.tabs.addTab(self.run_panel, "Run")
         root.addWidget(self.tabs, 1)
+        # one place mirrors every config-driven widget, so the build path
+        # and the Apply path can never drift apart
+        self.apply_settings()
 
         if self._embedded:
             # acquisition timing is suite policy (Measurement Setup owns
