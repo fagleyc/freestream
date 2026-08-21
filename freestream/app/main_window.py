@@ -270,6 +270,10 @@ class FreestreamMainWindow(QMainWindow):
             custom_devices=(self.config.custom_devices
                             if self.config.mode == DeviceManager.CUSTOM
                             else None))
+        #: answers the "configuration folder already exists" question;
+        #: swappable so headless callers and tests skip the dialog
+        from .config_collision import resolve_config_collision
+        self.collision_resolver = resolve_config_collision
         self.recorder = self._make_recorder()
         self.engine: Optional[SweepEngine] = None
         self._connected = False
@@ -1075,10 +1079,49 @@ class FreestreamMainWindow(QMainWindow):
                              + "; ".join(blockers))
             return
         self.banner.hide()
+        if not self._resolve_config_collision():
+            return
         for p in points:
             p.status = "queued"
         self.planner.refresh_statuses()
         self._launch(points)
+
+    def _resolve_config_collision(self) -> bool:
+        """Ask before recording into a configuration folder that already
+        holds runs. Returns False when the operator cancels.
+
+        The prompt goes through :attr:`collision_resolver` so a headless
+        caller or a test can answer without a modal dialog; it has the
+        signature ``(parent, data_root, config_name) ->
+        (action, new_name)`` with action in proceed | repeat |
+        overwrite | cancel.
+        """
+        from .config_collision import clear_config_dir
+        action, new_name = self.collision_resolver(
+            self, self.config.data_root, self.config.config_name)
+        if action == "cancel":
+            self.console.log("start cancelled — configuration folder "
+                             f"{self.config.config_name} already holds "
+                             f"recorded runs")
+            return False
+        if action == "repeat":
+            old = self.config.config_name
+            self.config.config_name = new_name
+            # the recorder owns the folder, so rebuild it, and re-push
+            # the measurement settings so every later save and the
+            # manifest agree with the new name
+            self.recorder = self._make_recorder()
+            self._update_ui_state()
+            self.console.log(f"repeating {old} — recording into "
+                             f"{new_name} (measurement configuration "
+                             f"renamed)")
+            return True
+        if action == "overwrite":
+            n = clear_config_dir(self.recorder.config_dir)
+            self.recorder = self._make_recorder()
+            self.console.log(f"overwriting {self.config.config_name} — "
+                             f"{n} file(s) deleted")
+        return True
 
     def _rerun_point(self, row: int) -> None:
         if self._running:

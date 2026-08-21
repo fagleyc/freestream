@@ -140,11 +140,40 @@ function wrf(B,a,b_){
           Side:B.Fx*sb*ca+B.Fy*cb+B.Fz*sa*sb,
           Roll:B.Mx,Pitch:B.My,Yaw:B.Mz};
 }
+/* external balance: the ATE resolves loads already, so only the MRC
+   moment transfer applies (Streamlined external_balance.py). Forces
+   rotate back to body axes, the net-force arm terms are applied, and
+   moments pass straight back to the wind frame. */
+function extWrf(E,a,b_,m){
+  const W={Lift:E[0],Drag:E[1],Side:E[2],Roll:E[3],Pitch:E[4],Yaw:E[5]};
+  if(m[0]===0&&m[1]===0&&m[2]===0) return W;
+  const ca=Math.cos(a*D2R),sa=Math.sin(a*D2R),
+        cb=Math.cos(b_*D2R),sb=Math.sin(b_*D2R);
+  // invert Lift/Drag/Side -> Fx,Fy,Fz (3x3 solve, Cramer)
+  const A=[[-sa,0,ca],[cb*ca,-sb,sa*cb],[sb*ca,cb,sa*sb]];
+  const v=[W.Lift,W.Drag,W.Side];
+  const det=A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
+           -A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
+           +A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]);
+  if(Math.abs(det)<1e-12) return W;
+  const col=(j)=>A.map((r,i)=>r.map((c,k)=>k===j?v[i]:c));
+  const d3=(M)=>M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1])
+                -M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0])
+                +M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);
+  const Fx=d3(col(0))/det, Fy=d3(col(1))/det, Fz=d3(col(2))/det;
+  return {Lift:W.Lift,Drag:W.Drag,Side:W.Side,
+          Roll:W.Roll-Fy*m[2],
+          Pitch:W.Pitch-Fz*m[0]-Fx*m[2],
+          Yaw:W.Yaw+Fy*m[1]-Fy*m[0]};
+}
 function reduce(ds,g){
   const dist=ds.cal.distances,cfg=ds.balance_config;
+  const ext=ds.mode==="external";
   return ds.points.map(p=>{
-    const on=wrf(brf(p.E,dist,g.mrc,cfg),p.alpha,p.beta);
-    const off=wrf(brf(p.off.E,dist,g.mrc,cfg),p.off.alpha,p.off.beta);
+    const on = ext ? extWrf(p.E,p.alpha,p.beta,g.mrc)
+                   : wrf(brf(p.E,dist,g.mrc,cfg),p.alpha,p.beta);
+    const off= ext ? extWrf(p.off.E,p.off.alpha,p.off.beta,g.mrc)
+                   : wrf(brf(p.off.E,dist,g.mrc,cfg),p.off.alpha,p.off.beta);
     const W={}; for(const k in on) W[k]=on[k]-off[k];
     const qS=p.q*g.S||1e-12;
     return {alpha:p.alpha,beta:p.beta,speed:p.speed,mach:p.mach,run:p.run,
@@ -340,6 +369,9 @@ function init(){
   el("title").textContent=`${EMBED.meta.model_name||EMBED.name} — ${EMBED.name}`;
   el("c-fac").textContent=EMBED.facility+" · "+EMBED.balance_config+" balance";
   el("c-cal").textContent=EMBED.cal.file||"cal: injected matrix";
+  if(EMBED.mode==="external"){
+    el("xcheck").textContent="external balance: resolved loads, no .vol";
+  }
   el("c-n").textContent=EMBED.points.length+" points";
   el("c-date").textContent=EMBED.generated;
   el("gS").value=g.S;el("gC").value=g.C;el("gB").value=g.b;

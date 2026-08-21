@@ -5,12 +5,23 @@ Drives the sibling Streamlined repo's Qt-free backend
 ``processed/`` subdirectory beside the raw data containing:
 
 * ``report.html``      — self-contained interactive report: the reduced
-  sweep with live geometry/MRC re-reduction in the browser. Per-point
-  MEAN balance-element loads (geometry-independent) are embedded, and
-  the report's JS re-runs the exact Streamlined elements→BRF→WRF→
-  coefficient chain (transforms.py formulas) when Sref/MAC/span/MRC
-  change — so MRC shifts update every coefficient live. Other processed
-  runs' ``report_data.json`` files can be overlaid for comparison.
+  sweep with live geometry/MRC re-reduction in the browser. Other
+  processed runs' ``report_data.json`` files can be overlaid for
+  comparison.
+
+Both balance kinds reduce here, and they take different paths:
+
+internal balance
+    The runs carry bridge volts, so a ``.vol`` is required (run-local
+    copy, else the matrix injected at record time). Per-point MEAN
+    balance ELEMENTS are embedded and the report's JS re-runs the exact
+    Streamlined elements→BRF→WRF→coefficient chain.
+
+external balance (the ATE)
+    The runs already carry resolved wind-axis loads, so NO calibration
+    applies and asking for one is simply wrong. The six resolved loads
+    are embedded and the report applies only the MRC moment transfer
+    (external_balance.py) and the normalization.
 * ``report_data.json``  — the same payload, loadable into another report.
 * ``<name>.xlsx``       — coefficients + tunnel conditions + metadata.
 * ``<name>.mat``        — Streamlined-style structured export.
@@ -97,7 +108,8 @@ def process_run(run_dir, config=None, facility: str = "",
                                             reduce_steady_state,
                                             to_dataframe)
     from utils.windtunnel.transforms import (Geometry, calc_brf_forces,
-                                             get_distance_values)
+                                             get_distance_values,
+                                             is_external_balance_data)
 
     run_dir = Path(run_dir)
     manifest_path = run_dir / "manifest.json"
@@ -117,26 +129,39 @@ def process_run(run_dir, config=None, facility: str = "",
     if not infos:
         raise RuntimeError(f"no run files found in {run_dir}")
 
-    # ── balance cal: run-local .vol → injected matrix ────────────────────
+    # ── external vs internal balance ─────────────────────────────────────
+    # An EXTERNAL balance (the ATE) streams resolved loads in
+    # engineering units, so there is no bridge-volts calibration to
+    # apply and demanding a .vol is simply wrong. An internal balance
+    # streams bridge volts and cannot be reduced without one.
+    raw0, _ = read_run_file(str(infos[0].filepath))
+    btype = str(bal.get("balance_type")
+                or raw0.properties.get("balance_type") or "").lower()
+    external = btype == "external" or is_external_balance_data(raw0.data)
+
     cal = None
-    res = find_run_balance_cal(str(run_dir))
-    if res:
-        cal = calc_coeffs(read_vol_file(res["vol_path"]),
-                          res.get("cal_type", "Linear"))
-        log(f"balance cal: {Path(res['vol_path']).name} "
-            f"({res.get('cal_type', 'Linear')})")
-    if cal is None:
-        raw0, _ = read_run_file(str(infos[0].filepath))
-        inj = raw0.properties.get("injected_balance_cal")
-        if inj:
-            cal = balance_cal_from_matrix(
-                inj["matrix"], inj.get("cal_type", "Linear"),
-                inj.get("distances"), inj.get("serial", ""))
-            log("balance cal: injected matrix from run file")
-    if cal is None:
-        raise RuntimeError(
-            "no balance calibration: no run-local .vol and no injected "
-            "matrix — stage a .vol beside the run files")
+    if external:
+        log("external balance detected — resolved loads, no .vol needed")
+    else:
+        res = find_run_balance_cal(str(run_dir))
+        if res:
+            cal = calc_coeffs(read_vol_file(res["vol_path"]),
+                              res.get("cal_type", "Linear"))
+            log(f"balance cal: {Path(res['vol_path']).name} "
+                f"({res.get('cal_type', 'Linear')})")
+        if cal is None:
+            inj = raw0.properties.get("injected_balance_cal")
+            if inj:
+                cal = balance_cal_from_matrix(
+                    inj["matrix"], inj.get("cal_type", "Linear"),
+                    inj.get("distances"), inj.get("serial", ""))
+                log("balance cal: injected matrix from run file")
+        if cal is None:
+            raise RuntimeError(
+                "no balance calibration: this run records bridge volts "
+                "from an internal balance, so a .vol is required. Stage "
+                "one beside the run files or record with an injected "
+                "calibration matrix.")
 
     geo_d = _geometry_from(cfg_snap, config)
     S = float(geo_d.get("ref_area") or 1.0)
@@ -177,17 +202,40 @@ def process_run(run_dir, config=None, facility: str = "",
 
     log(f"reducing {len(raw_list)} points "
         f"({facility}, {balance_config} balance)…")
+    # SWT runs the full isentropic chain and needs all three DaqBook
+    # channels; LSWT takes q from Pdiff and uses Ptot/Temp only when
+    # the Heise supplies them.
+    need = ("Pdiff", "Ptot", "Temp") if facility == "SWT" else ("Pdiff",)
+    missing = [c for c in need if c not in raw_list[0]["AirOn"]]
+    if missing:
+        source = ("the DaqBook" if facility == "SWT"
+                  else "the Heise (Ptot/Temp) and the NI DAQ (Pdiff)")
+        raise RuntimeError(
+            f"cannot compute tunnel conditions: the runs carry no "
+            f"{', '.join(missing)} channel. Dynamic pressure is "
+            f"therefore unknown and no coefficient can be formed. On "
+            f"{facility} those channels come from {source}, so record "
+            f"with a configuration that includes it.")
     red = reduce_raw(raw_list, cal, geo, pressure_cal={},
                      facility=facility, balance_config=balance_config)
     ss = reduce_steady_state(red)
     df = to_dataframe(ss)
 
-    # ── geometry-independent element means for the live report ──────────
+    # ── geometry-independent per-point loads for the live report ────────
+    # Internal: the six BALANCE ELEMENTS, from which the browser re-runs
+    # elements -> BRF (with MRC) -> WRF -> coefficients.
+    # External: the ATE already resolves loads, so the six WIND-AXIS
+    # loads are embedded directly and the browser only applies the MRC
+    # moment transfer and the normalization.
     zero_geo = Geometry(C=C, S=S, b=b, mshift=np.zeros(3))
+    WIRE = ("Lift", "Drag", "Side", "Roll", "Pitch", "Yaw")
 
     def _elem(d):
         if not d:
             return [0.0] * 6
+        if external:
+            return [float(np.mean(d[k])) if k in d and np.size(d[k])
+                    else 0.0 for k in WIRE]
         return [float(v) for v in
                 np.mean(calc_brf_forces(d, cal, zero_geo,
                                         balance_config).elements, axis=0)]
@@ -197,7 +245,8 @@ def process_run(run_dir, config=None, facility: str = "",
         return float(np.mean(arr)) if arr is not None and \
             np.size(arr) else float(fallback or 0.0)
 
-    dist = get_distance_values(cal)
+    dist = ({"dx1": 0.0, "dx2": 0.0, "dy1": 0.0, "dy2": 0.0}
+            if external else get_distance_values(cal))
     points = []
     for i, (on, d_on, off, d_off) in enumerate(pairs):
         t = red[i].tunnel
@@ -222,11 +271,11 @@ def process_run(run_dir, config=None, facility: str = "",
         "name": manifest.get("config_name") or run_dir.name,
         "generated": datetime.now().isoformat(timespec="seconds"),
         "facility": facility, "balance_config": balance_config,
-        "cal": {"file": bal.get("vol_file", res.get("vol_path", "")
-                                if res else ""),
-                "type": bal.get("cal_type",
-                                res.get("cal_type", "Linear")
-                                if res else "Linear"),
+        "mode": "external" if external else "internal",
+        "cal": {"file": ("resolved loads (no .vol)" if external
+                         else bal.get("vol_file", "")),
+                "type": ("external" if external
+                         else bal.get("cal_type", "Linear")),
                 "serial": bal.get("balance_serial", ""),
                 "distances": {k: float(v) for k, v in dist.items()}},
         "geometry": {"S": S, "C": C, "b": b, "mrc": mrc},
@@ -265,15 +314,24 @@ def process_run(run_dir, config=None, facility: str = "",
         return float(np.mean(np.atleast_1d(x)))
 
     name_case = payload["name"]
-    e_names = (["AftPitch", "AftYaw", "FwdPitch", "FwdYaw", "Axial",
-                "Roll"] if balance_config == "Moment"
-               else ["N1", "N2", "Y1", "Y2", "Axial", "Roll"])
+    e_names = (list(WIRE) if external
+               else (["AftPitch", "AftYaw", "FwdPitch", "FwdYaw",
+                      "Axial", "Roll"] if balance_config == "Moment"
+                     else ["N1", "N2", "Y1", "Y2", "Axial", "Roll"]))
     rows = []
-    for r in red:
-        elems = (np.mean(r.brf_on.elements, axis=0)
-                 - np.mean(r.brf_off.elements, axis=0))
-        brf_a = {k: _m(getattr(r.brf_on, k)) - _m(getattr(r.brf_off, k))
-                 for k in ("Fx", "Fy", "Fz", "Mx", "My", "Mz")}
+    for i, r in enumerate(red):
+        if external:
+            # no bridge elements; report the tared resolved loads under
+            # the same slot so the export shape stays constant
+            elems = np.array(points[i]["E"], dtype=float) - np.array(
+                points[i]["off"]["E"], dtype=float)
+        else:
+            elems = (np.mean(r.brf_on.elements, axis=0)
+                     - np.mean(r.brf_off.elements, axis=0))
+        brf_a = ({k: 0.0 for k in ("Fx", "Fy", "Fz", "Mx", "My", "Mz")}
+                 if external else
+                 {k: _m(getattr(r.brf_on, k)) - _m(getattr(r.brf_off, k))
+                  for k in ("Fx", "Fy", "Fz", "Mx", "My", "Mz")})
         cl, cd = _m(r.coeffs.Cl), _m(r.coeffs.Cd)
         rows.append({
             "Alpha": _m(r.alpha), "Beta": _m(r.beta),

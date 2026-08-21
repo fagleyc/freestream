@@ -68,10 +68,17 @@ class MachWaitDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
 
-        note = QLabel("MONITOR-ONLY — tunnel control disabled (Red Lion "
-                      "Block2 writes rejected). Set the fan on the tunnel "
-                      f"console until the measured {unit} holds at the "
-                      "target.")
+        if request.verify:
+            note = QLabel("MONITOR-ONLY — tunnel control disabled (Red "
+                          "Lion Block2 writes rejected). Set the fan on "
+                          f"the tunnel console until the measured "
+                          f"{unit} holds at the target.")
+        else:
+            note = QLabel("MONITOR-ONLY — speed verification is OFF for "
+                          "this run. Bring the tunnel to the target on "
+                          "the console, then click Proceed. Nothing "
+                          "checks the measured speed, and this prompt "
+                          "appears once per speed step.")
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {theme.TEXT_DIM};")
         lay.addWidget(note)
@@ -109,8 +116,9 @@ class MachWaitDialog(QDialog):
         lay.addWidget(self.readback_lbl,
                       alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        self.hold_lbl = QLabel("waiting for the tunnel to reach the "
-                               "target…")
+        self.hold_lbl = QLabel(
+            "waiting for the tunnel to reach the target…" if request.verify
+            else "waiting for the operator — no auto-proceed")
         self.hold_lbl.setStyleSheet(f"color: {theme.TEXT_DIM};")
         lay.addWidget(self.hold_lbl,
                       alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -124,7 +132,11 @@ class MachWaitDialog(QDialog):
                       alignment=Qt.AlignmentFlag.AlignHCenter)
 
         btns = QHBoxLayout()
-        self.proceed_btn = QPushButton("Proceed anyway")
+        self.proceed_btn = QPushButton(
+            "Proceed anyway" if request.verify else "Proceed")
+        if not request.verify:
+            self.proceed_btn.setObjectName("primary")
+            self.proceed_btn.setDefault(True)
         self.proceed_btn.clicked.connect(lambda: self._decide(PROCEED))
         self.skip_btn = QPushButton("Skip point")
         self.skip_btn.clicked.connect(lambda: self._decide(SKIP_POINT))
@@ -207,6 +219,12 @@ class MachWaitDialog(QDialog):
             self.delta_lbl.setText(txt)
             self.delta_lbl.setStyleSheet(self._delta_style(color))
 
+        if not self.request.verify:
+            # verification off: the readouts stay live so the operator
+            # can see the tunnel come up, but only a click proceeds
+            self.hold_lbl.setText("verification off — click Proceed when "
+                                  "the tunnel is up to speed")
+            return
         now = time.monotonic()
         if within:
             if self._hold_t0 is None:

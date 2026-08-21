@@ -115,6 +115,11 @@ class OperatorWaitRequest:
     #: live measured speed in ``unit`` (None-returning callable when
     #: unavailable); only set for velocity/rpm display units
     measure_value: Optional[Callable[[], Optional[float]]] = None
+    #: True = the dialog may auto-proceed once the measurement holds
+    #: inside ``tolerance`` (the verify-before-recording toggle ON).
+    #: False = hold until the OPERATOR clicks proceed: the tunnel still
+    #: has to come up to speed, but nothing verifies that it did.
+    verify: bool = True
 
     @property
     def is_rpm(self) -> bool:
@@ -178,6 +183,8 @@ class SweepEngine:
         self.config = config
         self.cb = callbacks or SweepCallbacks()
         self._abort = threading.Event()
+        #: speed step the operator has already confirmed in verify-off manual mode
+        self._speed_confirmed = None
         self._pause = threading.Event()      # requested (checked at boundary)
         self._holding = False                # actually holding right now
         self._running = False
@@ -579,22 +586,45 @@ class SweepEngine:
     def _tunnel_manual(self, point: SweepPoint, rpm_override,
                        dev: SetpointDevice) -> None:
         """The OPERATOR brings the tunnel to the target; Freestream only
-        monitors. ``mach_check_enabled`` is the sub-toggle: True = wait
-        (operator dialog) until the measured value holds in tolerance, then
-        auto-proceed; False = record immediately. Air-off (target 0)
-        records immediately either way — there is nothing to wait for."""
+        monitors. ``mach_check_enabled`` is the sub-toggle:
+
+        True
+            Prompt and wait until the measured value holds inside the
+            tolerance band, then auto-proceed.
+        False
+            Prompt once per SPEED STEP and wait for the operator to say
+            the tunnel is up. Nothing verifies the measurement, and the
+            dialog cannot auto-proceed. (Before 2026-08-21 this
+            recorded immediately, which meant a speed step could be
+            captured before the fan had reached it.)
+
+        Air-off (target 0) records immediately either way — there is
+        nothing to wait for, and it resets the confirmed step because
+        the fan has stopped."""
         if self._is_air_off(point, rpm_override):
+            # the fan is off, so any speed the operator confirmed
+            # earlier is stale: coming back up to it has to prompt again
+            self._speed_confirmed = None
             self._record_requested(point, rpm_override)
             self._event("tunnel: air-off (target 0) — recording "
                         "immediately (manual, no verify wait)")
             return
         if not self.config.mach_check_enabled:
-            # per-point speed gate DISABLED: no dialog, no settle wait —
-            # record immediately with the requested condition in /Tunnel.
-            self._record_requested(point, rpm_override)
-            self._event(
-                "tunnel: Mach verification disabled — recording "
-                "immediately without waiting for tunnel conditions")
+            # Verification DISABLED: nothing checks the measured speed,
+            # but the operator still has to bring the tunnel up before
+            # the point is recorded. Prompt once per SPEED STEP (the
+            # target only changes between steps, and prompting on every
+            # alpha of an inner loop would be unusable), then record
+            # the requested condition without a settle wait.
+            key = self._speed_key(point, rpm_override)
+            if key == self._speed_confirmed:
+                self._record_requested(point, rpm_override)
+                self._event(
+                    "tunnel: speed step already confirmed by the "
+                    "operator — recording without re-prompting")
+                return
+            self._operator_wait(point, rpm_override, dev, verify=False)
+            self._speed_confirmed = key
             return
         # verify-and-wait: the OPERATOR sets the console; we wait/prompt.
         self._operator_wait(point, rpm_override, dev)
@@ -763,8 +793,17 @@ class SweepEngine:
                     f"recording with the best command ({value:g} {kwarg}) "
                     f"— regulation is advisory (tunnel_regulate_fault off)")
 
+    @staticmethod
+    def _speed_key(point: SweepPoint, rpm_override) -> tuple:
+        """Identity of a speed STEP: two points share it when they ask
+        the tunnel for the same thing."""
+        if rpm_override is not None:
+            return ("rpm", round(float(rpm_override), 6))
+        return ("mach", round(float(point.mach), 6))
+
     def _operator_wait(self, point: SweepPoint, rpm_override,
-                       dev: SetpointDevice) -> None:
+                       dev: SetpointDevice,
+                       verify: bool = True) -> None:
         """Monitor-only tunnel stage: prompt the operator (or, headless,
         log + proceed) instead of commanding the fan. NO writes here —
         only DAQ/readback reads via the request's measure()/
@@ -791,12 +830,13 @@ class SweepEngine:
             req = OperatorWaitRequest(
                 target_mach=None, tolerance=tol, measure=measure,
                 target_rpm=target_rpm, unit="rpm",
-                target_value=target_rpm)
+                target_value=target_rpm, verify=verify)
         elif unit == "mach":
             # byte-for-byte the historical mach-point behavior
             req = OperatorWaitRequest(
                 target_mach=float(point.mach),
-                tolerance=float(cfg.mach_tolerance), measure=measure)
+                tolerance=float(cfg.mach_tolerance), measure=measure,
+                verify=verify)
         else:
             # velocity (or rpm-display) entry unit: entered value when
             # the planner stamped one, else the canonical Mach through
@@ -813,7 +853,8 @@ class SweepEngine:
                 tolerance=float(cfg.speed_tolerance), measure=measure,
                 unit=unit, target_value=target_value,
                 measure_value=lambda: speed.measured_value(manager, dev,
-                                                           unit))
+                                                           unit),
+                verify=verify)
         target_mach = req.target_mach
         target_rpm = req.target_rpm
         if self._abort.is_set():

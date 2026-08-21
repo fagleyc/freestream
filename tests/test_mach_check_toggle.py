@@ -65,7 +65,14 @@ def test_config_default_and_json_roundtrip(tmp_path):
 
 
 # ── engine: gate skipped entirely when disabled ──────────────────────────
-def test_disabled_never_raises_operator_wait(tmp_path):
+def test_disabled_prompts_once_per_speed_but_never_commands(tmp_path):
+    """Verification OFF no longer records blind (changed 2026-08-21).
+
+    Nothing checks the measured speed, but the operator still has to
+    bring the tunnel up, so the engine raises ONE operator wait per
+    speed step. The fan is still never commanded: this is the
+    monitor-only tier.
+    """
     mgr, rec, cfg = _rig(tmp_path, mach_check_enabled=False)
     assert cfg.tunnel_control_enabled is False     # monitor-only default
     waits, events = [], []
@@ -80,9 +87,13 @@ def test_disabled_never_raises_operator_wait(tmp_path):
               SweepPoint(alpha=0.0, mach=0.3, dwell_s=0.05, samples=50)]
     results = engine.run(points)
     assert [r.status for r in results] == [DONE, DONE]
-    assert waits == []                             # NO operator wait raised
+    # air-off (mach 0) still records immediately; the mach 0.3 step
+    # prompts once, with verification off so the dialog cannot
+    # auto-proceed
+    assert len(waits) == 1
+    assert waits[0].verify is False
+    assert waits[0].target_mach == pytest.approx(0.3)
     assert calls == []                             # fan never commanded
-    assert any("Mach verification disabled" in e for e in events)
     # tunnel channels still recorded: requested Mach_cmd + honest meas
     with h5py.File(results[1].path, "r") as f:
         assert list(f["Tunnel/Mach_cmd"][()]) == \
@@ -96,7 +107,9 @@ def test_disabled_never_raises_operator_wait(tmp_path):
         assert f.attrs["air_state"] == "AirOn"
 
 
-def test_disabled_rpm_override_also_skips_wait(tmp_path):
+def test_disabled_rpm_override_also_prompts(tmp_path):
+    """An rpm-override point under verification OFF prompts the same
+    way a mach point does, and still never writes the fan."""
     mgr, rec, cfg = _rig(tmp_path, mach_check_enabled=False)
     waits = []
     engine = SweepEngine(mgr, rec, cfg, SweepCallbacks(
@@ -105,7 +118,8 @@ def test_disabled_rpm_override_also_skips_wait(tmp_path):
                     meta={"rpm": 600.0})
     out = engine.run([pt])[0]
     assert out.status == DONE
-    assert waits == []
+    assert len(waits) == 1
+    assert waits[0].verify is False
     with h5py.File(out.path, "r") as f:
         assert f["Tunnel/RPM_cmd"][0] == pytest.approx(600.0)  # requested
         assert "Mach_cmd" not in f["Tunnel"]
