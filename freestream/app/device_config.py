@@ -188,10 +188,14 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
             ("Communication", ("ogi_ip", "bind_host", "tmsc_port",
                                "tmsd_port", "ogit_port", "connect_mode",
                                "auto_trigger")),
-            ("Reduction reference", ("rho_kg_m3",)),
+            ("Reduction reference", ("rho_kg_m3", "load_units")),
             ("Display", ("plot_window_s", "bar_avg_ms")),
         ),
-        choices={"connect_mode": ("listen", "dial")},
+        choices={"connect_mode": ("listen", "dial"),
+                 # must match the OGI's own Settings -> Units menu; the
+                 # loads arrive untagged so a mismatch is a silent scale
+                 # error (N read as lb is 4.45x)
+                 "load_units": ("N", "lb", "kg")},
         # acquisition timing is Freestream's samples/dwell, not the OGI's;
         # the model-span mapping (span_config) has exactly ONE editor —
         # the embedded panel's Motion tab combo (which relabels the drive

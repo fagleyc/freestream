@@ -54,8 +54,12 @@ def test_axes_follow_span_config():
     assert (specs["alpha"].min, specs["alpha"].max) == P.INC_LIMITS_DEG
     assert (specs["beta"].min, specs["beta"].max) == P.YAW_LIMITS_DEG
     assert a.span_config == "full"
+    # load_units joined the record 2026-08-21: the OGI's unit setting is
+    # operator-selectable and never appears on the wire, so it has to be
+    # written down or the reduction cannot know what to convert from
     assert a.extra_meta() == {"span_config": "full",
-                              "balance_type": "external"}
+                              "balance_type": "external",
+                              "load_units": "N"}
 
     a.config.span_config = "half"          # live rebind — no reconnect
     specs = {s.name: s for s in a.axes()}
@@ -63,7 +67,8 @@ def test_axes_follow_span_config():
     assert (specs["alpha"].min, specs["alpha"].max) == P.YAW_LIMITS_DEG
     assert a.span_config == "half"
     assert a.extra_meta() == {"span_config": "half",
-                              "balance_type": "external"}
+                              "balance_type": "external",
+                              "load_units": "N"}
     # position channels follow: no Beta ChannelSpec in ½ span
     pos_chans = [c.name for c in a.channels() if c.group == "Positioner"]
     assert pos_chans == ["Alpha"]

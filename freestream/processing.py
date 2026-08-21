@@ -110,6 +110,9 @@ def process_run(run_dir, config=None, facility: str = "",
     from utils.windtunnel.transforms import (Geometry, calc_brf_forces,
                                              get_distance_values,
                                              is_external_balance_data)
+    from utils.windtunnel.external_balance import (external_loads_to_ips,
+                                                   normalize_span_config,
+                                                   SPAN_HALF)
 
     run_dir = Path(run_dir)
     manifest_path = run_dir / "manifest.json"
@@ -138,10 +141,20 @@ def process_run(run_dir, config=None, facility: str = "",
     btype = str(bal.get("balance_type")
                 or raw0.properties.get("balance_type") or "").lower()
     external = btype == "external" or is_external_balance_data(raw0.data)
+    # Model-span configuration decides HOW the ATE's six channels become
+    # wind-axis loads: full span leaves the balance level and the
+    # channels pass through, ½ span yaws the balance with the model so
+    # the channels are body-fixed and permuted. Recorded by the sweep
+    # into every run file's root attrs.
+    span = normalize_span_config(raw0.properties.get("span_config"))
 
     cal = None
     if external:
         log("external balance detected — resolved loads, no .vol needed")
+        log(f"model span: {span}"
+            + (" — channels resolved with the yaw (alpha) rotation"
+               if span == SPAN_HALF else
+               " — channels are already wind-axis"))
     else:
         res = find_run_balance_cal(str(run_dir))
         if res:
@@ -234,7 +247,12 @@ def process_run(run_dir, config=None, facility: str = "",
         if not d:
             return [0.0] * 6
         if external:
-            return [float(np.mean(d[k])) if k in d and np.size(d[k])
+            # RAW channels, converted to the chain's lb / in-lb so the
+            # browser's live re-reduction lands on the same numbers as
+            # the python baseline below. The mount-dependent resolution
+            # into wind axes happens in the report's extResolve().
+            c = external_loads_to_ips(d)
+            return [float(np.mean(c[k])) if k in c and np.size(c[k])
                     else 0.0 for k in WIRE]
         return [float(v) for v in
                 np.mean(calc_brf_forces(d, cal, zero_geo,
@@ -272,6 +290,7 @@ def process_run(run_dir, config=None, facility: str = "",
         "generated": datetime.now().isoformat(timespec="seconds"),
         "facility": facility, "balance_config": balance_config,
         "mode": "external" if external else "internal",
+        "span": span,
         "cal": {"file": ("resolved loads (no .vol)" if external
                          else bal.get("vol_file", "")),
                 "type": ("external" if external

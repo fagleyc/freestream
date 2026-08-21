@@ -51,7 +51,7 @@ if str(_DEVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_DEVICES_DIR))
 
 from ate_balance import protocol as P                         # noqa: E402
-from ate_balance.config import AteConfig                      # noqa: E402
+from ate_balance.config import AteConfig, LOAD_UNITS          # noqa: E402
 from ate_balance.device import AteBalanceDevice               # noqa: E402
 
 from ..hal import (AxisSpec, ChannelSpec, DeviceStatus,       # noqa: E402
@@ -219,8 +219,13 @@ class AteBalanceAdapter(ConfigurableAdapter):
 
     def channels(self) -> List[ChannelSpec]:
         specs = []
+        # The OGI's engineering-unit setting is not carried on the wire,
+        # so the configured system is what gets stamped onto the recorded
+        # channels — and that stamp is the ONLY thing telling the
+        # reduction what to convert from. Keep it matched to the OGI.
+        force_u, moment_u = LOAD_UNITS[self._cfg.load_units]
         for name, wire in self._map.items():
-            unit = "N" if wire in _FORCE_AXES else "N*m"
+            unit = force_u if wire in _FORCE_AXES else moment_u
             specs.append(ChannelSpec(name=name, unit=unit,
                                      group=LOAD_GROUP, kind="raw",
                                      device_id=self.id))
@@ -253,7 +258,8 @@ class AteBalanceAdapter(ConfigurableAdapter):
     def extra_meta(self) -> Dict[str, str]:
         """Extra per-device metadata merged into /meta/devices/ate."""
         return {"span_config": self._dev.span_config,
-                "balance_type": self.balance_type}
+                "balance_type": self.balance_type,
+                "load_units": self._cfg.load_units}
 
     @property
     def load_limits(self) -> Dict[str, float]:

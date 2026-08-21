@@ -1134,7 +1134,15 @@ class SweepEngine:
         # into the file's ROOT attrs so post-processing (Streamlined) can
         # interpret the Positioner channels (½-span: Alpha is yaw-derived
         # and Beta is a recorded constant zero)
+        # ...and the BALANCE adapter is asked too, because the ½-span
+        # mount is a property of how the model sits on the balance, not
+        # of which device happens to be driving alpha. Streamlined
+        # cannot pick the right resolution without this marker, and a
+        # missing one silently means "full".
         span = getattr(pos, "span_config", None)
+        if not (isinstance(span, str) and span):
+            span = getattr(self.manager.by_role("balance"),
+                           "span_config", None)
         if isinstance(span, str) and span:
             extra_attrs["span_config"] = span
         # run-level speed-sweep marker (Feature 2): the FULL set of speed

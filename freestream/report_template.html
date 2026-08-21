@@ -65,7 +65,7 @@ table.pts th{color:var(--accent2);font-family:inherit}
 </head>
 <body>
 <header><h1 id="title">Run Report</h1><span class="chip" id="c-fac"></span>
-<span class="chip" id="c-cal"></span><span class="chip" id="c-n"></span>
+<span class="chip" id="c-cal"></span><span class="chip" id="c-span"></span><span class="chip" id="c-n"></span>
 <span class="chip" id="c-date"></span>
 <span style="flex:1"></span>
 <button class="ghost" id="themeBtn" title="Toggle light / dark">◐ theme</button></header>
@@ -140,13 +140,42 @@ function wrf(B,a,b_){
           Side:B.Fx*sb*ca+B.Fy*cb+B.Fz*sa*sb,
           Roll:B.Mx,Pitch:B.My,Yaw:B.Mz};
 }
-/* external balance: the ATE resolves loads already, so only the MRC
-   moment transfer applies (Streamlined external_balance.py). Forces
-   rotate back to body axes, the net-force arm terms are applied, and
-   moments pass straight back to the wind frame. */
-function extWrf(E,a,b_,m){
-  const W={Lift:E[0],Drag:E[1],Side:E[2],Roll:E[3],Pitch:E[4],Yaw:E[5]};
+/* external balance, step 1: turn the six ATE channels
+   (E = Lift,Drag,Side,Roll,Pitch,Yaw as the load cells read them) into
+   wind-axis model loads. The mount decides how, because the balance
+   yaws with the model but never pitches with it:
+     full span - alpha comes from the incidence strut above the
+       balance, so the channels ARE the wind-axis loads.
+     half span - the semispan model stands on the turntable and alpha
+       IS the yaw drive, so the horizontal channels are body-fixed and
+       the vertical channel reads the model's SIDE force.
+   Mirrors Streamlined external_balance.resolve_external_wrf. */
+function extResolve(E,a,span){
+  if(span!=="half")
+    return {Lift:E[0],Drag:E[1],Side:E[2],Roll:E[3],Pitch:E[4],Yaw:E[5]};
+  const ca=Math.cos(a*D2R),sa=Math.sin(a*D2R);
+  return {Lift:E[2]*ca-E[1]*sa,
+          Drag:E[1]*ca+E[2]*sa,
+          Side:E[0],
+          Roll:E[3],Pitch:E[5],Yaw:E[4]};
+}
+/* external balance, step 2: the MRC moment transfer (Streamlined
+   external_balance.transfer_external_loads_to_mrc). Forces go back to
+   body axes, the net-force arm terms are applied, and moments pass
+   straight back to the wind frame. */
+function extWrf(E,a,b_,m,span){
+  const W=extResolve(E,a,span);
   if(m[0]===0&&m[1]===0&&m[2]===0) return W;
+  if(span==="half"){
+    // the resolution above is a plane rotation plus a relabelling, so
+    // the body forces come straight back out of it - no 3x3 solve
+    const ca2=Math.cos(a*D2R),sa2=Math.sin(a*D2R);
+    const Fx=W.Drag*ca2-W.Lift*sa2, Fy=W.Side, Fz=W.Lift*ca2+W.Drag*sa2;
+    return {Lift:W.Lift,Drag:W.Drag,Side:W.Side,
+            Roll:W.Roll-Fy*m[2],
+            Pitch:W.Pitch-Fz*m[0]-Fx*m[2],
+            Yaw:W.Yaw+Fy*m[1]-Fy*m[0]};
+  }
   const ca=Math.cos(a*D2R),sa=Math.sin(a*D2R),
         cb=Math.cos(b_*D2R),sb=Math.sin(b_*D2R);
   // invert Lift/Drag/Side -> Fx,Fy,Fz (3x3 solve, Cramer)
@@ -169,10 +198,11 @@ function extWrf(E,a,b_,m){
 function reduce(ds,g){
   const dist=ds.cal.distances,cfg=ds.balance_config;
   const ext=ds.mode==="external";
+  const span=ds.span==="half"?"half":"full";
   return ds.points.map(p=>{
-    const on = ext ? extWrf(p.E,p.alpha,p.beta,g.mrc)
+    const on = ext ? extWrf(p.E,p.alpha,p.beta,g.mrc,span)
                    : wrf(brf(p.E,dist,g.mrc,cfg),p.alpha,p.beta);
-    const off= ext ? extWrf(p.off.E,p.off.alpha,p.off.beta,g.mrc)
+    const off= ext ? extWrf(p.off.E,p.off.alpha,p.off.beta,g.mrc,span)
                    : wrf(brf(p.off.E,dist,g.mrc,cfg),p.off.alpha,p.off.beta);
     const W={}; for(const k in on) W[k]=on[k]-off[k];
     const qS=p.q*g.S||1e-12;
@@ -369,6 +399,13 @@ function init(){
   el("title").textContent=`${EMBED.meta.model_name||EMBED.name} — ${EMBED.name}`;
   el("c-fac").textContent=EMBED.facility+" · "+EMBED.balance_config+" balance";
   el("c-cal").textContent=EMBED.cal.file||"cal: injected matrix";
+  // the mount drives which reduction ran, so name it rather than
+  // leaving the reader to guess which algorithm produced the curves
+  const spanChip=el("c-span");
+  if(EMBED.mode==="external"){
+    spanChip.textContent = EMBED.span==="half"
+      ? "½-span mount (yaw = alpha)" : "full-span mount";
+  } else { spanChip.style.display="none"; }
   if(EMBED.mode==="external"){
     el("xcheck").textContent="external balance: resolved loads, no .vol";
   }

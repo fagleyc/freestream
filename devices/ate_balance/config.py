@@ -36,6 +36,17 @@ SPAN_FULL = "full"
 SPAN_HALF = "half"
 SPAN_CONFIGS = (SPAN_FULL, SPAN_HALF)
 
+# Engineering-unit system the OGI is set to send.  The OGI's own
+# Settings -> Units menu offers "Kg and Kgm, N and Nm, Lb and Lbft"
+# (AID-012-10015-1) and the choice is NOT carried on the wire, so the
+# client has to be told which one is selected.  Note that the pound
+# setting pairs lbf with lbf*FT, not in*lbf.
+LOAD_UNITS = {
+    "N":  ("N", "N*m"),
+    "lb": ("lbf", "lbf*ft"),
+    "kg": ("kgf", "kgf*m"),
+}
+
 
 @dataclass
 class AteConfig:
@@ -61,11 +72,23 @@ class AteConfig:
     # Inherited into recorded data (root attr / meta) for post-processing.
     span_config: str = SPAN_FULL
 
+    # ── Engineering units the OGI streams ────────────────────────────────
+    # Must MATCH the OGI's Settings -> Units selection: the loads arrive
+    # as bare float32s with no unit tag, so a mismatch is a silent scale
+    # error downstream (N read as lb is 4.45x, lb*ft read as in*lb is
+    # 12x).  Inherited into the recorded channel unit attributes, which
+    # is how the reduction knows what to convert from.
+    load_units: str = "N"
+
     def __post_init__(self) -> None:
         if self.span_config not in SPAN_CONFIGS:
             raise ValueError(
                 f"span_config must be one of {SPAN_CONFIGS}, "
                 f"got {self.span_config!r}")
+        if self.load_units not in LOAD_UNITS:
+            raise ValueError(
+                f"load_units must be one of {tuple(LOAD_UNITS)}, "
+                f"got {self.load_units!r}")
         # tolerate partial dicts from old/hand-edited JSON: every wire axis
         # always has an entry (0.0 = no limit configured)
         for axis in WIRE_AXES:
