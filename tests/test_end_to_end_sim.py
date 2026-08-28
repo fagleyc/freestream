@@ -49,10 +49,11 @@ def _run_sweep(tmp_path, mode: str):
 
 
 #: balance channel names per mode — mode1 keeps the StrainBook bridge
-#: names verbatim; mode2 records the ATE's TRUE wire names
+#: names verbatim; mode2 records the ATE's balance-frame axes (X back,
+#: Y right, Z up — what the load cells actually resolve)
 _BALANCE_CHANNELS = {
     "mode1": ("N1", "N2", "Y1", "Y2", "Axial", "Roll"),
-    "mode2": ("Lift", "Pitch", "Drag", "Side", "Yaw", "Roll"),
+    "mode2": ("Fx", "Fy", "Fz", "Mx", "My", "Mz"),
 }
 
 
@@ -106,8 +107,8 @@ def test_mode2_files_reflect_the_true_device(tmp_path):
     paths = _run_sweep(tmp_path, "mode2")
     with h5py.File(paths[0], "r") as f:      # the alpha=-2 point
         assert "ATE_Balance" in f
-        assert set(f["ATE_Balance"]) == {"Lift", "Pitch", "Drag", "Side",
-                                         "Yaw", "Roll"}
+        assert set(f["ATE_Balance"]) == {"Fx", "Fy", "Fz",
+                                         "Mx", "My", "Mz"}
         # no StrainBook text in ANY group name — the file reflects the
         # true device
         assert not any("StrainBook" in g for g in f.keys())
@@ -115,8 +116,8 @@ def test_mode2_files_reflect_the_true_device(tmp_path):
         # the unit stamp follows AteConfig.load_units (this rig's
         # OGI is on Lb / Lbft) — it is the reduction's only witness
         # to what the streamed numbers mean
-        assert f["ATE_Balance/Lift"].attrs["unit"] == "lbf"
-        assert f["ATE_Balance/Pitch"].attrs["unit"] == "lbf*ft"
+        assert f["ATE_Balance/Fz"].attrs["unit"] == "lbf"
+        assert f["ATE_Balance/My"].attrs["unit"] == "lbf*ft"
         # /Positioner = the ATE's own streamed positions, matching the
         # commanded point
         alpha = f["Positioner/Alpha"][()]

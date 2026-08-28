@@ -28,7 +28,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from pathlib import Path
-from typing import Deque, Dict, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -128,9 +128,12 @@ class LoadBar(QWidget):
 #: came to claim newtons were pounds.
 _TILES = [("Lift", "lb"), ("Drag", "lb"), ("Side", "lb"),
           ("Roll", "in·lb"), ("Pitch", "in·lb"), ("Yaw", "in·lb")]
-#: load-bar order for a resolved-load (external) balance — the six REAL
-#: channel names the ATE adapter streams
-_RESOLVED_ORDER = ("Lift", "Drag", "Side", "Pitch", "Yaw", "Roll")
+#: load-bar / tile order for a resolved-load (external) balance — the six
+#: REAL channel names the ATE adapter streams: balance-frame components
+#: (X back, Y right, Z up), NOT wind-axis loads. The tiles re-label to
+#: these when an external balance is the source, because in ½ span the
+#: vertical channel is the model's SIDE force — wind names would lie.
+_RESOLVED_ORDER = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
 
 #: recorded unit string -> the form to show. The recorded strings stay
 #: ASCII and machine-parseable (the reduction keys off them); only the
@@ -157,9 +160,9 @@ class _Tile(QFrame):
         chip.setFixedSize(9, 9)
         chip.setStyleSheet(f"background-color: {color}; border-radius: 4px;")
         head.addWidget(chip)
-        t = QLabel(name)
-        t.setStyleSheet(f"color: {theme.TEXT_DIM}; font-weight: bold;")
-        head.addWidget(t)
+        self.title = QLabel(name)
+        self.title.setStyleSheet(f"color: {theme.TEXT_DIM}; font-weight: bold;")
+        head.addWidget(self.title)
         head.addStretch(1)
         lay.addLayout(head)
         self.value = QLabel("—")
@@ -174,6 +177,11 @@ class _Tile(QFrame):
         """Relabel after the balance told us what it is streaming."""
         if self.unit.text() != unit:
             self.unit.setText(unit)
+
+    def set_name(self, name: str) -> None:
+        """Retitle when the load source changes (wind vs balance frame)."""
+        if self.title.text() != name:
+            self.title.setText(name)
 
     def set_value(self, v: Optional[float]):
         if v is None:
@@ -269,9 +277,11 @@ class ForcesPanel(QWidget):
         tiles = QHBoxLayout()
         tiles.setSpacing(6)
         self.tiles: Dict[str, _Tile] = {}
+        self._tile_list: List[_Tile] = []
         for i, (name, unit) in enumerate(_TILES):
             tile = _Tile(name, unit, theme.series_color(i))
             self.tiles[name] = tile
+            self._tile_list.append(tile)
             tiles.addWidget(tile)
         root.addLayout(tiles)
 
@@ -488,13 +498,25 @@ class ForcesPanel(QWidget):
             self.info.setText(f"force computation failed: {exc}")
             return
         means = res.means()
+        # restore the calibrated path's names/units: the internal reduction
+        # produces wind-axis loads in lb / in·lb no matter what an external
+        # balance shown earlier in the session had labelled these tiles
+        self._set_tile_names([n for n, _u in _TILES])
         for name, unit in _TILES:
             self.tiles[name].set_value(means.get(name))
-            # restore the calibrated path's units: a .vol reduction is in
-            # lb / in·lb no matter what an external balance shown earlier
-            # in the session had labelled these tiles
             self.tiles[name].set_unit(unit)
         self._update_util(res)
+
+    def _set_tile_names(self, names) -> None:
+        """Re-key and retitle the six load tiles for the active source
+        (wind-axis names on the internal path, balance-frame Fx..Mz on the
+        external path). Idempotent and cheap when nothing changed."""
+        if list(self.tiles.keys()) == list(names):
+            return
+        self.tiles = {}
+        for tile, name in zip(self._tile_list, names):
+            tile.set_name(name)
+            self.tiles[name] = tile
 
     def _resolved_units(self) -> Dict[str, str]:
         """Channel -> unit as the balance itself declares it, prettified.
@@ -509,9 +531,11 @@ class ForcesPanel(QWidget):
         return {k: _PRETTY_UNITS.get(v, v) for k, v in units.items()}
 
     def _sample_resolved(self) -> None:
-        """External balance already streams resolved loads under their
-        real names (Lift/Drag/Side/Pitch/Yaw/Roll) — show them, and run
-        the element-load bars against the adapter's ``load_limits``.
+        """External balance streams resolved loads under their real names —
+        the balance-frame components Fx/Fy/Fz/Mx/My/Mz (X back, Y right,
+        Z up) — show them under those names, and run the element-load bars
+        against the adapter's ``load_limits``. Wind-axis words belong to
+        the reduction, which resolves them span-aware.
 
         The tiles show a low-passed mean rather than the single newest
         frame: at the raw stream rate the last digits churn faster than
@@ -523,7 +547,8 @@ class ForcesPanel(QWidget):
             return
         chan_units = self._resolved_units()
         shown = self._display_means(vals)
-        for name, _u in _TILES:
+        self._set_tile_names(list(_RESOLVED_ORDER))
+        for name in _RESOLVED_ORDER:
             v = shown.get(name)
             self.tiles[name].set_value(None if v is None else float(v))
             unit = chan_units.get(name)

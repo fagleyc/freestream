@@ -3,7 +3,8 @@
 Holds the network endpoints, the connection role, the per-channel rated load
 maxima, plus JSON load/save.  A helper seeds defaults from the rig's own
 ``OGI.ini`` when present.  (Model reference geometry lives in the Freestream
-suite — this standalone driver deals in raw wind-axis loads only.)
+suite — this standalone driver deals in raw balance-frame loads only:
+Fx/Fy/Fz/Mx/My/Mz in the balance axes, X back, Y right, Z up.)
 """
 
 from __future__ import annotations
@@ -14,8 +15,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .protocol import (DEFAULT_OGIT_PORT, DEFAULT_TMSC_PORT, DEFAULT_TMSD_PORT,
-                       WIRE_AXES)
+from .protocol import (BALANCE_AXES, DEFAULT_OGIT_PORT, DEFAULT_TMSC_PORT,
+                       DEFAULT_TMSD_PORT, WIRE_TO_BALANCE)
 
 
 # Connection role on the control (TMSC) channel.
@@ -65,10 +66,11 @@ LOAD_UNIT_TO_SI = {
 
 # Design load ranges from AID-010-10015-1 2.4, in N / N*m.  Seeded as the
 # rated maxima so the utilization bars are meaningful out of the box
-# instead of waiting for someone to type six numbers.
+# instead of waiting for someone to type six numbers.  Keyed by the
+# balance-frame axes (Fx back, Fy right, Fz up; Mx roll, My pitch, Mz yaw).
 RATED_LOADS_N = {
-    "Drag": 667.0, "Side": 1112.0, "Lift": 1112.0,      # 150 / 250 / 250 lbf
-    "Roll": 339.0, "Pitch": 203.0, "Yaw": 203.0,        # 250 / 150 / 150 lbf*ft
+    "Fx": 667.0, "Fy": 1112.0, "Fz": 1112.0,     # 150 / 250 / 250 lbf
+    "Mx": 339.0, "My": 203.0, "Mz": 203.0,       # 250 / 150 / 150 lbf*ft
 }
 
 
@@ -127,11 +129,18 @@ class AteConfig:
             raise ValueError(
                 f"max_load_units must be one of {tuple(LOAD_UNIT_TO_SI)}, "
                 f"got {self.max_load_units!r}")
-        # tolerate partial dicts from old/hand-edited JSON: every wire axis
+        # migrate max_loads saved before the balance-frame rename: JSON from
+        # older builds is keyed by the wire names (Lift/Drag/Side/...).
+        for wire, bal in WIRE_TO_BALANCE.items():
+            if wire in self.max_loads and bal not in self.max_loads:
+                self.max_loads[bal] = self.max_loads[wire]
+        for wire in WIRE_TO_BALANCE:
+            self.max_loads.pop(wire, None)
+        # tolerate partial dicts from old/hand-edited JSON: every balance axis
         # always has an entry.  A missing or zero entry falls back to the
         # balance's published design range rather than to "no limit" —
         # a zero limit draws no bar at all, which reads as a dead readout.
-        for axis in WIRE_AXES:
+        for axis in BALANCE_AXES:
             if not self.max_loads.get(axis):
                 self.max_loads[axis] = RATED_LOADS_N[axis]
 
@@ -143,8 +152,8 @@ class AteConfig:
     # recorder writes stay RAW — this smooths the picture, not the data.
     display_lpf_hz: float = 1.0
 
-    # ── Rated load maxima (per wire axis) ───────────────────────────────
-    # Keyed by the six wire axis names and held in ``max_load_units``
+    # ── Rated load maxima (per balance axis) ────────────────────────────
+    # Keyed by the six balance axes (Fx..Mz) and held in ``max_load_units``
     # (N / N*m by default), INDEPENDENT of what the OGI happens to be
     # streaming: the utilization bars convert, so flipping the OGI from
     # newtons to pounds cannot silently shrink every bar by 4.45x.

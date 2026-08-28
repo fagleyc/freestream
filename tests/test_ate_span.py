@@ -170,7 +170,7 @@ def test_half_span_file_loads_through_streamlined(half_span_sweep):
     _mgr, _ate, _events, paths = half_span_sweep
     from utils.windtunnel.data_io import read_hdf5_file
     raw, _props = read_hdf5_file(str(paths[0]))
-    for ch in ("Lift", "Pitch", "Drag", "Side", "Yaw", "Roll",
+    for ch in ("Fx", "Fy", "Fz", "Mx", "My", "Mz",
                "Alpha", "Beta"):
         assert ch in raw.data, f"{ch} missing"
         assert len(raw.data[ch]) == len(raw.time)

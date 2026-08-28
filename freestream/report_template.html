@@ -147,29 +147,35 @@ function wrf(B,a,b_){
           Side:B.Fx*sb*ca+B.Fy*cb+B.Fz*sa*sb,
           Roll:B.Mx,Pitch:B.My,Yaw:B.Mz};
 }
-/* external balance, step 1: turn the six ATE channels
-   (E = Lift,Drag,Side,Roll,Pitch,Yaw as the load cells read them) into
-   wind-axis model loads. The mount decides how, because the balance
-   yaws with the model but never pitches with it:
+/* external balance, step 1: turn the six ATE channels into wind-axis
+   model loads. E is in the BALANCE frame (X back, Y right, Z up), in
+   canonical order Fx,Fy,Fz,Mx,My,Mz — what the load cells actually
+   resolve. The mount decides the resolution, because the balance yaws
+   with the model but never pitches with it:
      full span - alpha comes from the incidence strut above the
-       balance, so the channels ARE the wind-axis loads.
+       balance, so the balance stays tunnel-fixed: Lift=Fz, Drag=Fx,
+       Side=Fy, Roll=Mx, Pitch=My, Yaw=Mz.
      half span - the semispan model stands on the turntable and alpha
-       IS the yaw drive, so the horizontal channels are body-fixed and
-       the vertical channel reads the model's SIDE force.
+       IS the yaw drive, so the horizontal channels are body-fixed
+       (Lift/Drag from Fx,Fy rotated by alpha), the vertical channel Fz
+       reads the model's SIDE force, model pitch is about the vertical
+       axis (Mz) and model yaw is My.
    Mirrors Streamlined external_balance.resolve_external_wrf. */
 function extResolve(E,a,span){
   if(span!=="half")
-    return {Lift:E[0],Drag:E[1],Side:E[2],Roll:E[3],Pitch:E[4],Yaw:E[5]};
+    return {Lift:E[2],Drag:E[0],Side:E[1],Roll:E[3],Pitch:E[4],Yaw:E[5]};
   const ca=Math.cos(a*D2R),sa=Math.sin(a*D2R);
-  return {Lift:E[2]*ca-E[1]*sa,
-          Drag:E[1]*ca+E[2]*sa,
-          Side:E[0],
+  return {Lift:E[1]*ca-E[0]*sa,
+          Drag:E[0]*ca+E[1]*sa,
+          Side:E[2],
           Roll:E[3],Pitch:E[5],Yaw:E[4]};
 }
 /* external balance, step 2: the MRC moment transfer (Streamlined
    external_balance.transfer_external_loads_to_mrc). Forces go back to
-   body axes, the net-force arm terms are applied, and moments pass
-   straight back to the wind frame. */
+   model body axes (X back, Y right, Z up) and the rigid-body shift
+   M_mrc = M - r x F is applied with r = m = (mx,my,mz), the vector
+   from the balance virtual centre to the MRC in those axes; moments
+   pass straight back to the wind frame. */
 function extWrf(E,a,b_,m,span){
   const W=extResolve(E,a,span);
   if(m[0]===0&&m[1]===0&&m[2]===0) return W;
@@ -179,9 +185,9 @@ function extWrf(E,a,b_,m,span){
     const ca2=Math.cos(a*D2R),sa2=Math.sin(a*D2R);
     const Fx=W.Drag*ca2-W.Lift*sa2, Fy=W.Side, Fz=W.Lift*ca2+W.Drag*sa2;
     return {Lift:W.Lift,Drag:W.Drag,Side:W.Side,
-            Roll:W.Roll-Fy*m[2],
-            Pitch:W.Pitch-Fz*m[0]-Fx*m[2],
-            Yaw:W.Yaw+Fy*m[1]-Fy*m[0]};
+            Roll:W.Roll-(m[1]*Fz-m[2]*Fy),
+            Pitch:W.Pitch-(m[2]*Fx-m[0]*Fz),
+            Yaw:W.Yaw-(m[0]*Fy-m[1]*Fx)};
   }
   const ca=Math.cos(a*D2R),sa=Math.sin(a*D2R),
         cb=Math.cos(b_*D2R),sb=Math.sin(b_*D2R);
@@ -198,9 +204,9 @@ function extWrf(E,a,b_,m,span){
                 +M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);
   const Fx=d3(col(0))/det, Fy=d3(col(1))/det, Fz=d3(col(2))/det;
   return {Lift:W.Lift,Drag:W.Drag,Side:W.Side,
-          Roll:W.Roll-Fy*m[2],
-          Pitch:W.Pitch-Fz*m[0]-Fx*m[2],
-          Yaw:W.Yaw+Fy*m[1]-Fy*m[0]};
+          Roll:W.Roll-(m[1]*Fz-m[2]*Fy),
+          Pitch:W.Pitch-(m[2]*Fx-m[0]*Fz),
+          Yaw:W.Yaw-(m[0]*Fy-m[1]*Fx)};
 }
 function reduce(ds,g){
   const dist=ds.cal.distances,cfg=ds.balance_config;

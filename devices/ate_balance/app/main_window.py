@@ -229,7 +229,7 @@ class AteBalancePanel(QWidget):
             if v > 0 and basis != streamed:
                 try:
                     v = convert_loads(v, basis, streamed,
-                                      moment=axis in ("Roll", "Pitch", "Yaw"))
+                                      moment=axis in ("Mx", "My", "Mz"))
                 except KeyError:
                     pass
             out[axis] = v

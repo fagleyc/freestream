@@ -263,11 +263,17 @@ def process_run(run_dir, config=None, facility: str = "",
     # ── geometry-independent per-point loads for the live report ────────
     # Internal: the six BALANCE ELEMENTS, from which the browser re-runs
     # elements -> BRF (with MRC) -> WRF -> coefficients.
-    # External: the ATE already resolves loads, so the six WIND-AXIS
-    # loads are embedded directly and the browser only applies the MRC
-    # moment transfer and the normalization.
+    # External: the six BALANCE-FRAME components (X back, Y right, Z up)
+    # are embedded in canonical order Fx,Fy,Fz,Mx,My,Mz; the browser's
+    # extResolve() applies the mount-dependent wind resolution, then the
+    # MRC moment transfer and the normalization.
     zero_geo = Geometry(C=C, S=S, b=b, mshift=np.zeros(3))
-    WIRE = ("Lift", "Drag", "Side", "Roll", "Pitch", "Yaw")
+    E_AXES = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
+    # recorded-name fallbacks (legacy files used wind words for the same
+    # balance channels)
+    E_SOURCES = {"Fx": ("Fx", "Drag"), "Fy": ("Fy", "Side"),
+                 "Fz": ("Fz", "Lift"), "Mx": ("Mx", "Roll"),
+                 "My": ("My", "Pitch"), "Mz": ("Mz", "Yaw")}
 
     def _elem(d):
         if not d:
@@ -278,8 +284,15 @@ def process_run(run_dir, config=None, facility: str = "",
             # the python baseline below. The mount-dependent resolution
             # into wind axes happens in the report's extResolve().
             c = external_loads_to_ips(d)
-            return [float(np.mean(c[k])) if k in c and np.size(c[k])
-                    else 0.0 for k in WIRE]
+            out = []
+            for k in E_AXES:
+                v = 0.0
+                for name in E_SOURCES[k]:
+                    if name in c and np.size(c[name]):
+                        v = float(np.mean(c[name]))
+                        break
+                out.append(v)
+            return out
         return [float(v) for v in
                 np.mean(calc_brf_forces(d, cal, zero_geo,
                                         balance_config).elements, axis=0)]
@@ -364,7 +377,7 @@ def process_run(run_dir, config=None, facility: str = "",
         return float(np.mean(np.atleast_1d(x)))
 
     name_case = payload["name"]
-    e_names = (list(WIRE) if external
+    e_names = (list(E_AXES) if external
                else (["AftPitch", "AftYaw", "FwdPitch", "FwdYaw",
                       "Axial", "Roll"] if balance_config == "Moment"
                      else ["N1", "N2", "Y1", "Y2", "Axial", "Roll"]))

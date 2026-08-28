@@ -24,9 +24,10 @@ from ate_balance.datamodel import ReducedPoint, RingBuffer, TestCase
 from ate_balance.device import AteBalanceDevice
 from ate_balance.app.plots import TimeHistory
 
-# Loads only — the balance measures forces and moments, nothing aerodynamic.
-_MEAN_KEYS = ["Lift", "Drag", "Side", "Roll", "Pitch", "Yaw"]
-_FORCE_KEYS = ("Lift", "Drag", "Side")
+# Loads only — the balance measures balance-frame components (X back,
+# Y right, Z up), nothing aerodynamic.
+_MEAN_KEYS = ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
+_FORCE_KEYS = ("Fx", "Fy", "Fz")
 
 
 def _columns(force_u: str = "N", moment_u: str = "N·m") -> List[str]:
@@ -192,7 +193,7 @@ class RunPanel(QWidget):
     # ── updates from replies / dwell ──
     def show_sample(self, kind: str, named: dict):
         txt = "  ".join(f"{k}={named.get(k, 0.0):.2f}"
-                        for k in ("Lift", "Drag", "Side", "Pitch", "Yaw", "Roll"))
+                        for k in ("Fx", "Fy", "Fz", "Mx", "My", "Mz"))
         self.sample_lbl.setText(f"Last {kind}:  {txt}")
 
     def add_point(self, rp: ReducedPoint):
@@ -232,7 +233,7 @@ class RunPanel(QWidget):
             w.writerows(rows)
 
     def _export_npz(self):
-        """Save a Streamlined-shaped TestCase as a .npz of named arrays."""
+        """Save a TestCase as a .npz of named arrays (balance-frame axes)."""
         if not self._points:
             return
         path, _ = QFileDialog.getSaveFileName(self, "Export TestCase",
@@ -242,7 +243,6 @@ class RunPanel(QWidget):
         tc = TestCase.from_reduced_points(self._points, name="ATE run")
         np.savez(path,
                  alphas=tc.alphas, betas=tc.betas,
-                 lift_forces=tc.lift_forces, drag_forces=tc.drag_forces,
-                 side_forces=tc.side_forces, roll_moments=tc.roll_moments,
-                 pitch_moments=tc.pitch_moments, yaw_moments=tc.yaw_moments,
+                 Fx=tc.Fx, Fy=tc.Fy, Fz=tc.Fz,
+                 Mx=tc.Mx, My=tc.My, Mz=tc.Mz,
                  Q=tc.tunnel_conditions.Q)

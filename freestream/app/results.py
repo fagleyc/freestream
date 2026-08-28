@@ -36,11 +36,15 @@ from ..recorder import read_point
 
 # metric key → (label, needs coefficient?)
 _METRICS = ["Lift", "Drag", "CL", "CD", "Pitch", "L/D"]
-# LEGACY mode-2 files only: the retired file-parity aliasing that recorded
-# resolved wind loads under StrainBook names (new files use the true
-# Lift/Drag/… names in group ATE_Balance)
-_LEGACY_ATE_ALIAS = {"Lift": "N1", "Pitch": "N2", "Side": "Y1",
-                     "Yaw": "Y2", "Drag": "Axial", "Roll": "Roll"}
+# Recorded-name history for external (mode-2) files, newest first inside
+# each tuple. Current files record the balance-frame axes Fx..Mz; older
+# ones used wind words (which were really the same balance channels under
+# the full-span-identity assumption); the oldest used the retired
+# StrainBook file-parity aliases.
+_LEGACY_ATE_ALIAS = {
+    "Fx": ("Drag", "Axial"), "Fy": ("Side", "Y1"), "Fz": ("Lift", "N1"),
+    "Mx": ("Roll",), "My": ("Pitch", "N2"), "Mz": ("Yaw", "Y2"),
+}
 
 
 class ResultsPanel(QWidget):
@@ -195,15 +199,30 @@ class ResultsPanel(QWidget):
             pitch = m.get("Pitch")
             cl, cd = m.get("CL"), m.get("CD")
         else:
-            # resolved-load file (external balance): read wind loads direct
-            # (true names; legacy alias fallback for old mode-2 files)
-            def _mean(name):
-                arr = bal.get(name)
-                if arr is None:
-                    arr = bal.get(_LEGACY_ATE_ALIAS.get(name, name))
-                return float(np.mean(arr)) if arr is not None and len(arr) \
-                    else None
-            lift, drag, pitch = _mean("Lift"), _mean("Drag"), _mean("Pitch")
+            # resolved-load file (external balance): channels are the
+            # balance-frame components Fx..Mz (X back, Y right, Z up).
+            # Wind loads depend on the mounting — full span the balance
+            # stays tunnel-fixed (Lift=Fz, Drag=Fx, Pitch=My); ½ span the
+            # balance rotates with the model, alpha is the yaw drive, the
+            # vertical channel is model SIDE force, and model pitch is
+            # about the vertical axis (Mz). Same math as the reduction's
+            # resolve_external_wrf. Legacy recorded names fall back.
+            def _mean(axis):
+                for name in (axis,) + _LEGACY_ATE_ALIAS.get(axis, ()):
+                    arr = bal.get(name)
+                    if arr is not None and len(arr):
+                        return float(np.mean(arr))
+                return None
+            fx, fy, fz = _mean("Fx"), _mean("Fy"), _mean("Fz")
+            span = str(attrs.get("span_config", "") or "full")
+            if span.strip().lower().startswith("half") and \
+                    fx is not None and fy is not None:
+                a = float(np.deg2rad(alpha))
+                lift = fy * np.cos(a) - fx * np.sin(a)
+                drag = fx * np.cos(a) + fy * np.sin(a)
+                pitch = _mean("Mz")
+            else:
+                lift, drag, pitch = fz, fx, _mean("My")
             qS = (q or 0.0) * geom.S
             cl = lift / qS if lift is not None and qS > 0 else None
             cd = drag / qS if drag is not None and qS > 0 else None

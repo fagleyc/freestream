@@ -171,9 +171,8 @@ def test_ate_positioner_and_zero():
         assert pos["beta"] == pytest.approx(10.0, abs=0.05)
 
         tares = a.zero()
-        # truth-naming: the ATE tares under its REAL wire names
-        assert set(tares) == {"Lift", "Pitch", "Drag", "Side", "Yaw",
-                              "Roll"}
+        # truth-naming: the ATE tares under the balance-frame axes
+        assert set(tares) == {"Fx", "Fy", "Fz", "Mx", "My", "Mz"}
         for v in tares.values():
             assert isinstance(v, float)
         a.stop_all()
@@ -182,23 +181,25 @@ def test_ate_positioner_and_zero():
 
 
 def test_ate_truth_naming_and_load_limits():
-    """The ATE records the TRUE device: group ATE_Balance, real wire
-    names, and whatever units the OGI is configured to send — no StrainBook aliasing. load_limits
-    comes defensively from the driver config's max_loads (missing/0 =
-    no limit)."""
+    """The ATE records the TRUE device: group ATE_Balance, the
+    balance-frame axis names (Fx..Mz — the device measures balance-frame
+    components, not wind loads), and whatever units the OGI is
+    configured to send — no StrainBook aliasing. load_limits comes
+    defensively from the driver config's max_loads (missing/0 = no
+    limit)."""
     a = AteBalanceAdapter(sim=True)
     load_specs = [c for c in a.channels() if c.group != "Positioner"]
     assert [c.group for c in load_specs] == ["ATE_Balance"] * 6
     assert [c.name for c in load_specs] == \
-        ["Lift", "Pitch", "Drag", "Side", "Yaw", "Roll"]
+        ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
     units = {c.name: c.unit for c in load_specs}
     # the rig's OGI is on Lb / Lbft, so that is the default stamp;
     # the units are NOT hardcoded, they follow AteConfig.load_units
-    assert units["Lift"] == units["Drag"] == units["Side"] == "lbf"
-    assert units["Pitch"] == units["Yaw"] == units["Roll"] == "lbf*ft"
+    assert units["Fx"] == units["Fy"] == units["Fz"] == "lbf"
+    assert units["Mx"] == units["My"] == units["Mz"] == "lbf*ft"
     a._cfg.load_units = "N"
     si = {c.name: c.unit for c in a.channels() if c.group != "Positioner"}
-    assert si["Lift"] == "N" and si["Pitch"] == "N*m"
+    assert si["Fz"] == "N" and si["My"] == "N*m"
     a._cfg.load_units = "lb"
     assert a.extra_meta()["balance_type"] == "external"
     assert a.balance_type == "external"
@@ -206,20 +207,20 @@ def test_ate_truth_naming_and_load_limits():
     # defensive load_limits: works whether or not the driver config has
     # grown the max_loads field yet
     limits = a.load_limits
-    assert set(limits) == {"Lift", "Pitch", "Drag", "Side", "Yaw", "Roll"}
+    assert set(limits) == {"Fx", "Fy", "Fz", "Mx", "My", "Mz"}
     if not hasattr(a.config, "max_loads"):
         assert all(v == 0.0 for v in limits.values())
     # a config carrying max_loads (partial / zero / junk) maps through
     # basis == streamed here, so the numbers pass through unconverted
     a._cfg.__dict__["max_load_units"] = "lb"
-    a._cfg.__dict__["max_loads"] = {"Lift": 450.0, "Drag": 0,
-                                    "Pitch": "junk"}
+    a._cfg.__dict__["max_loads"] = {"Fz": 450.0, "Fx": 0,
+                                    "My": "junk"}
     try:
         limits = a.load_limits
-        assert limits["Lift"] == 450.0
-        assert limits["Drag"] == 0.0          # 0 → no limit
-        assert limits["Pitch"] == 0.0         # junk → no limit
-        assert limits["Roll"] == 0.0          # missing → no limit
+        assert limits["Fz"] == 450.0
+        assert limits["Fx"] == 0.0            # 0 → no limit
+        assert limits["My"] == 0.0            # junk → no limit
+        assert limits["Mx"] == 0.0            # missing → no limit
     finally:
         a._cfg.__dict__.pop("max_loads", None)
         a._cfg.__dict__.pop("max_load_units", None)

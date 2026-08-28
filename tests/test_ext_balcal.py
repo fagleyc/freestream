@@ -102,12 +102,12 @@ def test_splat_session_and_mat(app, tmp_path):
         assert np.size(m["Time"].Time) == n_total
         st = m["Steps"]
         assert np.size(st.load_lb) == len(win.steps)
-        assert hasattr(st.mean, "Lift") and hasattr(st.std, "Yaw")
+        assert hasattr(st.mean, "Fz") and hasattr(st.std, "Mz")
         assert m["meta"].run.kind == "external_balance_cal"
         assert m["meta"].run.load_unit == "kg"
         f = m["Fits"]
-        assert hasattr(f.Lift, "r_squared")
-        assert hasattr(f.Lift, "pct_of_reading")
+        assert hasattr(f.Fz, "r_squared")
+        assert hasattr(f.Fz, "pct_of_reading")
     finally:
         win.close()
         app.processEvents()

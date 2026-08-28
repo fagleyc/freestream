@@ -110,7 +110,7 @@ class LivePanel(QWidget):
         if data["t"].size == 0:
             return
         loads = {c: float(np.mean(data[c]))
-                 for c in ("Lift", "Drag", "Side", "Roll", "Pitch", "Yaw")}
+                 for c in ("Fx", "Fy", "Fz", "Mx", "My", "Mz")}
         self.bars.update_loads(loads)
         over = [c for c, v in loads.items()
                 if self.max_loads.get(c, 0.0) > 0.0

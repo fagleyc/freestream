@@ -79,15 +79,19 @@ a{color:var(--accent)}
 <p>The <strong>ATE Aerodynamic Test Equipment 6-component underfloor
 (external) balance</strong> at the USAFA wind tunnel is controlled by its
 <strong>OGI</strong> control PC. This package is a standalone client
-("TMS") speaking the OGI's TCP/UDP protocol: live wind-axis loads, motion
-control (yaw / incidence drives), balance lock/tare and dwell-averaged run
-points, in a GUI styled to match the Streamlined project.</p>
-<p>The app shows <strong>raw wind-axis loads only</strong> — coefficient
-reduction (reference geometry, air density) is owned by the Freestream
-suite. The reduced layer uses Streamlined's exact field names
-(<code>lift_forces</code>/<code>drag_forces</code>/… ,
-<code>TunnelConditions(Q, …)</code>) so a run drops straight into the
-Streamlined tooling. The driver mirrors the <code>wtdaq</code>
+("TMS") speaking the OGI's TCP/UDP protocol: live balance-frame loads,
+motion control (yaw / incidence drives), balance lock/tare and
+dwell-averaged run points, in a GUI styled to match the Streamlined
+project.</p>
+<p>The app shows <strong>raw balance-frame loads only</strong> —
+<code>Fx, Fy, Fz, Mx, My, Mz</code> in the balance axes (<strong>X back,
+Y right, Z up</strong>: Fz vertical, Fx drag-direction, Fy side; Mx roll,
+My pitch, Mz yaw). The wire protocol's Lift/Drag/Side words are renamed
+at the decode boundary because they only match wind axes on the
+full-span mount — on a ½-span model the vertical channel is the model's
+SIDE force. Span-aware wind resolution and coefficient reduction
+(reference geometry, air density) are owned by the Freestream suite and
+Streamlined. The driver mirrors the <code>wtdaq</code>
 <code>DAQbook2000</code> driver shape so it can later drop into the
 AeroSENSE/<code>wtdaq</code> framework unchanged.</p>
 <p>Protocol source of truth: <code>AID-010-10015-1.pdf</code> §6 "Client
@@ -108,8 +112,9 @@ Communication Facilities", cross-checked against
     <td><code>TMS_CONNECT</code></td></tr>
 </table></div>
 <p>The OGI control PC lives at rig static IP <code>192.168.1.60</code>.
-Loads are wind-axis, order <strong>Lift, Pitch, Drag, Side, Yaw,
-Roll</strong> (N, N·m). Control commands: <code>ZERO</code>,
+Wire order is <strong>Lift, Pitch, Drag, Side, Yaw, Roll</strong> (the
+manual's labels), decoded to the balance axes as
+<strong>Fz, My, Fx, Fy, Mz, Mx</strong>. Control commands: <code>ZERO</code>,
 <code>TAKE_SAMPLE</code>, <code>LOCK_BAL</code>, <code>UNLOCK_BAL</code>,
 <code>GET_LOCK_STATUS</code>, <code>GET_POSITIONS</code>,
 <code>GOTO_YAW_POS</code>, <code>GOTO_INC_POS</code>,
@@ -191,9 +196,10 @@ python probe_ate_rig.py</code></pre>
 
 <h3>Live tab</h3>
 <ul>
-<li><strong>Wind-axis load bars</strong> — the six loads (Lift, Drag,
-    Side, Roll, Pitch, Yaw), smoothed over the bar-averaging window, one
-    fixed color per channel across all panels.</li>
+<li><strong>Balance-frame load bars</strong> — the six components (Fx,
+    Fy, Fz, Mx, My, Mz; X back, Y right, Z up), smoothed over the
+    bar-averaging window, one fixed color per channel across all
+    panels.</li>
 <li><strong>Overstress hint</strong> — shown while a smoothed load
     exceeds a nonzero rated maximum (Settings → Rated load maxima).</li>
 <li><strong>Device status strip</strong> — yaw/incidence positions,
@@ -279,9 +285,10 @@ python probe_ate_rig.py</code></pre>
     <td>Live bar smoothing window (ms); time histories always show the
     raw stream.</td></tr>
 <tr><td><code>max_loads</code></td><td>all <code>0.0</code></td>
-    <td>Rated maximum per wire axis (Lift/Drag/Side in N,
-    Pitch/Yaw/Roll in N·m); 0.0 = no limit configured. Drives the
-    overstress hint and the suite's utilization bars.</td></tr>
+    <td>Rated maximum per balance axis (Fx/Fy/Fz in N,
+    Mx/My/Mz in N·m); 0.0 = no limit configured. Old configs keyed by
+    the wire names migrate on load. Drives the overstress hint and the
+    suite's utilization bars.</td></tr>
 <tr><td><code>aux_channel_labels</code></td><td><code>[]</code></td>
     <td>Auxiliary (DAQbook) channel labels — reserved for later
     wiring.</td></tr>
@@ -323,9 +330,11 @@ python probe_ate_rig.py</code></pre>
     IP</code>. <code>AteConfig.from_ogi_ini()</code> can seed the client
     config from that file.</td></tr>
 <tr><td>Loads magnitudes uncertain</td>
-    <td>Units are N / N·m per the protocol; the README notes the final
-    known-weight check on <code>Lift</code> is still to be performed at
-    the rig. <code>probe_ate_rig.py</code> re-runs the whole read-only
+    <td>Units follow the OGI's Settings → Units selection and are not
+    carried on the wire — <code>AteConfig.load_units</code> must match
+    (this rig: lb / lb·ft). The final known-weight check on
+    <code>Fz</code> is still to be performed at the rig.
+    <code>probe_ate_rig.py</code> re-runs the whole read-only
     verification safely at any time.</td></tr>
 <tr><td>Testing without the rig</td>
     <td>Three options: <code>--sim</code> (pure synthetic),

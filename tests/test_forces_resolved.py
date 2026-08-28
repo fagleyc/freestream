@@ -3,8 +3,9 @@
 A fake external balance exposing ``load_limits`` + ``latest()`` resolved
 loads drives the SAME LoadBar row the calibrated path uses:
 
-* bars labelled with the REAL channel names (Lift, Drag, Side, Pitch,
-  Yaw, Roll), utilization = |load|/max where a rated max exists;
+* bars labelled with the REAL channel names — the balance-frame axes
+  (Fx, Fy, Fz, Mx, My, Mz; X back, Y right, Z up), utilization =
+  |load|/max where a rated max exists;
 * channels without a rated max (0/missing) show the live load VALUE in
   the pct label with an empty/neutral bar — never a fake utilization;
 * overstress (any |load| >= max) raises the alarm banner + the record
@@ -34,7 +35,8 @@ from freestream.config import FreestreamConfig         # noqa: E402
 from freestream.hal import ChannelSpec, Streaming      # noqa: E402
 from freestream.app.forces import ForcesPanel          # noqa: E402
 
-NAMES = ("Lift", "Pitch", "Drag", "Side", "Yaw", "Roll")
+NAMES = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
+_FORCES = ("Fx", "Fy", "Fz")
 
 
 class FakeExternalBalance:
@@ -55,8 +57,7 @@ class FakeExternalBalance:
         pass
 
     def channels(self) -> List[ChannelSpec]:
-        return [ChannelSpec(name=n, unit=("N" if n in ("Lift", "Drag",
-                                                       "Side") else "N*m"),
+        return [ChannelSpec(name=n, unit=("N" if n in _FORCES else "N*m"),
                             group="ATE_Balance", kind="raw", device_id="ate")
                 for n in NAMES]
 
@@ -99,25 +100,25 @@ def panel(app):
 
 def test_resolved_bars_show_utilization_against_load_limits(panel):
     p, bal = panel
-    bal.load_limits = {"Lift": 100.0, "Drag": 50.0}
-    bal.loads.update({"Lift": 50.0, "Drag": -10.0, "Side": 12.3})
+    bal.load_limits = {"Fz": 100.0, "Fx": 50.0}
+    bal.loads.update({"Fz": 50.0, "Fx": -10.0, "Fy": 12.3})
     p._sample()
     # bars labelled with the REAL channel names, in the display order
     labels = [p.util_labels[i].text() for i in range(6)]
-    assert labels == ["Lift", "Drag", "Side", "Pitch", "Yaw", "Roll"]
-    # Lift: 50/100 → 50 %
-    i_lift = labels.index("Lift")
-    assert p.util_bars[i_lift]._u == pytest.approx(0.5)
-    assert p.util_bars[i_lift]._pct.text().strip() == "50.0%"
-    # Drag: |−10|/50 → 20 % (absolute value)
-    i_drag = labels.index("Drag")
-    assert p.util_bars[i_drag]._u == pytest.approx(0.2)
-    # Side: NO limit → honest value in the label, no bar fill
-    i_side = labels.index("Side")
-    assert p.util_bars[i_side]._u is None
-    assert p.util_bars[i_side]._pct.text() == "+12.3 N"
+    assert labels == ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
+    # Fz: 50/100 → 50 %
+    i_fz = labels.index("Fz")
+    assert p.util_bars[i_fz]._u == pytest.approx(0.5)
+    assert p.util_bars[i_fz]._pct.text().strip() == "50.0%"
+    # Fx: |−10|/50 → 20 % (absolute value)
+    i_fx = labels.index("Fx")
+    assert p.util_bars[i_fx]._u == pytest.approx(0.2)
+    # Fy: NO limit → honest value in the label, no bar fill
+    i_fy = labels.index("Fy")
+    assert p.util_bars[i_fy]._u is None
+    assert p.util_bars[i_fy]._pct.text() == "+12.3 N"
     # tiles carry the resolved loads under their true names
-    assert p.tiles["Lift"].value.text().startswith("+50")
+    assert p.tiles["Fz"].value.text().startswith("+50")
     assert not p.overstress
     assert p.record_blocker() is None
     # external balance needs no .vol
@@ -126,15 +127,15 @@ def test_resolved_bars_show_utilization_against_load_limits(panel):
 
 def test_resolved_overstress_blocks_and_decays(panel):
     p, bal = panel
-    bal.load_limits = {"Lift": 100.0}
-    bal.loads["Lift"] = 120.0                       # 120 % → overstress
+    bal.load_limits = {"Fz": 100.0}
+    bal.loads["Fz"] = 120.0                         # 120 % → overstress
     p._sample()
     assert p.overstress
     assert not p.alarm.isHidden()
-    assert "OVERSTRESS" in p.alarm.text() and "Lift" in p.alarm.text()
+    assert "OVERSTRESS" in p.alarm.text() and "Fz" in p.alarm.text()
     assert "OVERSTRESS" in (p.record_blocker() or "")
     # decay: load drops back below the rated max → blocker clears
-    bal.loads["Lift"] = 10.0
+    bal.loads["Fz"] = 10.0
     p._sample()
     assert not p.overstress
     assert p.alarm.isHidden()
@@ -143,8 +144,8 @@ def test_resolved_overstress_blocks_and_decays(panel):
 
 def test_resolved_warn_band_banner(panel):
     p, bal = panel
-    bal.load_limits = {"Yaw": 10.0}
-    bal.loads["Yaw"] = 9.0                          # 90 % ≥ warn (80 %)
+    bal.load_limits = {"Mz": 10.0}
+    bal.loads["Mz"] = 9.0                           # 90 % ≥ warn (80 %)
     p._sample()
     assert not p.overstress                         # not blocked …
     assert not p.alarm.isHidden()                   # … but warned
@@ -153,26 +154,26 @@ def test_resolved_warn_band_banner(panel):
 
 def test_resolved_peak_hold_and_tare_reset(panel):
     p, bal = panel
-    bal.load_limits = {"Lift": 100.0}
-    bal.loads["Lift"] = 80.0
+    bal.load_limits = {"Fz": 100.0}
+    bal.loads["Fz"] = 80.0
     p._sample()
-    bal.loads["Lift"] = 20.0
+    bal.loads["Fz"] = 20.0
     p._sample()
-    i_lift = [p.util_labels[i].text() for i in range(6)].index("Lift")
-    bar = p.util_bars[i_lift]
+    i_fz = [p.util_labels[i].text() for i in range(6)].index("Fz")
+    bar = p.util_bars[i_fz]
     assert bar._u == pytest.approx(0.2)
     assert bar._peak == pytest.approx(0.8)          # rolling peak held
     # tare (zero_count change on the adapter) resets the peak history
     bal.zero_count += 1
     p._sample()
-    assert p._peak_hist.get("Lift") is None or \
-        max(v for _t, v in p._peak_hist["Lift"]) == pytest.approx(0.2)
+    assert p._peak_hist.get("Fz") is None or \
+        max(v for _t, v in p._peak_hist["Fz"]) == pytest.approx(0.2)
 
 
 def test_resolved_path_inactive_decays_alarm(panel):
     p, bal = panel
-    bal.load_limits = {"Lift": 100.0}
-    bal.loads["Lift"] = 150.0
+    bal.load_limits = {"Fz": 100.0}
+    bal.loads["Fz"] = 150.0
     p._sample()
     assert p.overstress
     p.active = False                                # monitors idle
@@ -187,22 +188,21 @@ def test_tiles_relabel_from_the_balance_channel_units(panel):
     .vol reduction and wrong for an external balance streaming whatever
     the OGI's Units menu is set to."""
     p, bal = panel
-    bal.loads.update({"Lift": 12.0, "Pitch": 3.0})
+    bal.loads.update({"Fz": 12.0, "My": 3.0})
     p._sample()
-    assert p.tiles["Lift"].unit.text() == "N"
-    assert p.tiles["Pitch"].unit.text() == "N·m"      # N*m prettified
+    assert p.tiles["Fz"].unit.text() == "N"
+    assert p.tiles["My"].unit.text() == "N·m"         # N*m prettified
 
     # flip the balance to pounds and the tiles follow on the next tick
     def pounds():
         from freestream.hal import ChannelSpec as CS
-        return [CS(name=n, unit=("lbf" if n in ("Lift", "Drag", "Side")
-                                 else "lbf*ft"),
+        return [CS(name=n, unit=("lbf" if n in _FORCES else "lbf*ft"),
                    group="ATE_Balance", kind="raw", device_id="ate")
                 for n in NAMES]
     bal.channels = pounds
     p._sample()
-    assert p.tiles["Lift"].unit.text() == "lbf"
-    assert p.tiles["Pitch"].unit.text() == "lbf·ft"
+    assert p.tiles["Fz"].unit.text() == "lbf"
+    assert p.tiles["My"].unit.text() == "lbf·ft"
 
 
 def test_display_filter_never_touches_the_recorded_stream(panel):
@@ -223,9 +223,9 @@ def test_display_filter_uses_the_tail_when_one_is_offered(panel):
     raw frame — that is the whole point of the 1 Hz monitor filter."""
     p, bal = panel
     tail = np.concatenate([np.full(40, 10.0), np.full(10, 110.0)])
-    bal.display_tail = lambda n: {"Lift": tail[-n:]}
-    bal.loads["Lift"] = 110.0            # newest frame is the spike
+    bal.display_tail = lambda n: {"Fz": tail[-n:]}
+    bal.loads["Fz"] = 110.0              # newest frame is the spike
     p.config.display_lpf_hz = 1.0
     p._sample()
-    shown = float(p.tiles["Lift"].value.text().replace(",", ""))
+    shown = float(p.tiles["Fz"].value.text().replace(",", ""))
     assert 10.0 < shown < 110.0, shown   # smoothed, not the raw spike

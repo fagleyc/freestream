@@ -24,14 +24,18 @@ from ate_balance.datamodel import RingBuffer
 
 theme.apply_pyqtgraph_theme()
 
-FORCES = ("Lift", "Drag", "Side")     # force channels
-MOMENTS = ("Roll", "Pitch", "Yaw")    # moment channels
+# Balance-frame channels (X back, Y right, Z up).  These strings are both
+# the data keys and the bar tick labels, so the GUI reads Fx/Fy/Fz/Mx/My/Mz.
+FORCES = ("Fx", "Fy", "Fz")       # force channels
+MOMENTS = ("Mx", "My", "Mz")      # moment channels
 
 #: axis labels are built from the CONFIGURED unit system, never hardcoded
 #: — the OGI's Units menu decides what the numbers mean and the client is
-#: only told through the config (see AteConfig.load_units)
+#: only told through the config (see AteConfig.load_units).  The frame note
+#: keeps the balance axes unambiguous right on the chart.
 def axis_labels(force_u: str, moment_u: str):
-    return f"Force  ({force_u})", f"Moment  ({moment_u})"
+    return (f"Balance force  ({force_u})  ·  X back, Y right, Z up",
+            f"Balance moment  ({moment_u})")
 
 
 def display_lowpass(y, rate_hz: float, cutoff_hz: float):

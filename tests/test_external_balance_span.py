@@ -109,8 +109,8 @@ def test_adapter_stamps_the_configured_units_on_its_channels():
         ad = AteBalanceAdapter(sim=True)
         ad._cfg.load_units = setting
         units = {c.name: c.unit for c in ad.channels()}
-        assert units["Lift"] == force_u, setting
-        assert units["Pitch"] == moment_u, setting
+        assert units["Fz"] == force_u, setting
+        assert units["My"] == moment_u, setting
         assert ad.extra_meta()["load_units"] == setting
 
 
@@ -219,11 +219,13 @@ def test_embedded_loads_are_in_the_reductions_units(tmp_path):
                              struct_as_record=False)
         by_run[int(m["meta"].run.run_number)] = m
     m = by_run[int(point["run"])]
-    lift_n = float(np.mean(np.asarray(m["ATE_Balance"].Lift, dtype=float)))
+    fz_n = float(np.mean(np.asarray(m["ATE_Balance"].Fz, dtype=float)))
     # rtol allows for the slow-channel resample onto the DaqBook time
-    # base; a unit slip would be 4.45x, not 0.01%
-    assert np.isclose(point["E"][0],        # WIRE order: Lift first
-                      lift_n * N_TO_LBF, rtol=1e-3)
+    # base (the sim's 0.2 Hz breathing makes the two means differ by a
+    # few tenths of a percent depending on trim); the guard here is
+    # against unit slips, which are 4.45x or 12x, not fractions of 1%
+    assert np.isclose(point["E"][2],        # E order Fx,Fy,Fz,Mx,My,Mz
+                      fz_n * N_TO_LBF, rtol=1e-2)
 
 
 # ── repeat suffixes walk the alphabet, they do not nest ─────────────────
@@ -278,13 +280,13 @@ def test_rated_maxima_convert_into_the_streamed_units():
 
     ad = AteBalanceAdapter(sim=True)
     ad._cfg.load_units = "N"
-    assert ad.load_limits["Lift"] == pytest.approx(RATED_LOADS_N["Lift"])
+    assert ad.load_limits["Fz"] == pytest.approx(RATED_LOADS_N["Fz"])
 
     ad._cfg.load_units = "lb"
-    assert ad.load_limits["Lift"] == pytest.approx(250.0, abs=0.5)
-    assert ad.load_limits["Drag"] == pytest.approx(150.0, abs=0.5)
-    assert ad.load_limits["Roll"] == pytest.approx(250.0, abs=0.5)
-    assert ad.load_limits["Pitch"] == pytest.approx(150.0, abs=0.5)
+    assert ad.load_limits["Fz"] == pytest.approx(250.0, abs=0.5)
+    assert ad.load_limits["Fx"] == pytest.approx(150.0, abs=0.5)
+    assert ad.load_limits["Mx"] == pytest.approx(250.0, abs=0.5)
+    assert ad.load_limits["My"] == pytest.approx(150.0, abs=0.5)
 
 
 def test_ate_panel_labels_follow_the_unit_setting(qt_app=None):
@@ -308,6 +310,6 @@ def test_ate_panel_labels_follow_the_unit_setting(qt_app=None):
 def test_run_panel_columns_carry_the_unit():
     from ate_balance.app.panels.run_panel import _columns
     cols = _columns("lbf", "lbf\u00b7ft")
-    assert "Lift (lbf)" in cols and "Pitch (lbf\u00b7ft)" in cols
+    assert "Fz (lbf)" in cols and "My (lbf\u00b7ft)" in cols
     si = _columns()
-    assert "Lift (N)" in si and "Pitch (N\u00b7m)" in si
+    assert "Fz (N)" in si and "My (N\u00b7m)" in si

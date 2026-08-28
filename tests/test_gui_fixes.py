@@ -175,14 +175,13 @@ def test_balance_tab_routes_excitation_to_strip(window):
 
 def test_balance_tab_hides_empty_excitation_strip(window, app):
     """A balance without an excitation channel (the ATE's resolved
-    Lift/Drag/… set) leaves the exc strip HIDDEN, not an empty plot; the
+    Fx..Mz set) leaves the exc strip HIDDEN, not an empty plot; the
     curves rebuild from channels() so the true names appear."""
     m = window.monitors
     bal = window.manager.devices["balance"]
-    bal._channels = ("Lift", "Pitch", "Drag", "Side", "Yaw", "Roll")
+    bal._channels = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
     m._discover()
-    assert set(m._bal_curves) == {"Lift", "Pitch", "Drag", "Side",
-                                  "Yaw", "Roll"}
+    assert set(m._bal_curves) == {"Fx", "Fy", "Fz", "Mx", "My", "Mz"}
     assert all(plot is m._bal_plot
                for _c, plot in m._bal_curves.values())
     assert m._bal_exc_plot.isHidden()
@@ -196,7 +195,7 @@ def test_balance_tab_excludes_position_channels(app):
     m = MonitorPanel(DeviceManager("mode2", sim=True), FreestreamConfig())
     try:
         assert "Alpha" not in m._bal_curves and "Beta" not in m._bal_curves
-        assert "Lift" in m._bal_curves
+        assert "Fz" in m._bal_curves
     finally:
         m.shutdown()
 

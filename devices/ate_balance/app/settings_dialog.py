@@ -97,9 +97,9 @@ class SettingsDialog(QDialog):
         lim = QGroupBox("Rated load maxima  (N / N·m; 0 = no limit)")
         lf = QFormLayout(lim)
         self.max_spins = {}
-        for axis, unit in (("Lift", " N"), ("Drag", " N"), ("Side", " N"),
-                           ("Pitch", " N·m"), ("Yaw", " N·m"),
-                           ("Roll", " N·m")):
+        for axis, unit in (("Fx", " N"), ("Fy", " N"), ("Fz", " N"),
+                           ("Mx", " N·m"), ("My", " N·m"),
+                           ("Mz", " N·m")):
             sp = self._dbl(cfg.max_loads.get(axis, 0.0), 0.0, 100000.0,
                            1, unit)
             sp.setToolTip(

@@ -44,10 +44,11 @@ prompt the OGI to (re)dial. If `OGI_Sim` is on the same PC, use `--ip 127.0.0.1`
 
 ```
 ate_balance/
-├── protocol.py     pure wire protocol: brace framing, M/R messages, LOADS codec
+├── protocol.py     pure wire protocol: brace framing, M/R messages, LOADS codec,
+│                   wire→balance-frame name mapping (Lift→Fz, Drag→Fx, …)
 ├── datamodel.py    BalanceFrame, MasterFrame+RingBuffer (≈wtdaq),
 │                   TunnelConditions/TestCase/ReducedPoint (≈Streamlined)
-├── reduction.py    frame merging + dwell averaging (raw wind-axis loads)
+├── reduction.py    frame merging + dwell averaging (raw balance-frame loads)
 ├── config.py       AteConfig — endpoints, rated load maxima, JSON, OGI.ini seeding
 ├── device.py       AteBalanceDevice — sockets + threads + simulation fallback
 ├── emulator.py     OgiSimCore (logic) + FakeOGI (real-socket OGI stand-in)
@@ -73,28 +74,39 @@ the AeroSENSE/`wtdaq` framework unchanged.
 | TMSD data | UDP | 3041 | OGI → client | `b"LOADS"` + 6×float32 (+int32 sync), big-endian |
 | OGIT trigger | UDP | 3042 | client → OGI | `TMS_CONNECT` |
 
-Loads are wind-axis, order **Lift, Pitch, Drag, Side, Yaw, Roll** (N, N·m).
+Wire order is **Lift, Pitch, Drag, Side, Yaw, Roll** (the manual's labels).
 Commands: `ZERO`, `TAKE_SAMPLE`, `LOCK_BAL`, `UNLOCK_BAL`, `GET_LOCK_STATUS`,
 `GET_POSITIONS`, `GOTO_YAW_POS`, `GOTO_INC_POS`, `GET_FILTERS`, `STOP_ALL_MOTION`.
 
-## Data structure mapping (→ Streamlined)
+## Channel naming — balance frame
 
-The reduced layer uses Streamlined's exact field names so a run drops straight
-into the Streamlined tooling: WRF loads
-`lift_forces/drag_forces/side_forces/roll_moments/pitch_moments/yaw_moments`
-and `TunnelConditions(Q, ...)`. Coefficients are **not** formed here — the
-Freestream suite owns the reference geometry and does that reduction. Dwell
-points export to CSV or to a Streamlined-shaped `TestCase` `.npz` (Run panel →
-Export).
+The wire's wind words misdescribe the measurement: the balance resolves
+force/moment components in its **own frame — X back (downstream), Y right,
+Z up** — and only on the full-span mount do they coincide with wind-axis
+loads (on the ½-span mount the vertical channel is the model's SIDE force).
+The decode boundary therefore renames to the honest balance-frame axes,
+used everywhere downstream (GUI labels, records, exports):
+
+| wire word | balance axis | meaning |
+|---|---|---|
+| Lift  | `Fz` | vertical force (up) |
+| Drag  | `Fx` | downstream force (back) |
+| Side  | `Fy` | lateral force (right) |
+| Roll  | `Mx` | moment about X |
+| Pitch | `My` | moment about Y |
+| Yaw   | `Mz` | moment about Z |
+
+Wind-axis resolution is span-aware and owned by the reduction
+(Streamlined `external_balance.resolve_external_wrf`), not this driver.
 
 ## Rated load maxima
 
-`AteConfig.max_loads` holds a per-channel rated maximum keyed by the six wire
-axis names `Lift, Pitch, Drag, Side, Yaw, Roll` (N for forces, N·m for
-moments; `0.0` = no limit configured). Edit under File → Settings… → "Rated
-load maxima". The suite streams utilization bars against these; the standalone
-Live panel shows an overstress hint when a smoothed load exceeds a nonzero
-maximum.
+`AteConfig.max_loads` holds a per-channel rated maximum keyed by the balance
+axes `Fx, Fy, Fz, Mx, My, Mz` (N for forces, N·m for moments; `0.0` = no
+limit configured); configs saved under the old wire keys migrate on load.
+Edit under File → Settings… → "Rated load maxima". The suite streams
+utilization bars against these; the standalone Live panel shows an
+overstress hint when a smoothed load exceeds a nonzero maximum.
 
 ## DAQbook integration (stub this pass)
 

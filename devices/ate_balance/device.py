@@ -429,7 +429,7 @@ class AteBalanceDevice:
         if not self._running:
             return
         bf = BalanceFrame(timestamp=time.time(),
-                          loads=P.loads_to_named(values), sync=int(sync))
+                          loads=P.loads_to_balance_named(values), sync=int(sync))
         self._frame_count += 1
         if self.on_frame:
             self.on_frame(bf)

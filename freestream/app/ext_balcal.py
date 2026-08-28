@@ -60,7 +60,11 @@ from .. import theme
 log = logging.getLogger(__name__)
 
 LB_PER_KG = 2.2046226218
-CHANNELS = ("Lift", "Drag", "Side", "Roll", "Pitch", "Yaw")
+# Balance-frame channels as the ATE adapter streams them (X back, Y
+# right, Z up): Fz carries an applied vertical load, Fx a drag-direction
+# load, and so on.
+CHANNELS = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
+_MOMENT_CHANNELS = ("Mx", "My", "Mz")
 
 
 def linfit(x: np.ndarray, y: np.ndarray):
@@ -328,7 +332,7 @@ class ExternalBalCalWindow(QMainWindow):
             pi.showGrid(x=True, y=True, alpha=0.2)
             pi.setTitle(ch)
             pi.setLabel("bottom", "applied load  (lb)")
-            unit = "N·m" if ch in ("Roll", "Pitch", "Yaw") else "N"
+            unit = "N·m" if ch in _MOMENT_CHANNELS else "N"
             pi.setLabel("left", f"{ch}  ({unit})")
             color = theme.series_color(i)
             self.curve_pts[ch] = pg.ErrorBarItem(
@@ -524,7 +528,7 @@ class ExternalBalCalWindow(QMainWindow):
             stds = np.array([s["std"][ch] for s in self.steps])
             fa = fits[ch]
             pi = self.plots[ch].getPlotItem()
-            unit = "N·m" if ch in ("Roll", "Pitch", "Yaw") else "N"
+            unit = "N·m" if ch in _MOMENT_CHANNELS else "N"
             self.curve_sig[ch].setData([], [])
             self.curve_alt[ch].setData([], [])
             if mode == 2 and fa is not None:

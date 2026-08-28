@@ -32,12 +32,14 @@ HOVER = "#3a3a3c"
 # and the run time-history so a channel is recognisable across panels.
 # All ≥3:1 contrast on BG_LIGHT; order is the CVD-safe reference order.
 SERIES = {
-    "Lift":  "#3987e5",   # blue
-    "Drag":  "#199e70",   # aqua
-    "Side":  "#c98500",   # yellow
-    "Roll":  "#008300",   # green
-    "Pitch": "#9085e9",   # violet
-    "Yaw":   "#e66767",   # red
+    # balance-frame axes; colors carried over from the pre-rename channels
+    # (Fz was "Lift", Fx was "Drag", Fy was "Side", Mx/My/Mz were R/P/Y)
+    "Fz": "#3987e5",   # blue
+    "Fx": "#199e70",   # aqua
+    "Fy": "#c98500",   # yellow
+    "Mx": "#008300",   # green
+    "My": "#9085e9",   # violet
+    "Mz": "#e66767",   # red
 }
 
 # Chart chrome (recessive grid/axis ink for pyqtgraph)

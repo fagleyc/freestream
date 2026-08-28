@@ -64,18 +64,50 @@ LOADS_OPCODE = b"LOADS"
 #     Lift, Pitch, Drag, Side-force, Yaw, and Roll"). ──
 WIRE_AXES: Tuple[str, ...] = ("Lift", "Pitch", "Drag", "Side", "Yaw", "Roll")
 
-# Map a wire-ordered 6-tuple to the Streamlined grouping (forces then moments).
-# Streamlined names: Lift, Drag, Side (forces); Roll, Pitch, Yaw (moments).
 _WIRE_INDEX = {name: i for i, name in enumerate(WIRE_AXES)}
+
+# The wire names above are the manual's labels, but they misdescribe what the
+# device measures: the balance reports force/moment components in its OWN
+# reference frame — X back (downstream), Y right, Z up — and only in the
+# full-span mounting do those components happen to coincide with wind-axis
+# lift/drag/side.  Past the decode boundary this package therefore uses the
+# honest balance-frame names; the wind words exist only on the wire:
+#
+#     wire Lift  -> Fz    wire Drag -> Fx    wire Side -> Fy
+#     wire Roll  -> Mx    wire Pitch -> My   wire Yaw  -> Mz
+#
+# Canonical order everywhere downstream is forces-then-moments:
+BALANCE_AXES: Tuple[str, ...] = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
+
+WIRE_TO_BALANCE = {
+    "Lift": "Fz", "Pitch": "My", "Drag": "Fx",
+    "Side": "Fy", "Yaw": "Mz", "Roll": "Mx",
+}
+BALANCE_TO_WIRE = {v: k for k, v in WIRE_TO_BALANCE.items()}
+
+#: wire-tuple index of each balance-frame axis (Fx=2, Fy=3, Fz=0, Mx=5, ...)
+BALANCE_WIRE_INDEX = {bal: _WIRE_INDEX[wire]
+                      for wire, bal in WIRE_TO_BALANCE.items()}
 
 
 def loads_to_named(values: Sequence[float]) -> dict:
-    """Map a wire-ordered 6-tuple -> dict keyed by axis name.
+    """Map a wire-ordered 6-tuple -> dict keyed by the wire (manual) names.
 
     >>> loads_to_named((1, 2, 3, 4, 5, 6))["Pitch"]
     2.0
     """
     return {name: float(values[_WIRE_INDEX[name]]) for name in WIRE_AXES}
+
+
+def loads_to_balance_named(values: Sequence[float]) -> dict:
+    """Map a wire-ordered 6-tuple -> dict keyed by balance-frame names.
+
+    >>> loads_to_balance_named((1, 2, 3, 4, 5, 6))["My"]
+    2.0
+    >>> loads_to_balance_named((1, 2, 3, 4, 5, 6))["Fx"]
+    3.0
+    """
+    return {bal: float(values[idx]) for bal, idx in BALANCE_WIRE_INDEX.items()}
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -109,7 +141,13 @@ class LoadsPacket:
 
     @property
     def named(self) -> dict:
+        """Keyed by the wire (manual) names — protocol-level view."""
         return loads_to_named(self.values)
+
+    @property
+    def balance_named(self) -> dict:
+        """Keyed by the balance-frame names (Fx..Mz) — what the device emits."""
+        return loads_to_balance_named(self.values)
 
 
 def decode_loads(datagram: bytes) -> Optional[LoadsPacket]:

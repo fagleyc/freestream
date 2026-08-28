@@ -5,18 +5,21 @@ drives alpha/beta, so ONE adapter fills both registry roles.
 
 Driver realities accommodated here (see ate_balance.device/protocol):
 
-* Loads arrive as callback frames (``on_frame(BalanceFrame)``) with the
-  six WIRE-ORDER wind-axis loads ``Lift, Pitch, Drag, Side, Yaw, Roll``
-  in N / N.m — there is no driver-side ring buffer, so this adapter
+* Loads arrive as callback frames (``on_frame(BalanceFrame)``) keyed by
+  the six BALANCE-FRAME axes ``Fx, Fy, Fz, Mx, My, Mz`` (X back, Y
+  right, Z up) — there is no driver-side ring buffer, so this adapter
   accumulates frames itself for :meth:`drain_block`.
 * The loads are recorded TRUTHFULLY: group ``ATE_Balance`` under the
-  real wire names ``Lift, Pitch, Drag, Side, Yaw, Roll`` (N / N.m).
-  The historical "file parity" aliasing onto Mode 1 StrainBook names
-  (N1←Lift, …) is GONE — the data reflects the true device; downstream
-  readers key off the ``balance_group``/``balance_type`` file markers
-  instead of a hardcoded group name. A campaign-specific renaming can
-  still be injected via the ``load_map`` constructor option
-  (``{recorded name: wire name}``).
+  balance-frame names ``Fx, Fy, Fz, Mx, My, Mz``. The wire protocol's
+  Lift/Drag/Side words are gone from the records — the device measures
+  balance-frame components, and calling them wind-axis loads baked in
+  the full-span assumption (in ½ span the vertical channel is the
+  model's SIDE force). Wind resolution is span-aware and happens in the
+  reduction. Downstream readers key off the ``balance_group``/
+  ``balance_type`` file markers; legacy archives recorded under the old
+  wind names (or the still older N1… aliases) are mapped on read. A
+  campaign-specific renaming can still be injected via the ``load_map``
+  constructor option (``{recorded name: balance axis}``).
 * Motion is command/reply over TMSC and answers ``*_MOVING`` then
   ``*_COMPLETE`` asynchronously via ``on_reply`` — ``settled()`` tracks
   those replies, and per-serial bookkeeping clears a move on an
@@ -63,11 +66,11 @@ from ._configurable import ConfigurableAdapter                 # noqa: E402
 LOAD_GROUP = "ATE_Balance"
 POS_GROUP = "Positioner"
 
-# Default recorded-name → wire-name mapping: IDENTITY over the six real
-# wire axes (truth-naming). Override via the ``load_map`` option only if
-# a campaign genuinely needs different recorded names.
-LOAD_MAP: Dict[str, str] = {name: name for name in P.WIRE_AXES}
-_FORCE_AXES = ("Lift", "Drag", "Side")
+# Default recorded-name → balance-axis mapping: IDENTITY over the six
+# balance-frame axes (truth-naming). Override via the ``load_map`` option
+# only if a campaign genuinely needs different recorded names.
+LOAD_MAP: Dict[str, str] = {name: name for name in P.BALANCE_AXES}
+_FORCE_AXES = ("Fx", "Fy", "Fz")
 
 
 class AteBalanceAdapter(ConfigurableAdapter):
@@ -146,8 +149,8 @@ class AteBalanceAdapter(ConfigurableAdapter):
     # ── driver callbacks (IO/timer threads) ──────────────────────────────
     def _on_frame(self, bf) -> None:
         with self._lock:
-            for name, wire in self._map.items():
-                v = bf.loads.get(wire, 0.0)
+            for name, axis in self._map.items():
+                v = bf.loads.get(axis, 0.0)
                 self._acc[name].append(v)
                 self._disp[name].append(v)
                 self._latest[name] = v
@@ -181,9 +184,11 @@ class AteBalanceAdapter(ConfigurableAdapter):
                     self._beta_moving = False
                 self._pending.pop(msg.serial, None)
             elif cmd == P.RSP_TARES and len(vals) >= 6:
+                # TARES replies are wire-ordered; BALANCE_WIRE_INDEX maps a
+                # balance axis to its slot in that order
                 self._tares = {
-                    name: vals[P.WIRE_AXES.index(wire)]
-                    for name, wire in self._map.items()}
+                    name: vals[P.BALANCE_WIRE_INDEX[axis]]
+                    for name, axis in self._map.items()}
                 self._tare_evt.set()
             elif cmd == P.RSP_ERROR:
                 axis = self._pending.pop(msg.serial, None)
@@ -244,8 +249,8 @@ class AteBalanceAdapter(ConfigurableAdapter):
         # channels — and that stamp is the ONLY thing telling the
         # reduction what to convert from. Keep it matched to the OGI.
         force_u, moment_u = LOAD_UNITS[self._cfg.load_units]
-        for name, wire in self._map.items():
-            unit = force_u if wire in _FORCE_AXES else moment_u
+        for name, axis in self._map.items():
+            unit = force_u if axis in _FORCE_AXES else moment_u
             specs.append(ChannelSpec(name=name, unit=unit,
                                      group=LOAD_GROUP, kind="raw",
                                      device_id=self.id))
@@ -301,15 +306,15 @@ class AteBalanceAdapter(ConfigurableAdapter):
         basis = getattr(self._cfg, "max_load_units", "N")
         streamed = getattr(self._cfg, "load_units", "N")
         limits: Dict[str, float] = {}
-        for name, wire in self._map.items():
+        for name, axis in self._map.items():
             try:
-                v = float(raw.get(wire, 0.0) or 0.0)
+                v = float(raw.get(axis, 0.0) or 0.0)
             except (TypeError, ValueError):
                 v = 0.0
             if v > 0 and basis != streamed:
                 try:
                     v = convert_loads(v, basis, streamed,
-                                      moment=wire not in _FORCE_AXES)
+                                      moment=axis not in _FORCE_AXES)
                 except KeyError:                       # unknown unit name
                     pass
             limits[name] = v if v > 0 else 0.0

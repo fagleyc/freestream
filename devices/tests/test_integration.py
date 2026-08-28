@@ -55,7 +55,7 @@ def test_frames_and_commands_over_sockets():
         assert dev.last_had_sync is True
 
         f = frames[0]
-        assert set(f.loads) == set(P.WIRE_AXES)
+        assert set(f.loads) == set(P.BALANCE_AXES)
 
         # Read-only command round-trip
         serial = dev.get_positions()

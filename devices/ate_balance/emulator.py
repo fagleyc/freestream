@@ -58,13 +58,14 @@ class OgiSimCore:
         w = 2.0 * np.pi * 0.2 * t       # slow 0.2 Hz "breathing"
         noise = self._rng.normal(0.0, 0.4, 6)
         # wire order: Lift, Pitch, Drag, Side, Yaw, Roll
+        # (client decodes to balance axes: Fz, My, Fx, Fy, Mz, Mx)
         return np.array([
-            200.0 + 12.0 * inc + 6.0 * np.sin(w),        # Lift  (N)
-            15.0 + 0.8 * inc + 1.5 * np.sin(w + 0.5),    # Pitch (N.m)
-            45.0 + 3.0 * abs(inc) + 2.0 * np.sin(w),     # Drag  (N)
-            4.0 * np.sin(np.radians(yaw)) + 1.0,         # Side  (N)
-            0.4 * yaw + 0.5 * np.sin(w),                 # Yaw   (N.m)
-            0.6 * np.sin(w + 1.0),                       # Roll  (N.m)
+            200.0 + 12.0 * inc + 6.0 * np.sin(w),        # wire Lift  = Fz
+            15.0 + 0.8 * inc + 1.5 * np.sin(w + 0.5),    # wire Pitch = My
+            45.0 + 3.0 * abs(inc) + 2.0 * np.sin(w),     # wire Drag  = Fx
+            4.0 * np.sin(np.radians(yaw)) + 1.0,         # wire Side  = Fy
+            0.4 * yaw + 0.5 * np.sin(w),                 # wire Yaw   = Mz
+            0.6 * np.sin(w + 1.0),                       # wire Roll  = Mx
         ]) + noise
 
     def next_loads(self, t: float) -> Tuple[List[float], int]:
