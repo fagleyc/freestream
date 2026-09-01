@@ -27,3 +27,8 @@ devices/tests/_state_scratch.json
 # cloud-sync artifacts
 *conflicted copy*
 .git_broken_cloudsync/
+# lswt_traverse reference assets kept on disk, not in the repo:
+# 57 MB of rig photos and the old TunnelVision build outputs
+devices/lswt_traverse/LSWT-S Traverse Photos/
+devices/lswt_traverse/Tool_SSWT_Traverse/bin/
+devices/lswt_traverse/Tool_SSWT_Traverse/obj/
