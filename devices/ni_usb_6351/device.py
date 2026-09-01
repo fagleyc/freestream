@@ -20,6 +20,20 @@ enabled AO channels (``set_ao``); ``start_ao_wave``/``stop_ao_wave`` swap
 it for a hardware-timed, regenerated waveform task built from each
 channel's waveform settings.
 
+Counters (four 32-bit, ctr0–3):
+
+* INPUT (:class:`~ni_usb_6351.config.CounterInConfig`) — frequency
+  measurement or edge counting. Each enabled CI channel streams into
+  the SAME ring/blocks as the AI channels (one column, held at the
+  latest reading within each block), so the recorder and the freestream
+  adapter treat it as an ordinary channel. A frequency channel that
+  stops receiving edges reads 0.0 after ``config.ci_stale_s``.
+* OUTPUT (:class:`~ni_usb_6351.config.PulseTrainConfig`) — pulse trains,
+  continuous or a finite burst, via ``start_pulse``/``stop_pulse``/
+  ``set_pulse``. Never started as a side effect of Connect. With
+  ``sync_to_ai_start`` the train start-triggers off the AI task's own
+  start trigger, phase-locking pulses to sample 0.
+
 When ``config.force_sim`` is set, a :class:`~ni_usb_6351.emulator.SimCore`
 generates the stream instead — no NI-DAQmx install, no hardware.
 """
@@ -33,14 +47,16 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
-from .config import AOChannelConfig, ChannelConfig, NiDaqConfig
+from .config import (AOChannelConfig, ChannelConfig, CounterInConfig,
+                     NiDaqConfig, PulseTrainConfig)
 from .datamodel import ScanRingBuffer, fields_for
 from .emulator import SimCore
 
 try:                                    # sim mode works without the module
     import nidaqmx
     from nidaqmx import stream_readers as _readers
-    from nidaqmx.constants import AcquisitionType, Edge, Slope
+    from nidaqmx.constants import (AcquisitionType, CountDirection, Edge,
+                                   FrequencyUnits, Level, Slope)
     from nidaqmx.constants import TerminalConfiguration as _TC
     from nidaqmx.errors import DaqError
 except ImportError:                     # pragma: no cover
@@ -145,6 +161,15 @@ class NiUsb6351:
         self._ao_chans: List[AOChannelConfig] = []
         self._triggered = False                 # first samples seen
 
+        # counters
+        self._ci_chans: List[CounterInConfig] = []
+        self._co_chans: List[PulseTrainConfig] = []
+        self._ci_tasks: Dict[str, object] = {}     # name -> CI task
+        self._co_tasks: Dict[str, object] = {}     # name -> running CO task
+        self._ci_raw: Dict[str, float] = {}        # latest RAW measurement
+        self._ci_seen: Dict[str, float] = {}       # last-update monotonic
+        self._sim_edge_count: Dict[str, float] = {}
+
         # sim state
         self._core: Optional[SimCore] = None
 
@@ -217,6 +242,22 @@ class NiUsb6351:
     def ao_names(self) -> List[str]:
         return [c.name for c in self._ao_chans]
 
+    def ci_names(self) -> List[str]:
+        return [c.name for c in self._ci_chans]
+
+    def co_names(self) -> List[str]:
+        return [c.name for c in self._co_chans]
+
+    def ci_values(self) -> Dict[str, float]:
+        """Latest ENGINEERING value per counter-input channel."""
+        return {c.name: c.to_eng(self._ci_raw.get(c.name, 0.0))
+                for c in self._ci_chans}
+
+    def pulse_running(self, name: str) -> bool:
+        if self._sim:
+            return name in self._co_tasks
+        return self._co_tasks.get(name) is not None
+
     def latest(self) -> Optional[Dict[str, float]]:
         return self.ring.latest() if self.ring is not None else None
 
@@ -276,9 +317,21 @@ class NiUsb6351:
         self._carry = None
         self._chans = self.config.enabled_channels()
         self._ao_chans = self.config.enabled_ao_channels()
+        self._ci_chans = self.config.enabled_ci_channels()
+        self._co_chans = self.config.enabled_co_channels()
+        self._ci_raw = {c.name: 0.0 for c in self._ci_chans}
+        self._ci_seen = {}
+        self._sim_edge_count = {c.name: 0.0 for c in self._ci_chans}
         if not self._chans:
             raise RuntimeError("No enabled channels configured")
-        self.ring = ScanRingBuffer(fields_for([c.name for c in self._chans]))
+        clash = ({c.name for c in self._ci_chans}
+                 & {c.name for c in self._chans})
+        if clash:
+            raise RuntimeError(f"counter channel name(s) collide with AI "
+                               f"channels: {sorted(clash)}")
+        self.ring = ScanRingBuffer(fields_for(
+            [c.name for c in self._chans]
+            + [c.name for c in self._ci_chans]))
 
         if self.config.force_sim:
             self._sim = True
@@ -405,6 +458,7 @@ class NiUsb6351:
                 self._task.in_stream)
             self._task.start()
             self._open_ao()
+            self._open_ci()
         except Exception:
             self._close_hardware()
             raise
@@ -577,6 +631,215 @@ class NiUsb6351:
             self._write_static_ao()
         self._status("AO zeroed")
 
+    # ── counter input ────────────────────────────────────────────────────
+    def _open_ci(self) -> None:
+        """One DAQmx task per enabled counter-input channel.
+
+        frequency: implicit-timed continuous measurement — one sample
+        arrives per input PERIOD, so the poll loop reads whatever is
+        available and keeps the newest. edge_count: software-timed —
+        the poll loop reads the scalar count on demand.
+        """
+        dev = self.config.device_name
+        for ch in self._ci_chans:
+            edge = Edge.RISING if ch.edge == "rising" else Edge.FALLING
+            task = nidaqmx.Task(f"ni6351-ci-{ch.name}-{dev}")
+            try:
+                if ch.mode == "frequency":
+                    ci = task.ci_channels.add_ci_freq_chan(
+                        f"{dev}/{ch.physical}",
+                        min_val=max(ch.min_hz, 0.1), max_val=ch.max_hz,
+                        units=FrequencyUnits.HZ, edge=edge)
+                    ci.ci_freq_term = f"/{dev}/{ch.source_terminal}"
+                    task.timing.cfg_implicit_timing(
+                        sample_mode=AcquisitionType.CONTINUOUS,
+                        samps_per_chan=1000)
+                else:                              # edge_count
+                    ci = task.ci_channels.add_ci_count_edges_chan(
+                        f"{dev}/{ch.physical}", edge=edge,
+                        initial_count=0,
+                        count_direction=CountDirection.COUNT_UP)
+                    ci.ci_count_edges_term = f"/{dev}/{ch.source_terminal}"
+                task.start()
+            except Exception:
+                try:
+                    task.close()
+                except Exception:                  # noqa: BLE001
+                    pass
+                raise
+            self._ci_tasks[ch.name] = task
+            self._status(f"Counter {ch.name}: {ch.mode} on "
+                         f"{ch.physical} ({ch.source_terminal})")
+
+    def _poll_ci(self) -> None:
+        """Refresh the latest raw value per CI channel (hardware path)."""
+        now = time.monotonic()
+        stale = max(float(getattr(self.config, "ci_stale_s", 2.0)), 0.1)
+        for ch in self._ci_chans:
+            task = self._ci_tasks.get(ch.name)
+            if task is None:
+                continue
+            try:
+                if ch.mode == "frequency":
+                    avail = task.in_stream.avail_samp_per_chan
+                    if avail > 0:
+                        samples = task.read(
+                            number_of_samples_per_channel=avail)
+                        if not isinstance(samples, list):
+                            samples = [samples]
+                        if samples:
+                            self._ci_raw[ch.name] = float(samples[-1])
+                            self._ci_seen[ch.name] = now
+                    elif (now - self._ci_seen.get(ch.name, now)
+                            > stale):
+                        # no edges for a while: the shaft stopped —
+                        # holding the last speed forever would lie
+                        self._ci_raw[ch.name] = 0.0
+                else:                              # edge_count: on demand
+                    self._ci_raw[ch.name] = float(task.read())
+                    self._ci_seen[ch.name] = now
+            except DaqError as exc:
+                self._status(f"Counter {ch.name} read failed: {exc}")
+
+    def _sim_ci_tick(self, t: float) -> None:
+        """Synthetic counter behaviour for the sim loop.
+
+        frequency: a slowly wandering source (about 500 Hz) so plots
+        and readouts visibly live; edge_count integrates it.
+        """
+        import math
+        hz = 500.0 + 50.0 * math.sin(2 * math.pi * 0.05 * t)
+        dt = self.config.poll_ms / 1000.0
+        for ch in self._ci_chans:
+            if ch.mode == "frequency":
+                self._ci_raw[ch.name] = hz
+            else:
+                self._sim_edge_count[ch.name] += hz * dt
+                self._ci_raw[ch.name] = float(
+                    int(self._sim_edge_count[ch.name]))
+
+    def _ci_columns(self, block: Dict[str, np.ndarray], n: int) -> None:
+        """Append the counter channels to an outgoing block.
+
+        Held constant at the latest reading within the block — the same
+        publication shape as any slow instrument resampled onto the AI
+        time base. ``name`` and ``name_V`` both carry the ENGINEERING
+        value: a counter's scale (pulses/rev) is a fixed sensor
+        property, so the engineering value IS the data of record —
+        deliberately unlike the bridge volts.
+        """
+        for ch in self._ci_chans:
+            eng = ch.to_eng(self._ci_raw.get(ch.name, 0.0))
+            col = np.full(n, eng)
+            block[ch.name] = col
+            block[f"{ch.name}_V"] = col.copy()
+
+    def reset_counter(self, name: str) -> None:
+        """Zero an edge_count channel (task restart re-arms at 0)."""
+        ch = next((c for c in self._ci_chans if c.name == name), None)
+        if ch is None or ch.mode != "edge_count":
+            raise ValueError(f"{name} is not an edge_count channel")
+        self._ci_raw[name] = 0.0
+        self._sim_edge_count[name] = 0.0
+        task = self._ci_tasks.get(name)
+        if task is not None:
+            task.stop()
+            task.start()
+        self._status(f"Counter {name} reset to 0")
+
+    # ── counter output (pulse trains) ────────────────────────────────────
+    def _co_config(self, name: str) -> PulseTrainConfig:
+        ch = next((c for c in self._co_chans if c.name == name), None)
+        if ch is None:
+            raise ValueError(f"no enabled pulse train named {name!r}")
+        return ch
+
+    def start_pulse(self, name: str) -> None:
+        """Start a pulse train from its current config.
+
+        Continuous (``n_pulses=0``) runs until stop_pulse; a finite
+        burst emits its pulses and the task idles (stop_pulse cleans
+        up). With ``sync_to_ai_start`` the train arms and fires on the
+        AI task's start trigger instead of immediately.
+        """
+        ch = self._co_config(name)
+        if self.pulse_running(name):
+            self.stop_pulse(name)
+        if not (0.0 < ch.duty < 1.0):
+            raise ValueError(f"{name}: duty must be inside (0, 1)")
+        if self._sim:
+            self._co_tasks[name] = True
+            self._status(self._pulse_msg(ch) + " (sim)")
+            return
+        dev = self.config.device_name
+        idle = Level.LOW if ch.idle_state == "low" else Level.HIGH
+        task = nidaqmx.Task(f"ni6351-co-{ch.name}-{dev}")
+        try:
+            co = task.co_channels.add_co_pulse_chan_freq(
+                f"{dev}/{ch.physical}", units=FrequencyUnits.HZ,
+                idle_state=idle, freq=ch.freq_hz, duty_cycle=ch.duty)
+            if ch.terminal:
+                co.co_pulse_term = f"/{dev}/{ch.terminal}"
+            if ch.n_pulses > 0:
+                task.timing.cfg_implicit_timing(
+                    sample_mode=AcquisitionType.FINITE,
+                    samps_per_chan=ch.n_pulses)
+            else:
+                task.timing.cfg_implicit_timing(
+                    sample_mode=AcquisitionType.CONTINUOUS)
+            if ch.sync_to_ai_start:
+                task.triggers.start_trigger.cfg_dig_edge_start_trig(
+                    f"/{dev}/ai/StartTrigger")
+            task.start()
+        except Exception:
+            try:
+                task.close()
+            except Exception:                          # noqa: BLE001
+                pass
+            raise
+        self._co_tasks[name] = task
+        self._status(self._pulse_msg(ch))
+
+    @staticmethod
+    def _pulse_msg(ch: PulseTrainConfig) -> str:
+        span = (f"{ch.n_pulses} pulses" if ch.n_pulses > 0
+                else "continuous")
+        sync = " — armed on AI start trigger" if ch.sync_to_ai_start else ""
+        return (f"Pulse {ch.name}: {ch.freq_hz:g} Hz, "
+                f"{ch.duty * 100:.0f}% duty, {span} on "
+                f"{ch.physical} ({ch.out_terminal}){sync}")
+
+    def stop_pulse(self, name: str) -> None:
+        task = self._co_tasks.pop(name, None)
+        if task is None:
+            return
+        if not self._sim:
+            for op in (task.stop, task.close):
+                try:
+                    op()
+                except Exception:                      # noqa: BLE001
+                    pass
+        self._status(f"Pulse {name}: stopped")
+
+    def stop_all_pulses(self) -> None:
+        for name in list(self._co_tasks):
+            self.stop_pulse(name)
+
+    def set_pulse(self, name: str, freq_hz: Optional[float] = None,
+                  duty: Optional[float] = None) -> None:
+        """Retune a train's frequency/duty; restarts it if running."""
+        ch = self._co_config(name)
+        if freq_hz is not None:
+            if freq_hz <= 0:
+                raise ValueError(f"{name}: frequency must be positive")
+            ch.freq_hz = float(freq_hz)
+        if duty is not None:
+            if not (0.0 < duty < 1.0):
+                raise ValueError(f"{name}: duty must be inside (0, 1)")
+            ch.duty = float(duty)
+        if self.pulse_running(name):
+            self.start_pulse(name)                     # stop + restart
+
     # ── lifecycle (cont.) ────────────────────────────────────────────────
     def disconnect(self) -> None:
         if not self._connected:
@@ -588,11 +851,23 @@ class NiUsb6351:
             self._thread = None
         if not self._sim:
             self._close_hardware()
+        else:
+            self._co_tasks.clear()
         self._connected = False
         self._sim = False
         self._status("Disconnected")
 
     def _close_hardware(self) -> None:
+        for tasks in (self._co_tasks, self._ci_tasks):
+            for task in tasks.values():
+                if task is None or task is True:
+                    continue
+                for op in (task.stop, task.close):
+                    try:
+                        op()
+                    except Exception:                  # noqa: BLE001
+                        pass
+            tasks.clear()
         for attr in ("_ao_wave_task", "_ao_task", "_task"):
             task = getattr(self, attr)
             if task is not None:
@@ -692,6 +967,9 @@ class NiUsb6351:
             volts = volts2d[i] - self._tare.get(ch.name, 0.0)
             block[f"{ch.name}_V"] = volts
             block[ch.name] = ch.volts_to_eng(volts)
+        if self._ci_chans:
+            self._poll_ci()
+            self._ci_columns(block, len(t))
         self._emit(block, len(t))
 
     # ── sim loop ─────────────────────────────────────────────────────────
@@ -713,6 +991,9 @@ class NiUsb6351:
                     v = volts[ch.name] - self._tare.get(ch.name, 0.0)
                     block[f"{ch.name}_V"] = v
                     block[ch.name] = ch.volts_to_eng(v)
+                if self._ci_chans:
+                    self._sim_ci_tick(rel_t0)
+                    self._ci_columns(block, n)
                 emitted = due
                 self._emit(block, n)
             self._stop.wait(period)

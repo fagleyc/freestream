@@ -245,7 +245,7 @@ class NiDaqPanel(QWidget):
 
         self.output_panel = OutputTriggerPanel(self.config, self.device)
         self.output_panel.statusSignal.connect(self.statusSignal)
-        self.tabs.addTab(self.output_panel, "Output && Trigger")
+        self.tabs.addTab(self.output_panel, "I/O && Trigger")
         root.addWidget(self.tabs, 1)
 
         # auto-load a previously used .vol calibration

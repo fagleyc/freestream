@@ -1,4 +1,4 @@
-"""Output & Trigger panel — AI start trigger + analog-output control.
+"""I/O & Trigger panel — start trigger, counters, pulse trains, AO.
 
 Trigger edits mutate ``cfg.trigger`` and are applied to the DAQmx task at
 the next Connect; the state lamp mirrors the driver's armed → triggered
@@ -6,6 +6,13 @@ transition on the panel refresh tick. The AO rows edit
 ``cfg.ao_channels`` live: the Set button pushes a static DC level to a
 connected device immediately (``device.set_ao``), and the group buttons
 swap the static AO task for a regenerated waveform task.
+
+Counter INPUT rows configure frequency / edge-count measurements
+(applied at the next Connect) and show the live engineering value right
+where they are configured; the value also streams into the ring/blocks
+as an ordinary channel, so it is recorded and reaches freestream with
+no extra wiring. Pulse-train rows configure counter OUTPUTS and carry
+their own Start/Stop — nothing pulses as a side effect of Connect.
 """
 
 from __future__ import annotations
@@ -21,13 +28,18 @@ from PyQt6.QtWidgets import (
 
 from ni_usb_6351 import theme
 from ni_usb_6351.config import (
-    ANALOG_SOURCES, AO_WAVEFORMS, PFI_SOURCES, TRIGGER_MODES,
-    AOChannelConfig, NiDaqConfig,
+    ANALOG_SOURCES, AO_WAVEFORMS, CI_MODES, COUNTERS, PFI_SOURCES,
+    TRIGGER_MODES, AOChannelConfig, CounterInConfig, NiDaqConfig,
+    PulseTrainConfig,
 )
 from ni_usb_6351.device import NiUsb6351
 
 _AO_HEADERS = ["On", "Name", "Static (V)", "", "Waveform", "Amp (V)",
                "Freq (Hz)", "Offset (V)"]
+_CI_HEADERS = ["On", "Name", "Ctr", "Mode", "Source", "Scale", "Unit",
+               "Live"]
+_CO_HEADERS = ["On", "Name", "Ctr", "Freq (Hz)", "Duty", "Pulses",
+               "AI sync", "", "State"]
 
 
 class OutputTriggerPanel(QWidget):
@@ -40,10 +52,14 @@ class OutputTriggerPanel(QWidget):
         self._cfg = cfg
         self._device = device
         self._ao_widgets: List[dict] = []
+        self._ci_widgets: List[dict] = []
+        self._co_widgets: List[dict] = []
         self._last_state = ("", "")
         self._build()
         self._load_trigger()
         self._populate_ao()
+        self._populate_ci()
+        self._populate_co()
 
     # ── UI ──
     def _build(self):
@@ -81,6 +97,41 @@ class OutputTriggerPanel(QWidget):
         hint.setObjectName("dim")
         tf.addRow("", hint)
         root.addWidget(trig)
+
+        ci = QGroupBox("Counter inputs")
+        cl = QVBoxLayout(ci)
+        self._ci_grid = QGridLayout()
+        self._ci_grid.setHorizontalSpacing(8)
+        self._ci_grid.setVerticalSpacing(4)
+        cl.addLayout(self._ci_grid)
+        ci_hint = QLabel(
+            "frequency measures Hz between edges (an RPM pickup with "
+            "1 pulse/rev: scale 60, unit RPM); edge_count totals edges. "
+            "Applied at the next Connect; the value streams and records "
+            "as an ordinary channel. Source defaults to the counter's "
+            "own SRC pin (ctr0=PFI8, ctr1=PFI3, ctr2=PFI0, ctr3=PFI5).")
+        ci_hint.setObjectName("dim")
+        ci_hint.setWordWrap(True)
+        cl.addWidget(ci_hint)
+        root.addWidget(ci)
+
+        co = QGroupBox("Pulse trains (counter outputs)")
+        col = QVBoxLayout(co)
+        self._co_grid = QGridLayout()
+        self._co_grid.setHorizontalSpacing(8)
+        self._co_grid.setVerticalSpacing(4)
+        col.addLayout(self._co_grid)
+        co_hint = QLabel(
+            "Nothing pulses until Start. Pulses = 0 runs continuously; "
+            "N emits a finite burst. AI sync arms the train on the AI "
+            "start trigger so the first pulse and sample 0 share t0 "
+            "(phase-locked PIV / camera / strobe). Output on the "
+            "counter's OUT pin (ctr0=PFI12, ctr1=PFI13, ctr2=PFI14, "
+            "ctr3=PFI15).")
+        co_hint.setObjectName("dim")
+        co_hint.setWordWrap(True)
+        col.addWidget(co_hint)
+        root.addWidget(co)
 
         ao = QGroupBox("Analog outputs")
         al = QVBoxLayout(ao)
@@ -270,6 +321,175 @@ class OutputTriggerPanel(QWidget):
             w["static"].setValue(w["cfg"].static_v)
             w["static"].blockSignals(blocked)
 
+    # ── counter inputs ──
+    def _populate_ci(self):
+        while self._ci_grid.count():
+            item = self._ci_grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._ci_widgets = []
+        for col, text in enumerate(_CI_HEADERS):
+            lbl = QLabel(text)
+            lbl.setObjectName("dim")
+            self._ci_grid.addWidget(lbl, 0, col)
+        for row, ch in enumerate(self._cfg.ci_channels, start=1):
+            self._append_ci_row(row, ch)
+
+    def _append_ci_row(self, row: int, ch: CounterInConfig):
+        on = QCheckBox()
+        on.setChecked(ch.enabled)
+        on.toggled.connect(lambda v, c=ch: setattr(c, "enabled", v))
+        self._ci_grid.addWidget(on, row, 0)
+
+        name = QLineEdit(ch.name)
+        name.setFixedWidth(90)
+        name.textChanged.connect(lambda v, c=ch: setattr(c, "name", v))
+        self._ci_grid.addWidget(name, row, 1)
+
+        ctr = QComboBox()
+        ctr.addItems([f"ctr{n}" for n in COUNTERS])
+        ctr.setCurrentText(ch.physical)
+        ctr.currentTextChanged.connect(
+            lambda v, c=ch: setattr(c, "ctr", int(v[3:])))
+        self._ci_grid.addWidget(ctr, row, 2)
+
+        mode = QComboBox()
+        mode.addItems(list(CI_MODES))
+        mode.setCurrentText(ch.mode)
+        mode.currentTextChanged.connect(
+            lambda v, c=ch: setattr(c, "mode", v))
+        self._ci_grid.addWidget(mode, row, 3)
+
+        src = QComboBox()
+        src.setEditable(False)
+        src.addItem("(default)")
+        src.addItems(list(PFI_SOURCES))
+        src.setCurrentText(ch.terminal or "(default)")
+        src.currentTextChanged.connect(
+            lambda v, c=ch: setattr(c, "terminal",
+                                    "" if v == "(default)" else v))
+        src.setToolTip("Input terminal; (default) = the counter's own "
+                       "SRC pin")
+        self._ci_grid.addWidget(src, row, 4)
+
+        scale = QDoubleSpinBox()
+        scale.setRange(-1e6, 1e6)
+        scale.setDecimals(4)
+        scale.setValue(ch.scale)
+        scale.setToolTip("eng = raw × scale + 0 (RPM from 1 pulse/rev: "
+                         "60)")
+        scale.valueChanged.connect(
+            lambda v, c=ch: setattr(c, "scale", float(v)))
+        self._ci_grid.addWidget(scale, row, 5)
+
+        unit = QLineEdit(ch.unit)
+        unit.setFixedWidth(50)
+        unit.textChanged.connect(lambda v, c=ch: setattr(c, "unit", v))
+        self._ci_grid.addWidget(unit, row, 6)
+
+        live = QLabel("--")
+        live.setProperty("mono", "true")
+        live.setStyleSheet(f"color: {theme.ACCENT_LIGHT};")
+        self._ci_grid.addWidget(live, row, 7)
+
+        self._ci_widgets.append({"cfg": ch, "on": on, "live": live})
+
+    # ── pulse trains ──
+    def _populate_co(self):
+        while self._co_grid.count():
+            item = self._co_grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._co_widgets = []
+        for col, text in enumerate(_CO_HEADERS):
+            lbl = QLabel(text)
+            lbl.setObjectName("dim")
+            self._co_grid.addWidget(lbl, 0, col)
+        for row, ch in enumerate(self._cfg.co_channels, start=1):
+            self._append_co_row(row, ch)
+
+    def _append_co_row(self, row: int, ch: PulseTrainConfig):
+        on = QCheckBox()
+        on.setChecked(ch.enabled)
+        on.toggled.connect(lambda v, c=ch: setattr(c, "enabled", v))
+        self._co_grid.addWidget(on, row, 0)
+
+        name = QLineEdit(ch.name)
+        name.setFixedWidth(90)
+        name.textChanged.connect(lambda v, c=ch: setattr(c, "name", v))
+        self._co_grid.addWidget(name, row, 1)
+
+        ctr = QComboBox()
+        ctr.addItems([f"ctr{n}" for n in COUNTERS])
+        ctr.setCurrentText(ch.physical)
+        ctr.currentTextChanged.connect(
+            lambda v, c=ch: setattr(c, "ctr", int(v[3:])))
+        self._co_grid.addWidget(ctr, row, 2)
+
+        freq = QDoubleSpinBox()
+        freq.setRange(0.001, 10_000_000.0)
+        freq.setDecimals(3)
+        freq.setValue(ch.freq_hz)
+        freq.valueChanged.connect(
+            lambda v, c=ch: setattr(c, "freq_hz", float(v)))
+        self._co_grid.addWidget(freq, row, 3)
+
+        duty = QDoubleSpinBox()
+        duty.setRange(0.01, 0.99)
+        duty.setDecimals(2)
+        duty.setSingleStep(0.05)
+        duty.setValue(ch.duty)
+        duty.valueChanged.connect(
+            lambda v, c=ch: setattr(c, "duty", float(v)))
+        self._co_grid.addWidget(duty, row, 4)
+
+        npulses = QDoubleSpinBox()
+        npulses.setRange(0, 1e9)
+        npulses.setDecimals(0)
+        npulses.setValue(ch.n_pulses)
+        npulses.setToolTip("0 = continuous; N = finite burst")
+        npulses.valueChanged.connect(
+            lambda v, c=ch: setattr(c, "n_pulses", int(v)))
+        self._co_grid.addWidget(npulses, row, 5)
+
+        sync = QCheckBox()
+        sync.setChecked(ch.sync_to_ai_start)
+        sync.setToolTip("Arm on the AI start trigger: first pulse and "
+                        "sample 0 share t0")
+        sync.toggled.connect(
+            lambda v, c=ch: setattr(c, "sync_to_ai_start", v))
+        self._co_grid.addWidget(sync, row, 6)
+
+        btn = QPushButton("Start")
+        btn.clicked.connect(lambda _=False, c=ch: self._toggle_pulse(c))
+        self._co_grid.addWidget(btn, row, 7)
+
+        state = QLabel("idle")
+        state.setProperty("mono", "true")
+        state.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        self._co_grid.addWidget(state, row, 8)
+
+        self._co_widgets.append({"cfg": ch, "on": on, "btn": btn,
+                                 "state": state})
+
+    def _toggle_pulse(self, ch: PulseTrainConfig):
+        dev = self._device
+        try:
+            if dev.pulse_running(ch.name):
+                dev.stop_pulse(ch.name)
+            elif not dev.connected:
+                self.statusSignal.emit("Connect before starting a pulse "
+                                       "train")
+            elif not ch.enabled:
+                self.statusSignal.emit(f"Pulse {ch.name or ch.physical}: "
+                                       f"enable the row, then reconnect")
+            else:
+                dev.start_pulse(ch.name)
+        except Exception as exc:                       # noqa: BLE001
+            self.statusSignal.emit(f"Pulse train failed: {exc}")
+
     # ── refresh (called on the panel's UI tick) ──
     def refresh(self):
         dev = self._device
@@ -296,6 +516,25 @@ class OutputTriggerPanel(QWidget):
                                       (wave or dev.sim_mode))
         self.zero_btn.setEnabled(dev.connected)
 
+        # live counter readouts + pulse-train states
+        values = dev.ci_values() if dev.connected else {}
+        for w in self._ci_widgets:
+            ch = w["cfg"]
+            v = values.get(ch.name)
+            w["live"].setText("--" if v is None
+                              else f"{v:,.2f} {ch.unit}".strip())
+        for w in self._co_widgets:
+            ch = w["cfg"]
+            running = dev.connected and dev.pulse_running(ch.name)
+            w["btn"].setText("Stop" if running else "Start")
+            w["btn"].setEnabled(dev.connected and (running or ch.enabled))
+            w["state"].setText("PULSING" if running else "idle")
+            w["state"].setStyleSheet(
+                f"color: {theme.SUCCESS if running else theme.TEXT_DIM};"
+                f" font-weight: bold;")
+
     def reload(self):
         self._load_trigger()
         self._populate_ao()
+        self._populate_ci()
+        self._populate_co()

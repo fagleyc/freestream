@@ -273,18 +273,31 @@ class NiDaqAdapter(ConfigurableAdapter):
         # non-balance extras (Pdiff, Excitation) declare their config
         # unit — the unit latest() serves via the channel's scale/offset
         # (the derived q chain reads Pdiff [psid] from latest()).
-        return [ChannelSpec(name=c.name,
-                            unit="V" if c.balance else c.unit,
-                            group=GROUP, kind="raw", device_id=self.id)
-                for c in self._cfg.enabled_channels()]
+        # Counter inputs (RPM pickups, edge totals) ride along as
+        # ordinary channels; for THEM the recorded value IS the
+        # engineering value (a counter's scale is a fixed sensor
+        # property, pulses/rev — not a calibration to re-derive), so
+        # the declared unit matches what lands in the file.
+        specs = [ChannelSpec(name=c.name,
+                             unit="V" if c.balance else c.unit,
+                             group=GROUP, kind="raw", device_id=self.id)
+                 for c in self._cfg.enabled_channels()]
+        specs += [ChannelSpec(name=c.name, unit=c.unit, group=GROUP,
+                              kind="raw", device_id=self.id)
+                  for c in self._cfg.enabled_ci_channels()]
+        return specs
 
     def latest(self) -> Dict[str, float]:
         """Engineering values (volts on bridges/excitation) for live UI."""
         latest = self._dev.latest()
         if not latest:
             return {}
-        return {c.name: latest[c.name]
-                for c in self._cfg.enabled_channels()}
+        out = {c.name: latest[c.name]
+               for c in self._cfg.enabled_channels()}
+        for c in self._cfg.enabled_ci_channels():
+            if c.name in latest:
+                out[c.name] = latest[c.name]
+        return out
 
     def drain_block(self) -> Dict[str, np.ndarray]:
         """All RAW-volt samples accumulated since the previous drain."""
@@ -297,7 +310,8 @@ class NiDaqAdapter(ConfigurableAdapter):
         self._cursor = now
         tail = ring.tail(n) if n > 0 else None
         out: Dict[str, np.ndarray] = {}
-        for c in self._cfg.enabled_channels():
+        for c in (list(self._cfg.enabled_channels())
+                  + list(self._cfg.enabled_ci_channels())):
             out[c.name] = (tail[f"{c.name}_V"] if tail is not None
                            else np.array([], dtype=np.float64))
         return out
@@ -328,6 +342,29 @@ class NiDaqAdapter(ConfigurableAdapter):
         tares = self._dev.tare(seconds)
         self._zero_count += 1
         return tares
+
+    # ── counter passthrough ──────────────────────────────────────────────
+    # Pulse trains and counter values reach freestream through the
+    # adapter so suite code (sweep hooks, panels) never imports the
+    # driver directly.
+    def ci_values(self) -> Dict[str, float]:
+        """Latest engineering value per counter-input channel."""
+        return self._dev.ci_values()
+
+    def start_pulse(self, name: str) -> None:
+        self._dev.start_pulse(name)
+
+    def stop_pulse(self, name: str) -> None:
+        self._dev.stop_pulse(name)
+
+    def stop_all_pulses(self) -> None:
+        self._dev.stop_all_pulses()
+
+    def set_pulse(self, name: str, freq_hz=None, duty=None) -> None:
+        self._dev.set_pulse(name, freq_hz=freq_hz, duty=duty)
+
+    def pulse_running(self, name: str) -> bool:
+        return self._dev.pulse_running(name)
 
     @property
     def zero_count(self) -> int:

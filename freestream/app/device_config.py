@@ -164,8 +164,10 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
         # Forces tab — the single editor the Freestream Forces page
         # inherits from (the internal excitation banks are gone — the rig
         # uses an external supply that the driver never commands)
+        # ci_stale_s rides with the counter rows in the embedded
+        # panel's I/O & Trigger tab, like the trigger/AO/counter lists
         skip=("scan_hz", "vol_path", "cal_type", "balance_config",
-              "warn_utilization"),
+              "warn_utilization", "ci_stale_s"),
         # the standalone app's complete panel (live tiles + bridge history
         # + Forces load-limit monitor + Channels table) as the primary tab
         device_panel="strainbook_616.app.main_window:StrainbookPanel",
@@ -334,8 +336,8 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
         # scan_hz follows the suite-wide sample rate (Measurement Setup);
         # the .vol/fit/layout pointers are edited in the embedded panel's
         # Forces tab — the single editor, exactly like the strainbook
-        # (trigger/AO channel setup lives in the embedded panel's
-        # Output & Trigger tab — nested dataclasses never reach this form)
+        # (trigger/AO/counter/pulse setup lives in the embedded panel's
+        # I/O & Trigger tab — nested dataclasses never reach this form)
         skip=("scan_hz", "vol_path", "cal_type", "balance_config",
               "warn_utilization"),
         # the standalone app's complete panel (live tiles + bridge history

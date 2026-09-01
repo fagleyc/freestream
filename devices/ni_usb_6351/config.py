@@ -48,6 +48,19 @@ AO_CHANNELS = (0, 1)
 #: AO waveform shapes (``none`` = static DC level)
 AO_WAVEFORMS = ("none", "sine", "square", "triangle")
 
+# ── counters ─────────────────────────────────────────────────────────────
+#: the USB-6351 has four 32-bit counters
+COUNTERS = (0, 1, 2, 3)
+#: counter-INPUT measurement modes
+CI_MODES = ("frequency", "edge_count")
+#: pulse-train idle states
+CO_IDLE_STATES = ("low", "high")
+#: X-series DEFAULT terminal routing per counter (device pinout):
+#: where each counter LISTENS (SRC) and where its pulse train COMES OUT.
+#: A blank ``terminal`` in the channel configs means these defaults.
+CTR_DEFAULT_SRC = {0: "PFI8", 1: "PFI3", 2: "PFI0", 3: "PFI5"}
+CTR_DEFAULT_OUT = {0: "PFI12", 1: "PFI13", 2: "PFI14", 3: "PFI15"}
+
 
 # ── balance layout → bridge channel NAMES ────────────────────────────────
 # Same rename machinery as strainbook_616: the four bridge channels are
@@ -125,6 +138,77 @@ class AOChannelConfig:
 
 
 @dataclass
+class CounterInConfig:
+    """One counter INPUT channel (frequency or edge counting).
+
+    The measured value streams into the SAME ring/blocks as the AI
+    channels — one column, constant within each block at the latest
+    reading — so the recorder, the freestream adapter and Streamlined
+    see it as an ordinary channel. ``scale``/``offset`` convert the raw
+    measurement to engineering units (an RPM pickup with 1 pulse/rev:
+    mode "frequency", scale 60, unit "RPM"); unlike the bridge volts,
+    the ENGINEERING value is the data of record — pulses/rev is a fixed
+    sensor property, not a calibration to re-derive later.
+    """
+    ctr: int = 0                # ctr0..ctr3
+    name: str = ""
+    enabled: bool = False
+    mode: str = "frequency"     # frequency | edge_count
+    #: input terminal; "" = the counter's X-series default SRC pin
+    terminal: str = ""
+    edge: str = "rising"        # rising | falling
+    # frequency mode: the expected band steers DAQmx's measurement range
+    min_hz: float = 2.0
+    max_hz: float = 10_000.0
+    scale: float = 1.0          # eng = raw * scale + offset
+    offset: float = 0.0
+    unit: str = "Hz"            # edge_count: typically "counts"
+
+    @property
+    def physical(self) -> str:
+        return f"ctr{self.ctr}"
+
+    @property
+    def source_terminal(self) -> str:
+        return self.terminal or CTR_DEFAULT_SRC.get(self.ctr, "PFI8")
+
+    def to_eng(self, raw: float) -> float:
+        return raw * self.scale + self.offset
+
+
+@dataclass
+class PulseTrainConfig:
+    """One counter OUTPUT: a pulse train (continuous or N pulses).
+
+    ``enabled`` makes the train AVAILABLE (configured, buttons live);
+    nothing pulses until :meth:`~ni_usb_6351.device.NiUsb6351.start_pulse`
+    — outputs must never start as a side effect of Connect.
+    ``sync_to_ai_start`` start-triggers the train off the AI task's own
+    start trigger (``/Dev/ai/StartTrigger``), so the first pulse and
+    sample 0 share t0 — phase-locked external gear (PIV, cameras,
+    strobes) for free.
+    """
+    ctr: int = 1                # ctr0..ctr3
+    name: str = ""
+    enabled: bool = False
+    freq_hz: float = 100.0
+    duty: float = 0.5           # 0 < duty < 1
+    idle_state: str = "low"     # low | high
+    n_pulses: int = 0           # 0 = continuous
+    #: output terminal; "" = the counter's X-series default OUT pin
+    terminal: str = ""
+    sync_to_ai_start: bool = False
+
+    @property
+    def physical(self) -> str:
+        return f"ctr{self.ctr}"
+
+    @property
+    def out_terminal(self) -> str:
+        return self.terminal or CTR_DEFAULT_OUT.get(self.ctr, "PFI12")
+
+
+@dataclass
 class TriggerConfig:
     """AI start-trigger setup, applied to the task at connect.
 
@@ -163,6 +247,18 @@ def default_channels(balance_config: str = "Force") -> List[ChannelConfig]:
 def default_ao_channels() -> List[AOChannelConfig]:
     return [AOChannelConfig(channel=0, name="AO0"),
             AOChannelConfig(channel=1, name="AO1")]
+
+
+def default_ci_channels() -> List[CounterInConfig]:
+    # shipped DISABLED, named to show the intent: an RPM pickup with
+    # 1 pulse/rev on ctr0's default SRC pin (PFI8)
+    return [CounterInConfig(ctr=0, name="RPM", mode="frequency",
+                            scale=60.0, unit="RPM")]
+
+
+def default_co_channels() -> List[PulseTrainConfig]:
+    # shipped DISABLED: a 100 Hz sync train on ctr1's OUT pin (PFI13)
+    return [PulseTrainConfig(ctr=1, name="Sync")]
 
 
 @dataclass
@@ -206,6 +302,16 @@ class NiDaqConfig:
         default_factory=default_ao_channels)
     ao_update_hz: float = 10_000.0     # waveform sample clock
 
+    # ── Counters ─────────────────────────────────────────────────────────
+    ci_channels: List[CounterInConfig] = field(
+        default_factory=default_ci_channels)
+    co_channels: List[PulseTrainConfig] = field(
+        default_factory=default_co_channels)
+    #: a frequency channel with no new edges for this long reads 0.0
+    #: (the shaft stopped — the counter would otherwise just go silent
+    #: and the display would hold the last speed forever)
+    ci_stale_s: float = 2.0
+
     # ── Balance calibration (.vol) ───────────────────────────────────────
     vol_path: str = ""                 # auto-loaded at startup when set
     cal_type: str = "Linear"           # Linear | Quadratic | Cubic
@@ -235,6 +341,12 @@ class NiDaqConfig:
 
     def enabled_ao_channels(self) -> List[AOChannelConfig]:
         return [c for c in self.ao_channels if c.enabled and c.name.strip()]
+
+    def enabled_ci_channels(self) -> List[CounterInConfig]:
+        return [c for c in self.ci_channels if c.enabled and c.name.strip()]
+
+    def enabled_co_channels(self) -> List[PulseTrainConfig]:
+        return [c for c in self.co_channels if c.enabled and c.name.strip()]
 
     # ── balance layout ───────────────────────────────────────────────────
     def set_balance_config(self, balance_config: str) -> Dict[str, str]:
@@ -272,6 +384,8 @@ class NiDaqConfig:
         d = dict(d)
         chans = d.pop("channels", None)
         ao = d.pop("ao_channels", None)
+        ci = d.pop("ci_channels", None)
+        co = d.pop("co_channels", None)
         trig = d.pop("trigger", None)
         known = {f for f in cls.__dataclass_fields__}      # noqa: E1101
         cfg = cls(**{k: v for k, v in d.items() if k in known})
@@ -286,6 +400,18 @@ class NiDaqConfig:
             cfg.ao_channels = [
                 AOChannelConfig(**{k: v for k, v in c.items() if k in ak})
                 for c in ao
+            ]
+        if ci is not None:
+            ik = {f for f in CounterInConfig.__dataclass_fields__}  # noqa
+            cfg.ci_channels = [
+                CounterInConfig(**{k: v for k, v in c.items() if k in ik})
+                for c in ci
+            ]
+        if co is not None:
+            pk = {f for f in PulseTrainConfig.__dataclass_fields__}  # noqa
+            cfg.co_channels = [
+                PulseTrainConfig(**{k: v for k, v in c.items() if k in pk})
+                for c in co
             ]
         if trig is not None:
             tk = {f for f in TriggerConfig.__dataclass_fields__}  # noqa

@@ -201,6 +201,17 @@ class DeviceManager:
         E-stop left the LSWT fan running). Per-device failures are logged
         and never block the remaining stops."""
         self.stop_all_motion()
+        # kill any output the suite is GENERATING: a DAQ pulse train may
+        # be driving external gear (strobe, PIV, camera sync) and must
+        # not keep firing through an emergency stop
+        for dev in self.devices.values():
+            stop_pulses = getattr(dev, "stop_all_pulses", None)
+            if callable(stop_pulses):
+                try:
+                    stop_pulses()
+                except Exception:                      # noqa: BLE001
+                    log.exception("pulse stop failed on %s",
+                                  getattr(dev, "id", "?"))
         for dev in self.devices.values():
             if not isinstance(dev, SetpointDevice):
                 continue
