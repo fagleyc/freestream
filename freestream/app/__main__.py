@@ -28,7 +28,7 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--mode", default=None,
         help="device mode from the manifest (SWT-AC-Internal, "
-             "SWT-External, SWT-Traverse, LSWT-LSWTSting-NI, "
+             "SWT-External, SWT-Traverse, LSWT-N-Crescent-NI, "
              "LSWT-S-Traverse-NI — the South LSWT traverse survey mode; "
              "legacy mode1/mode2/mode3 still accepted). Default: config "
              "file / SWT-AC-Internal")

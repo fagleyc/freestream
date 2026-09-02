@@ -41,9 +41,11 @@ from pathlib import Path
 TUNNELS = ("north", "south")
 
 # per-tunnel defaults: (label, drive IP).
-# TODO(Casey): set the North/South drive IPs — 192.168.0.1 is a
-# PLACEHOLDER (the C# read the real IPs from a runtime XML that is not
-# in the source tree). Edit on the connection bar, then Set as Defaults.
+# The North and South tunnels are IDENTICAL hardware (same fan, same
+# ABB drive, same hz<->fps calibration) on SEPARATE LANs — so the same
+# drive address is correct for both, and which tunnel answers is decided
+# by which LAN the host is plugged into. If a drive is ever readdressed,
+# override on the connection bar and Set as Defaults (per-tunnel files).
 _TUNNEL_DEFAULTS = {
     "north": ("North LSWT", "192.168.0.1"),
     "south": ("South LSWT", "192.168.0.1"),

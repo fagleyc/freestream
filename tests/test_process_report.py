@@ -45,7 +45,7 @@ def _wait(cond, timeout=10.0):
 
 
 def _record_run(tmp_path) -> Path:
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     errors = mgr.connect_all()
     assert errors == {}, errors
     try:
@@ -53,7 +53,7 @@ def _record_run(tmp_path) -> Path:
             s.start()
         assert _wait(lambda: mgr.record_blockers() == [], 10.0), \
             mgr.record_blockers()
-        cfg = FreestreamConfig(mode="LSWT-LSWTSting-NI", sim=True,
+        cfg = FreestreamConfig(mode="LSWT-N-Crescent-NI", sim=True,
                                operator="pytest", config_name="proc_e2e",
                                data_root=str(tmp_path / "runs"),
                                output_format="mat",
@@ -113,7 +113,7 @@ def test_process_run_end_to_end(tmp_path):
 
 
 def test_facility_for_mode():
-    assert processing.facility_for_mode("LSWT-LSWTSting-NI") == "LSWT"
+    assert processing.facility_for_mode("LSWT-N-Crescent-NI") == "LSWT"
     assert processing.facility_for_mode("SWT-AC-Internal") == "SWT"
     assert processing.facility_for_mode("") == "SWT"
 

@@ -3,7 +3,7 @@
 
     python run_freestream.py --sim                       # whole suite, no HW
     python run_freestream.py --mode SWT-External         # ATE balance mode
-    python run_freestream.py --mode LSWT-LSWTSting-NI    # North LSWT rig
+    python run_freestream.py --mode LSWT-N-Crescent-NI    # North LSWT rig
 """
 
 import sys

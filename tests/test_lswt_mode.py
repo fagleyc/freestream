@@ -1,4 +1,4 @@
-"""LSWT-LSWTSting-NI mode + full-catalog Custom mode — real adapters in
+"""LSWT-N-Crescent-NI mode + full-catalog Custom mode — real adapters in
 sim.
 
 * Custom mode offers/builds EVERY device in the manifest registry, and
@@ -65,7 +65,7 @@ def _wait(cond, timeout=10.0):
 
 def test_lswt_sim_sweep_writes_self_describing_files(tmp_path):
     import h5py
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     errors = mgr.connect_all()
     assert errors == {}, f"sim connect failed: {errors}"
     try:
@@ -74,7 +74,7 @@ def test_lswt_sim_sweep_writes_self_describing_files(tmp_path):
         # let the slow Heise poll + LSWT drive poll produce first samples
         assert _wait(lambda: mgr.record_blockers() == [], 10.0), \
             mgr.record_blockers()
-        cfg = FreestreamConfig(mode="LSWT-LSWTSting-NI", sim=True,
+        cfg = FreestreamConfig(mode="LSWT-N-Crescent-NI", sim=True,
                                operator="lswt", config_name="lswt",
                                samples=1000, dwell_s=0.1,
                                move_timeout_s=60, tunnel_timeout_s=60)
@@ -88,7 +88,7 @@ def test_lswt_sim_sweep_writes_self_describing_files(tmp_path):
 
         with h5py.File(outcomes[1].path, "r") as f:      # the alpha=2 point
             # generic role-derived markers — never hardcoded per mode
-            assert f.attrs["mode"] == "LSWT-LSWTSting-NI"
+            assert f.attrs["mode"] == "LSWT-N-Crescent-NI"
             assert f.attrs["positions_source"] == "lswt_sting"
             assert f.attrs["balance_group"] == "NI_USB_6351"
             assert f.attrs["balance_type"] == "internal"

@@ -137,14 +137,14 @@ def test_streamlined_sees_the_run_as_external(tmp_path):
 def test_internal_balance_still_requires_a_vol(tmp_path):
     """The relaxation must not leak: bridge volts with no calibration
     still fail loudly rather than producing fabricated coefficients."""
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     assert mgr.connect_all() == {}
     try:
         for s in mgr.streaming:
             s.start()
         assert _wait(lambda: mgr.record_blockers() == [], 10.0)
         cfg = FreestreamConfig(
-            mode="LSWT-LSWTSting-NI", sim=True, config_name="int_novol",
+            mode="LSWT-N-Crescent-NI", sim=True, config_name="int_novol",
             data_root=str(tmp_path / "runs"), output_format="mat",
             move_timeout_s=60, tunnel_timeout_s=60)
         rec = Hdf5Recorder(cfg.data_root, config_name=cfg.config_name,
@@ -192,7 +192,7 @@ def test_verify_off_prompts_once_per_speed_step(tmp_path):
     """With verification OFF the engine must still stop for the
     operator at each new speed, and must not re-prompt for further
     points at the same speed."""
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     assert mgr.connect_all() == {}
     seen = []
     try:
@@ -200,7 +200,7 @@ def test_verify_off_prompts_once_per_speed_step(tmp_path):
             s.start()
         assert _wait(lambda: mgr.record_blockers() == [], 10.0)
         cfg = FreestreamConfig(
-            mode="LSWT-LSWTSting-NI", sim=True, config_name="verifyoff",
+            mode="LSWT-N-Crescent-NI", sim=True, config_name="verifyoff",
             data_root=str(tmp_path / "runs"), output_format="mat",
             move_timeout_s=60, tunnel_timeout_s=60,
             tunnel_control_mode="manual", mach_check_enabled=False)
@@ -237,7 +237,7 @@ def test_verify_on_keeps_auto_proceed_flag():
 def test_air_off_reprompts_when_the_speed_returns(tmp_path):
     """An air-off point turns the fan off, so returning to a speed the
     operator already confirmed must prompt again."""
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     assert mgr.connect_all() == {}
     seen = []
     try:
@@ -245,7 +245,7 @@ def test_air_off_reprompts_when_the_speed_returns(tmp_path):
             s_.start()
         assert _wait(lambda: mgr.record_blockers() == [], 10.0)
         cfg = FreestreamConfig(
-            mode="LSWT-LSWTSting-NI", sim=True, config_name="airoff",
+            mode="LSWT-N-Crescent-NI", sim=True, config_name="airoff",
             data_root=str(tmp_path / "runs"), output_format="mat",
             move_timeout_s=60, tunnel_timeout_s=60,
             tunnel_control_mode="manual", mach_check_enabled=False)

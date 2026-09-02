@@ -119,7 +119,7 @@ def test_every_device_has_a_spec():
 
 def test_dialog_tabs_per_device(app, all_manifest):
     seen = {}
-    for mode in ("mode1", "mode2", "LSWT-LSWTSting-NI",
+    for mode in ("mode1", "mode2", "LSWT-N-Crescent-NI",
                  "LSWT-S-Traverse-NI"):
         mgr = DeviceManager(mode, sim=True, manifest_path=all_manifest)
         for dev_id, dev in mgr.devices.items():
@@ -211,7 +211,7 @@ def test_lswt_sting_has_axis_tabs_with_motion_limits(app):
     are the indexer velocity/accel/decel motion limits (rendered as line
     edits — the values are indexer command strings)."""
     from PyQt6.QtWidgets import QLineEdit
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     sting = mgr.devices["lswt_sting"]
     dlg = DeviceConfigDialog(sting)
     try:
@@ -232,7 +232,7 @@ def test_lswt_sting_has_axis_tabs_with_motion_limits(app):
 def test_lswt_sting_axis_edit_applies_to_driver_config(app):
     """Editing an axis's velocity/acceleration and Apply writes the exact
     string tokens back to the adapter's driver config (and rebinds)."""
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     sting = mgr.devices["lswt_sting"]
     dlg = DeviceConfigDialog(sting)
     try:
@@ -279,7 +279,7 @@ def test_modbus_axis_sections_unchanged_regression(app, all_manifest):
 def test_lswt_sting_dialog_motion_tabs_screenshot(app, tmp_path):
     """Render the sting dialog offscreen, confirm the Motion tabs, and save
     a screenshot to disk (path returned by the harness)."""
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     sting = mgr.devices["lswt_sting"]
     dlg = DeviceConfigDialog(sting)
     try:

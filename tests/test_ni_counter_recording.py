@@ -31,7 +31,7 @@ from freestream.sweep import DONE, SweepEngine            # noqa: E402
 
 
 def test_ci_channel_lands_in_the_run_file(tmp_path):
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     ni = mgr.devices["ni_daq"]
     ni._cfg.ci_channels[0].enabled = True     # stock RPM pickup, ctr0
     assert mgr.connect_all() == {}

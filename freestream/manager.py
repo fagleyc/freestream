@@ -30,6 +30,9 @@ LEGACY_MODE_ALIASES = {
     "mode1": "SWT-AC-Internal",
     "mode2": "SWT-External",
     "mode3": "SWT-Traverse",
+    # retired 2026-09-02: the North LSWT positioner is the arc crescent,
+    # so the mode is named for it (South's counterpart is the traverse)
+    "LSWT-LSWTSting-NI": "LSWT-N-Crescent-NI",
 }
 
 # make the existing driver packages importable (they live side by side

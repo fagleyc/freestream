@@ -17,7 +17,7 @@
       "tunnel_conditions": "daqbook",
       "tunnel": "tunnel"
     },
-    "LSWT-LSWTSting-NI": {
+    "LSWT-N-Crescent-NI": {
       "positioner": "lswt_sting",
       "balance": "ni_daq",
       "tunnel_conditions": "heise",

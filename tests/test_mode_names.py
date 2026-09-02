@@ -1,6 +1,6 @@
 """Intuitive mode names (Task: drop "mode N") — manifest round-trip,
 legacy "mode1"/"mode2"/"mode3" aliases, config-load normalization, the
-new LSWT-LSWTSting-NI mode wiring, and the manifest-driven mode combo.
+new LSWT-N-Crescent-NI mode wiring, and the manifest-driven mode combo.
 """
 
 import json
@@ -19,7 +19,7 @@ from freestream.manager import (DEFAULT_MANIFEST, LEGACY_MODE_ALIASES,
                                 DeviceManager)
 
 NEW_MODES = ("SWT-AC-Internal", "SWT-External", "SWT-Traverse",
-             "LSWT-LSWTSting-NI", "LSWT-S-Traverse-NI")
+             "LSWT-N-Crescent-NI", "LSWT-S-Traverse-NI")
 
 
 # ── manifest round-trip ──────────────────────────────────────────────────
@@ -83,16 +83,25 @@ def test_config_load_normalises_legacy_mode(tmp_path):
     FreestreamConfig(mode="mode2").save(path)
     assert FreestreamConfig.load(path).mode == "SWT-External"
     # current names round-trip untouched
+    FreestreamConfig(mode="LSWT-N-Crescent-NI").save(path)
+    assert FreestreamConfig.load(path).mode == "LSWT-N-Crescent-NI"
+    # the retired North name (pre arc-crescent rename) maps forward
     FreestreamConfig(mode="LSWT-LSWTSting-NI").save(path)
-    assert FreestreamConfig.load(path).mode == "LSWT-LSWTSting-NI"
+    assert FreestreamConfig.load(path).mode == "LSWT-N-Crescent-NI"
     # custom mode untouched
     FreestreamConfig(mode="custom", custom_devices=["heise"]).save(path)
     assert FreestreamConfig.load(path).mode == "custom"
 
 
 # ── the new LSWT mode ────────────────────────────────────────────────────
-def test_lswt_mode_builds_and_wires_roles():
+def test_retired_north_name_builds_crescent_mode():
+    # pre-rename configs / muscle memory: the sting-era name still works
     mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    assert set(mgr.devices) == {"lswt_sting", "ni_daq", "heise", "lswt"}
+
+
+def test_lswt_mode_builds_and_wires_roles():
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     assert set(mgr.devices) == {"lswt_sting", "ni_daq", "heise", "lswt"}
     assert mgr.roles == {"positioner": "lswt_sting", "balance": "ni_daq",
                          "tunnel_conditions": "heise", "tunnel": "lswt"}

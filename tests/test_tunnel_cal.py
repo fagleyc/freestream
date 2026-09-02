@@ -148,7 +148,7 @@ def test_lswt_sim_sweep_writes_correct_cal_types(tmp_path):
     from freestream.runsheet import build_grid
     from freestream.sweep import DONE, SweepEngine
 
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     errors = mgr.connect_all()
     assert errors == {}, f"sim connect failed: {errors}"
     try:
@@ -156,7 +156,7 @@ def test_lswt_sim_sweep_writes_correct_cal_types(tmp_path):
             s.start()
         assert _wait(lambda: mgr.record_blockers() == [], 10.0), \
             mgr.record_blockers()
-        cfg = FreestreamConfig(mode="LSWT-LSWTSting-NI", sim=True,
+        cfg = FreestreamConfig(mode="LSWT-N-Crescent-NI", sim=True,
                                operator="cal", config_name="cal",
                                samples=500, dwell_s=0.1,
                                move_timeout_s=60, tunnel_timeout_s=60)
