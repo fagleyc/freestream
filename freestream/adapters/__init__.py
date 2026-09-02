@@ -20,6 +20,8 @@ heise          heise.HeiseGauge            Streaming (Ptot/Temp tunnel
                                            conditions)
 ni_daq         ni_usb_6351.NiUsb6351       Streaming + Zeroable
                                            (bridges + Excitation + Pdiff)
+lswt_traverse  lswt_traverse               Positioner (x/y/z, inches —
+               .LswtTraverseDrive          South LSWT SmartStep chain)
 =============  ==========================  ============================
 
 Every adapter is constructed by the DeviceManager as
@@ -31,4 +33,5 @@ The recorder owns time — adapters never emit a "Time" channel.
 from __future__ import annotations
 
 __all__ = ["crescent", "strainbook", "daqbook", "ate", "tunnel",
-           "traverse", "lswt_sting", "lswt", "heise", "ni_daq"]
+           "traverse", "lswt_sting", "lswt", "heise", "ni_daq",
+           "lswt_traverse"]

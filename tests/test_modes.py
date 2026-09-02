@@ -27,17 +27,20 @@ from freestream.runsheet import SweepPoint, build_grid
 from freestream.sweep import DONE, FAILED, SweepEngine
 
 
-# ── Mode 3: traverse X/Y/Z matrix + DaqBook ──────────────────────────────
+# ── Mode 3: traverse X/Y/Z matrix + DaqBook + tunnel PLC ─────────────────
 def test_mode3_builds_traverse_plus_daqbook():
     mgr = DeviceManager("mode3", sim=True)
-    assert set(mgr.devices) == {"traverse", "daqbook"}
+    assert set(mgr.devices) == {"traverse", "daqbook", "tunnel"}
     assert isinstance(mgr.positioner, Positioner)
     assert mgr.positioner.id == "traverse"
     # x/y/z inches, NOT alpha/beta
     assert {a.name for a in mgr.positioner.axes()} == {"x", "y", "z"}
-    # the DaqBook records by default; still no tunnel SetpointDevice
+    # the DaqBook records by default
     assert [s.id for s in mgr.streaming] == ["daqbook"]
-    assert mgr.setpoint is None
+    # the tunnel PLC joined the mode so traverse surveys can command
+    # speed steps (a speed point without a SetpointDevice would fault)
+    assert isinstance(mgr.setpoint, SetpointDevice)
+    assert mgr.setpoint.id == "tunnel"
 
 
 def test_mode3_xyz_matrix_sweep_records(tmp_path):

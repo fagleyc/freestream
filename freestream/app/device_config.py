@@ -364,7 +364,38 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
         device_panel="heise.app.main_window:HeisePanel",
         device_kwarg="device", device_tab="Live && History",
     ),
+    "lswt_traverse": _spec(
+        sections=(
+            ("Communication", ("port", "serial_timeout_s")),
+            ("Monitor", ("poll_s", "drive_status_every",
+                         "move_timeout_s")),
+            ("Display", ("plot_window_s",)),
+        ),
+        axes=(("X axis", "x"), ("Y axis", "y"), ("Z axis", "z")),
+        # SmartStep axis dataclass shape (no Modbus fields, no counts
+        # calibration — the SmartDrives answer PA in user units): soft
+        # travel limits + motion shaping + the "Set home here" datum.
+        axis_sections=(
+            ("Soft travel limits", ("min_in", "max_in", "tolerance_in")),
+            ("Motion shaping", ("velocity_ips", "jog_velocity_ips",
+                                "accel")),
+            ("Referencing", ("home_datum_in", "enabled")),
+        ),
+        # "unit" is the daisy-chain drive address and "label" the fixed
+        # axis caption — rig identity, never per-session dialog fields
+        axis_skip=("unit", "label"),
+        # NO embedded device panel: devices/lswt_traverse/app has no
+        # TraversePanel-equivalent (TraverseMainWindow is a full
+        # QMainWindow, not an embeddable widget), so the dialog is the
+        # Settings form + the three axis tabs only.
+    ),
 }
+
+#: the South LSWT fan is the SAME LswtTunnelAdapter registered under the
+#: "lswt_south" id (manifest ``options: {"tunnel": "south"}``) — it gets
+#: the identical dialog spec (embedded LswtPanel + Settings; the
+#: tunnel/label identity fields stay skipped for the same reasons).
+DEVICE_SPECS["lswt_south"] = DEVICE_SPECS["lswt"]
 
 
 def _import_obj(dotted: str):

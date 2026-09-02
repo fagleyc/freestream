@@ -34,7 +34,8 @@ def test_custom_builds_every_registered_device():
     all_ids = list(json.loads(
         DEFAULT_MANIFEST.read_text(encoding="utf-8"))["devices"])
     assert {"crescent", "strainbook", "daqbook", "ate", "tunnel",
-            "traverse", "lswt_sting", "ni_daq", "heise", "lswt"} \
+            "traverse", "lswt_sting", "ni_daq", "heise", "lswt",
+            "lswt_south", "lswt_traverse"} \
         == set(all_ids)
     mgr = DeviceManager.custom(all_ids, sim=True)
     assert set(mgr.devices) == set(all_ids)

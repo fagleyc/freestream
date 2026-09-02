@@ -26,7 +26,8 @@ from PyQt6.QtWidgets import (QComboBox, QDialog, QDockWidget, QFileDialog,
                              QTextBrowser, QToolBar, QVBoxLayout, QWidget)
 
 from .. import about, theme
-from ..config import FreestreamConfig
+from ..config import (FreestreamConfig, delete_user_mode, load_user_modes,
+                      save_user_mode, user_modes_path)
 from ..hal import Streaming, capabilities
 from ..manager import DeviceManager
 from ..recorder import Hdf5Recorder
@@ -51,6 +52,12 @@ FAKE_MANIFEST = Path(__file__).resolve().parent / "_fake_manifest.json"
 LEFT_DOCK_WIDTH = 300                 # devices rail
 RIGHT_DOCK_WIDTH = 380                # sweep planner
 
+#: mode-combo prefix marking a user-SAVED custom mode (config.py
+#: user_modes.json) — visually separates them from the manifest modes
+#: while keeping the combo a flat, keyboard-searchable list. The raw
+#: saved name never carries the prefix; only the combo item does.
+USER_MODE_PREFIX = "★ "
+
 
 def build_manager(mode: str, sim: bool, on_log=None,
                   custom_devices: Optional[Sequence[str]] = None
@@ -72,6 +79,18 @@ def build_manager(mode: str, sim: bool, on_log=None,
             return DeviceManager.custom(list(custom_devices), sim=sim)
         return DeviceManager(mode, sim=sim)
     except Exception as exc:                           # noqa: BLE001
+        if custom_devices:
+            # a persisted custom set can go STALE (device dropped from
+            # the manifest, driver import broken). Fail soft to the
+            # default manifest mode on the REAL manifest rather than
+            # dragging the whole session into the bundled fakes.
+            _log(f"saved custom device set {list(custom_devices)} failed "
+                 f"({exc.__class__.__name__}: {exc}) — falling back to "
+                 f"the default mode")
+            try:
+                return DeviceManager(sim=sim)
+            except Exception:                          # noqa: BLE001
+                pass                                   # fall through to fakes
         _log(f"real adapter manifest failed ({exc.__class__.__name__}: "
              f"{exc}) — falling back to bundled FAKE adapters")
         root = Path(__file__).resolve().parents[2]     # project root
@@ -270,6 +289,18 @@ class FreestreamMainWindow(QMainWindow):
             custom_devices=(self.config.custom_devices
                             if self.config.mode == DeviceManager.CUSTOM
                             else None))
+        if (self.config.mode == DeviceManager.CUSTOM
+                and self.manager.custom_devices is None):
+            # the persisted custom set could NOT be rebuilt (build_manager
+            # fell back to a manifest mode) — follow the manager so the
+            # combo shows the truth and the next save doesn't re-persist
+            # a broken selection.
+            startup_msgs.append(
+                f"custom device selection cleared — running mode "
+                f"{self.manager.mode!r} instead")
+            self.config.mode = self.manager.mode
+            self.config.custom_devices = []
+            self.config.custom_mode_name = ""
         #: answers the "configuration folder already exists" question;
         #: swappable so headless callers and tests skip the dialog
         from .config_collision import resolve_config_collision
@@ -335,19 +366,24 @@ class FreestreamMainWindow(QMainWindow):
         mode_lbl = QLabel("Mode")   # toolbar spacing comes from the theme
         bar.addWidget(mode_lbl)
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(list(self.manager.manifest["modes"]))
-        self.mode_combo.addItem(DeviceManager.CUSTOM)   # pick devices by hand
+        self._populate_mode_combo()
         self.mode_combo.setToolTip(
             "SWT-AC-Internal — crescent sting + StrainBook internal "
             "balance + DaqBook + tunnel PLC.\n"
             "SWT-External — ATE external balance rig + DaqBook + tunnel "
             "PLC.\n"
-            "SWT-Traverse — traverse X/Y/Z matrix + DaqBook.\n"
+            "SWT-Traverse — traverse X/Y/Z matrix + DaqBook + tunnel "
+            "PLC (speed-steppable surveys).\n"
             "LSWT-LSWTSting-NI — LSWT sting + NI USB-6351 balance DAQ + "
             "Heise (Ptot/Temp) + LSWT fan drive (North tunnel).\n"
-            "'custom' opens a picker to choose any device subset.\n"
+            "LSWT-S-Traverse-NI — South LSWT traverse X/Y/Z matrix + NI "
+            "USB-6351 DAQ + Heise (Ptot/Temp) + South LSWT fan drive.\n"
+            f"{USER_MODE_PREFIX}entries — your saved custom modes: "
+            "selecting one builds its saved device set directly.\n"
+            "'custom' opens a picker to choose any device subset (and "
+            "save/delete named modes).\n"
             "Switchable only while disconnected.")
-        self.mode_combo.setCurrentText(self.manager.mode)
+        self.mode_combo.setCurrentText(self._current_mode_item())
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         bar.addWidget(self.mode_combo)
 
@@ -892,10 +928,13 @@ class FreestreamMainWindow(QMainWindow):
 
     def _on_mode_changed(self, mode: str) -> None:
         if self._connected:                            # combo is disabled;
-            self._set_mode_combo(self.manager.mode)    # belt & braces
+            self._set_mode_combo(self._current_mode_item())  # belt & braces
             return
         if mode == DeviceManager.CUSTOM:               # always (re)pick
             self._enter_custom_mode()
+            return
+        if mode.startswith(USER_MODE_PREFIX):          # saved custom mode
+            self._select_user_mode(mode[len(USER_MODE_PREFIX):])
             return
         if mode == self.manager.mode:
             return
@@ -904,48 +943,141 @@ class FreestreamMainWindow(QMainWindow):
                                 manifest_path=self.manager.manifest_path)
         except Exception as exc:                       # noqa: BLE001
             self.console.log(f"mode switch to {mode} failed: {exc}")
-            self._set_mode_combo(self.manager.mode)
+            self._set_mode_combo(self._current_mode_item())
             return
         self._adopt_manager(mgr)
         self.config.mode = mode
         self.config.custom_devices = []                # leaving custom mode
+        self.config.custom_mode_name = ""
         self.console.log(f"mode → {mode}: devices "
                          + ", ".join(mgr.devices))
 
-    # ── custom mode (pick devices one by one) ────────────────────────────
+    # ── custom mode (pick devices one by one; save/select named sets) ────
+    def _populate_mode_combo(self) -> None:
+        """Fill the mode combo: manifest modes first, then the user-SAVED
+        custom modes (★-prefixed, sorted), then "custom" last. Keeps the
+        current selection when its item survives the rebuild."""
+        current = self.mode_combo.currentText()
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.clear()
+        self.mode_combo.addItems(list(self.manager.manifest["modes"]))
+        for name in sorted(load_user_modes(), key=str.lower):
+            self.mode_combo.addItem(USER_MODE_PREFIX + name)
+        self.mode_combo.addItem(DeviceManager.CUSTOM)  # pick devices by hand
+        if current and self.mode_combo.findText(current) < 0:
+            current = self._current_mode_item()        # item was deleted
+        if current:
+            self.mode_combo.setCurrentText(current)
+        self.mode_combo.blockSignals(False)
+
+    def _current_mode_item(self) -> str:
+        """The combo item text describing the ACTIVE manager: a custom set
+        that came from a saved user mode shows as its ★-prefixed name,
+        everything else as the manager's own mode name."""
+        if (self.manager.mode == DeviceManager.CUSTOM
+                and self.config.custom_mode_name):
+            item = USER_MODE_PREFIX + self.config.custom_mode_name
+            if self.mode_combo.findText(item) >= 0:
+                return item
+        return self.manager.mode
+
     def _enter_custom_mode(self) -> None:
         """Open the device picker; on accept, build a manager from EXACTLY
-        the ticked subset (roles inferred from capabilities)."""
+        the ticked subset (roles inferred from capabilities), optionally
+        saving it as a named user mode first."""
         catalog = self._device_catalog()
         preselected = (self.config.custom_devices
                        or list(self.manager.devices))
-        dlg = DevicePickerDialog(catalog, preselected, self)
+        dlg = DevicePickerDialog(
+            catalog, preselected, self,
+            refresh=self._device_catalog,              # "Detect devices"
+            saved_modes=sorted(load_user_modes(), key=str.lower),
+            on_delete_mode=self._delete_user_mode,
+            current_name=self.config.custom_mode_name)
         if not dlg.exec():                             # cancelled → revert
-            self._set_mode_combo(self.manager.mode)
+            self._set_mode_combo(self._current_mode_item())
             return
         chosen = dlg.selected_devices()
+        name = dlg.save_mode_name()
+        if name:
+            self._save_user_mode(name, chosen)
         try:
-            self._build_and_adopt_custom(chosen)
+            self._build_and_adopt_custom(chosen, mode_name=name)
         except Exception as exc:                       # noqa: BLE001
             self.console.log(f"custom mode build failed: {exc}")
-            self._set_mode_combo(self.manager.mode)
+            self._set_mode_combo(self._current_mode_item())
 
-    def _build_and_adopt_custom(self, device_ids: Sequence[str]) -> None:
+    def _select_user_mode(self, name: str) -> None:
+        """Build a SAVED user mode's device list through the custom path —
+        no picker. A stale list (device gone from the manifest, driver
+        broken) fails SOFT: console message, combo reverted."""
+        ids = load_user_modes().get(name)
+        if not ids:
+            self.console.log(f"saved mode {name!r} is missing from "
+                             f"{user_modes_path()} — nothing built")
+            self._set_mode_combo(self._current_mode_item())
+            return
+        try:
+            self._build_and_adopt_custom(ids, mode_name=name)
+        except Exception as exc:                       # noqa: BLE001
+            self.console.log(
+                f"saved mode {name!r} failed to build ({exc}) — its device "
+                f"list is {ids}; re-save it from the custom picker")
+            self._set_mode_combo(self._current_mode_item())
+
+    def _save_user_mode(self, name: str, device_ids: Sequence[str]) -> None:
+        """Persist ``name`` → ``device_ids`` (overwrite updates) and show
+        it in the mode combo immediately."""
+        save_user_mode(name, list(device_ids))
+        self._populate_mode_combo()
+        self.console.log(f"saved custom mode {USER_MODE_PREFIX}{name}: "
+                         + ", ".join(device_ids)
+                         + f"  → {user_modes_path()}")
+
+    def _delete_user_mode(self, name: str) -> None:
+        """Explicitly delete ONE saved mode (picker's Delete button) and
+        drop its combo item. The active device set is untouched — only
+        its saved name goes away."""
+        delete_user_mode(name)
+        if self.config.custom_mode_name == name:
+            self.config.custom_mode_name = ""          # now an unnamed set
+        self._populate_mode_combo()
+        self.console.log(f"deleted saved mode {USER_MODE_PREFIX}{name}")
+
+    def _build_and_adopt_custom(self, device_ids: Sequence[str],
+                                mode_name: str = "") -> None:
+        """Adopt an explicit device subset. ``mode_name`` labels the set
+        with the SAVED user mode it came from ("" = unnamed one-off);
+        persistence stays mode="custom" + the id list either way — the
+        name only picks the combo item shown."""
         mgr = DeviceManager.custom(list(device_ids), sim=self.manager.sim,
                                    manifest_path=self.manager.manifest_path)
         self._adopt_manager(mgr)
         self.config.mode = DeviceManager.CUSTOM
         self.config.custom_devices = list(device_ids)
-        self._set_mode_combo(DeviceManager.CUSTOM)
-        self.console.log("custom mode: devices " + ", ".join(mgr.devices)
+        self.config.custom_mode_name = mode_name
+        item = DeviceManager.CUSTOM
+        if mode_name and self.mode_combo.findText(
+                USER_MODE_PREFIX + mode_name) >= 0:
+            item = USER_MODE_PREFIX + mode_name
+        self._set_mode_combo(item)
+        label = (f"saved mode {USER_MODE_PREFIX}{mode_name}" if mode_name
+                 else "custom mode")
+        self.console.log(f"{label}: devices " + ", ".join(mgr.devices)
                          + "  (" + self._roles_summary(mgr) + ")")
 
     def _device_catalog(self
-                        ) -> Dict[str, Tuple[str, List[str]]]:
-        """id → (label, capability-tags) for EVERY device in the manifest
-        registry, built by instantiating each adapter once in sim. Failures
-        (driver not importable) still list the id with no tags."""
-        catalog: Dict[str, Tuple[str, List[str]]] = {}
+                        ) -> Dict[str, Tuple[str, List[str], str]]:
+        """id → (label, capability-tags, unavailable-reason) for EVERY
+        device in the manifest registry — the custom picker's AUTO-DETECT.
+
+        Availability is probed by instantiating each adapter once in sim
+        (import + construct; fast, touches no hardware): success →
+        reason "" and real capability tags; failure (driver package not
+        installed, import error, constructor raise) → the short exception
+        text, so the picker renders the row disabled instead of offering
+        a device that could never build."""
+        catalog: Dict[str, Tuple[str, List[str], str]] = {}
         for dev_id, entry in self.manager.manifest["devices"].items():
             try:
                 module_name, cls_name = entry["adapter"].rsplit(".", 1)
@@ -953,11 +1085,12 @@ class FreestreamMainWindow(QMainWindow):
                 adapter = cls(sim=True, **entry.get("options", {}))
                 adapter.id = dev_id
                 catalog[dev_id] = (getattr(adapter, "label", dev_id),
-                                   capabilities(adapter))
+                                   capabilities(adapter), "")
             except Exception as exc:                   # noqa: BLE001
+                reason = f"{exc.__class__.__name__}: {exc}"
                 self.console.log(f"device {dev_id} unavailable for the "
-                                 f"custom picker: {exc}")
-                catalog[dev_id] = (dev_id, [])
+                                 f"custom picker: {reason}")
+                catalog[dev_id] = (dev_id, [], reason)
         return catalog
 
     @staticmethod
@@ -1536,9 +1669,12 @@ class FreestreamMainWindow(QMainWindow):
             if (self.config.mode == DeviceManager.CUSTOM
                     and self.config.custom_devices):
                 # rebuild the exact saved subset WITHOUT re-opening the
-                # picker (going through the combo would prompt)
+                # picker (going through the combo would prompt); the saved
+                # user-mode name (if any) just re-labels the combo
                 try:
-                    self._build_and_adopt_custom(self.config.custom_devices)
+                    self._build_and_adopt_custom(
+                        self.config.custom_devices,
+                        mode_name=self.config.custom_mode_name)
                 except Exception as exc:               # noqa: BLE001
                     self.console.log(f"custom set from config failed: {exc}")
             elif self.config.mode != self.manager.mode:

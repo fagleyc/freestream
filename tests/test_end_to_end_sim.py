@@ -99,6 +99,71 @@ def test_files_are_raw_only(tmp_path):
         assert f.attrs["positions_source"] == "crescent"
 
 
+def test_south_traverse_xyz_speed_sweep(tmp_path):
+    """LSWT-S-Traverse-NI end-to-end in sim: an x/speed survey matrix —
+    the South traverse positions (auto-referenced in sim), the South fan
+    is the mode's SetpointDevice for the speed points, the NI + Heise
+    record, and the per-point files are readable and named by position +
+    speed. Mirrors the _run_sweep acceptance pattern for the new mode."""
+    import time
+
+    import h5py
+
+    mode = "LSWT-S-Traverse-NI"
+    mgr = DeviceManager(mode, sim=True)
+    errors = mgr.connect_all()
+    assert errors == {}, f"sim connect failed: {errors}"
+    try:
+        for s in mgr.streaming:
+            s.start()
+        # let the slow Heise poll + fan drive poll produce first samples
+        deadline = time.perf_counter() + 10.0
+        while time.perf_counter() < deadline and mgr.record_blockers():
+            time.sleep(0.05)
+        assert mgr.record_blockers() == []
+        cfg = FreestreamConfig(mode=mode, sim=True, operator="e2e",
+                               config_name="e2e_south", samples=1000,
+                               dwell_s=0.1, move_timeout_s=60,
+                               tunnel_timeout_s=60)
+        rec = Hdf5Recorder(tmp_path / "runs", config_name=cfg.config_name)
+        engine = SweepEngine(mgr, rec, cfg)
+        points = build_grid(x_spec="0:2:2", y_spec="0", z_spec="1",
+                            mach_spec="0.03,0.06", dwell_s=0.1,
+                            samples=1000)
+        assert len(points) == 4              # 2 speeds × 2 x positions
+        # speed nests OUTERMOST; x varies fastest (one pass per speed)
+        assert [(p.mach, p.x) for p in points] == \
+            [(0.03, 0.0), (0.03, 2.0), (0.06, 0.0), (0.06, 2.0)]
+        outcomes = engine.run(points)
+        assert [o.status for o in outcomes] == [DONE] * 4, \
+            [f"{o.status}:{o.error}" for o in outcomes]
+        # per-point files named by traverse position AND speed
+        names = [Path(o.path).name for o in outcomes]
+        assert all("x_" in n and "z_1" in n and "mach_0.0" in n
+                   for n in names), names
+        with h5py.File(outcomes[1].path, "r") as f:   # mach 0.03, x=2
+            assert f.attrs["mode"] == mode
+            assert f.attrs["positions_source"] == "lswt_traverse"
+            assert f.attrs["balance_group"] == "NI_USB_6351"
+            assert f.attrs["x"] == 2.0 and f.attrs["z"] == 1.0
+            assert f.attrs["mach"] == pytest.approx(0.03)
+            # /Positioner: X/Y/Z inches from the traverse at the point
+            assert set(f["Positioner"]) == {"X", "Y", "Z"}
+            assert f["Positioner/X"].attrs["unit"] == "in"
+            assert np.allclose(f["Positioner/X"][()], 2.0, atol=0.05)
+            assert np.allclose(f["Positioner/Z"][()], 1.0, atol=0.05)
+            # raw groups from the NI DAQ + Heise, and the engine-written
+            # /Tunnel carrying the commanded speed
+            assert "NI_USB_6351" in f
+            assert set(f["Heise"]) >= {"Ptot", "Temp"}
+            assert {"RPM_meas", "RPM_cmd"} <= set(f["Tunnel"])
+            assert f["Tunnel/Mach_cmd"][0] == pytest.approx(0.03)
+    finally:
+        for s in mgr.streaming:
+            s.stop()
+        mgr.disconnect_all()
+
+
 def test_mode2_files_reflect_the_true_device(tmp_path):
     """Mode 2 truth-naming: group ATE_Balance with the real wire names,
     NO StrainBook aliasing anywhere, /Positioner carrying the ATE's own

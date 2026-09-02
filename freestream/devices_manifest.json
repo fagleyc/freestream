@@ -14,13 +14,20 @@
     },
     "SWT-Traverse": {
       "positioner": "traverse",
-      "tunnel_conditions": "daqbook"
+      "tunnel_conditions": "daqbook",
+      "tunnel": "tunnel"
     },
     "LSWT-LSWTSting-NI": {
       "positioner": "lswt_sting",
       "balance": "ni_daq",
       "tunnel_conditions": "heise",
       "tunnel": "lswt"
+    },
+    "LSWT-S-Traverse-NI": {
+      "positioner": "lswt_traverse",
+      "balance": "ni_daq",
+      "tunnel_conditions": "heise",
+      "tunnel": "lswt_south"
     }
   },
   "devices": {
@@ -62,6 +69,15 @@
     },
     "lswt": {
       "adapter": "freestream.adapters.lswt.LswtTunnelAdapter",
+      "enabled": true
+    },
+    "lswt_south": {
+      "adapter": "freestream.adapters.lswt.LswtTunnelAdapter",
+      "options": {"tunnel": "south"},
+      "enabled": true
+    },
+    "lswt_traverse": {
+      "adapter": "freestream.adapters.lswt_traverse.LswtTraverseAdapter",
       "enabled": true
     }
   }

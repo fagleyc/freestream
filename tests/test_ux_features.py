@@ -154,8 +154,10 @@ def test_dialogs_have_maximize_buttons(app, sim_manager):
     assert sdlg.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint
 
     from freestream.app.device_picker import DevicePickerDialog
+    # legacy 2-tuple catalog entries (no availability field) still work
     pdlg = DevicePickerDialog({"daqbook": ("DaqBook", ["streaming"])}, [])
     assert pdlg.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint
+    assert pdlg.save_mode_name() == ""            # no name typed → no save
 
 
 # ── non-modal device dialogs (other windows stay interactable) ───────────

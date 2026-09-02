@@ -104,6 +104,12 @@ EXPECTED_TABS = {
                    "Beta axis"],
     "ni_daq": ["Live && Channels", "Settings"],
     "heise": ["Live && History", "Settings"],
+    # the South fan is the SAME LswtTunnelAdapter under the lswt_south id
+    # → identical dialog; the South traverse has NO embeddable panel
+    # (its device app is a full QMainWindow), so it is Settings + the
+    # three SmartStep axis tabs only.
+    "lswt_south": ["Monitor && Control", "Settings"],
+    "lswt_traverse": ["Settings", "X axis", "Y axis", "Z axis"],
 }
 
 
@@ -113,7 +119,8 @@ def test_every_device_has_a_spec():
 
 def test_dialog_tabs_per_device(app, all_manifest):
     seen = {}
-    for mode in ("mode1", "mode2", "LSWT-LSWTSting-NI"):
+    for mode in ("mode1", "mode2", "LSWT-LSWTSting-NI",
+                 "LSWT-S-Traverse-NI"):
         mgr = DeviceManager(mode, sim=True, manifest_path=all_manifest)
         for dev_id, dev in mgr.devices.items():
             if dev_id in seen:

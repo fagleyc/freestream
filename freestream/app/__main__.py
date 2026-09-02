@@ -28,9 +28,10 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--mode", default=None,
         help="device mode from the manifest (SWT-AC-Internal, "
-             "SWT-External, SWT-Traverse, LSWT-LSWTSting-NI; legacy "
-             "mode1/mode2/mode3 still accepted). Default: config file / "
-             "SWT-AC-Internal")
+             "SWT-External, SWT-Traverse, LSWT-LSWTSting-NI, "
+             "LSWT-S-Traverse-NI — the South LSWT traverse survey mode; "
+             "legacy mode1/mode2/mode3 still accepted). Default: config "
+             "file / SWT-AC-Internal")
     parser.add_argument("--config", type=Path, default=None,
                         help="FreestreamConfig JSON to load")
     args = parser.parse_args(argv)
