@@ -82,6 +82,15 @@ DaqInfoFlagsNew = DaqInfoFlagsDetected | DaqInfoFlagsNotCreated
 FULL_SCALE_V = 10.0
 ADC_COUNTS = 65536          # 16-bit
 
+# Native input ranges (manual: "13 software programmable ranges, ±10 V to
+# ±156 mV full scale"): SEVEN bipolar ranges ±10/gain for gains ×1..×64,
+# and SIX unipolar ranges 0..20/gain for gains ×2..×64.  In unipolar mode
+# the span at a given gain CODE is TWICE the bipolar span at that code —
+# the unipolar range is the next-lower gain's bipolar range shifted to
+# zero — and ×1-unipolar (0..20 V) does not exist on the ±10 V front end;
+# 7 + 6 is exactly the manual's 13.  Assuming 0..10/gain here made every
+# unipolar channel read at half scale (found on the rig's Pdiff, 2026-09).
+
 # Default DLL search locations (rig LabVIEW install first)
 DEFAULT_DLL_PATHS = [
     r"C:\Users\Casey\Nextcloud\Software\labview\Shared VIs\Devices\IOTech"
@@ -96,26 +105,37 @@ def counts_to_volts(counts, gain: int, bipolar: bool):
     """Convert raw unsigned 16-bit ADC counts to volts.
 
     Works on scalars or numpy arrays.  Bipolar span is ±10/gain V mapped
-    over the full unsigned range; unipolar is 0..10/gain V.
+    over the full unsigned range; unipolar is 0..20/gain V (twice the
+    bipolar span at the same gain code — see the range table note above).
     """
     span = FULL_SCALE_V / max(gain, 1)
     if bipolar:
         return (counts / (ADC_COUNTS / 2.0) - 1.0) * span
-    return counts / float(ADC_COUNTS) * span
+    return counts / float(ADC_COUNTS) * (2.0 * span)
 
 
 def range_for(gain: int, bipolar: bool) -> Tuple[float, float]:
-    """(lo, hi) volts of a gain/polarity combination."""
+    """(lo, hi) volts of a gain/polarity combination.
+
+    Raises ``ValueError`` for ×1 unipolar: 0..20 V does not exist on the
+    ±10 V front end (the unipolar family is gains ×2..×64 only).
+    """
     span = FULL_SCALE_V / max(gain, 1)
-    return (-span, span) if bipolar else (0.0, span)
+    if bipolar:
+        return (-span, span)
+    if gain < 2:
+        raise ValueError("unipolar requires gain >= 2 on the 2000 series "
+                         "(no 0..20 V range)")
+    return (0.0, 2.0 * span)
 
 
 def pick_range(v_min: float, v_max: float,
                differential: bool = True) -> Tuple[int, bool]:
     """Smallest (gain, bipolar) whose native range covers [v_min, v_max].
 
-    Mirrors what the rig's LabVIEW TDAQ VIs do with the requested Chan
-    Min/Max V (e.g. 0..3 V diff -> unipolar ×2 = 0..5 V).
+    Selects from the same 13-range table the rig's LabVIEW TDAQ VIs use
+    for the requested Chan Min/Max V (e.g. 0..3 V diff -> the native
+    0..5 V unipolar range, which is gain code ×4).
 
     Hardware constraint (verified on the DaqBook/2005, DaqX error 134):
     **single-ended channels only support bipolar ranges**; unipolar is
@@ -125,6 +145,8 @@ def pick_range(v_min: float, v_max: float,
     polarities = (False, True) if differential else (True,)
     for gain in sorted(GAIN_CODE):
         for bipolar in polarities:
+            if not bipolar and gain < 2:
+                continue                    # no 0..20 V unipolar range
             lo, hi = range_for(gain, bipolar)
             if lo <= v_min and v_max <= hi:
                 candidates.append((hi - lo, gain, bipolar))

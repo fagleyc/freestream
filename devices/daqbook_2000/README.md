@@ -14,7 +14,7 @@ over Ethernet. Device identity (from the rig's LabVIEW setup):
 |---|---|
 | Device alias | `DaqBook2005` |
 | IP | `192.168.1.125` (serial 808713) |
-| CH0 `Pdiff` | differential, 0..+3 V requested → native 0–5 V (×2) |
+| CH0 `Pdiff` | differential, 0..+3 V requested → native 0–5 V unipolar (gain code ×4) |
 | CH2 `Ptot` | differential, ±10 V (×1) |
 | CH4 `Temp` | single-ended, 0–10 V (×1) |
 
