@@ -35,24 +35,28 @@ from ..runsheet import (SweepPoint, build_grid, load_runsheet,
 from ..sweep import PointOutcome
 from .runsheet_dialog import RunSheetDialog
 
-_STATUS_COLOR = {
-    "queued": theme.TEXT_DIM,
-    "moving": theme.WARNING,
-    "acquiring": theme.WARNING,
-    "done": theme.SUCCESS,
-    "failed": theme.ERROR,
-    "skipped": theme.TEXT_DISABLED,
+#: status → palette token for the status cell's text. Tokens (not colors)
+#: so a live theme switch recolors the table.
+_STATUS_TOKEN = {
+    "queued": "TEXT_DIM",
+    "moving": "WARNING",
+    "acquiring": "WARNING",
+    "done": "SUCCESS",
+    "failed": "ERROR",
+    "skipped": "TEXT_DISABLED",
 }
 
 #: per-status ROW tint for the point table, so the operator can read sweep
 #: progress at a glance from across the control room. Deliberately muted —
-#: these sit behind text on the dark theme. None = leave the row untinted
-#: (queued points stay plain, so the worked-through frontier is obvious).
-_STATUS_ROW_BG = {
-    "moving": "#3a3115",
-    "acquiring": "#3a3115",
-    "done": "#1b2a1b",
-    "failed": "#3a1d1b",
+#: a light wash of the status color over the panel surface (themekit
+#: ROW_* tokens), so text stays readable in light and dark themes alike.
+#: None = leave the row untinted (queued points stay plain, so the
+#: worked-through frontier is obvious).
+_STATUS_ROW_TOKEN = {
+    "moving": "ROW_ACTIVE",
+    "acquiring": "ROW_ACTIVE",
+    "done": "ROW_DONE",
+    "failed": "ROW_FAILED",
     "skipped": None,
     "queued": None,
 }
@@ -221,6 +225,8 @@ class PlannerPanel(QWidget):
         self._timer.start()
 
         self._update_indicator()
+
+        theme.manager().changed.connect(self._on_theme_changed)
 
     def set_config(self, config: FreestreamConfig) -> None:
         """Adopt a freshly loaded config (source of dwell/samples).
@@ -780,8 +786,9 @@ class PlannerPanel(QWidget):
     def _style_row(self, row: int, status: str) -> None:
         """Tint a whole row for its status — the point being acquired is
         highlighted, completed points read as done, failures stand out."""
-        bg = _STATUS_ROW_BG.get(status)
-        status_fg = QColor(_STATUS_COLOR.get(status, theme.TEXT))
+        tok = _STATUS_ROW_TOKEN.get(status)
+        bg = getattr(theme, tok) if tok else None
+        status_fg = QColor(getattr(theme, _STATUS_TOKEN.get(status, "TEXT")))
         active = status in _ACTIVE_STATUSES
         last_col = self.table.columnCount() - 1
         for col in range(self.table.columnCount()):
@@ -834,6 +841,14 @@ class PlannerPanel(QWidget):
                 item, QAbstractItemView.ScrollHint.PositionAtCenter)
         finally:
             self._programmatic_scroll = False
+
+    def _on_theme_changed(self, *_):
+        """Item colors are baked QColors — repaint every row's status."""
+        try:
+            self._row_status.clear()
+            self.refresh_statuses()
+        except RuntimeError:                           # panel deleted
+            pass
 
     def refresh_statuses(self) -> None:
         if not self.points or self.table.rowCount() != len(self.points):

@@ -83,12 +83,16 @@ from .config_form import ConfigForm
 # status-lamp pill styles (mirrors the device rail's traffic light)
 _PILL_CSS = ("border-radius: 8px; padding: 2px 10px; font-weight: bold; "
              "font-size: 9pt;")
-_LAMP_STYLE = {
-    OK: f"background: {theme.SUCCESS}; color: white; {_PILL_CSS}",
-    FAULT: f"background: {theme.ERROR}; color: white; {_PILL_CSS}",
-    "OFFLINE": (f"background: {theme.SURFACE}; color: {theme.TEXT_DIM}; "
-                f"{_PILL_CSS}"),
-}
+def _lamp_style(state) -> str:
+    """Pill CSS for a device state, from the ACTIVE palette."""
+    if state == OK:
+        return (f"background: {theme.SUCCESS}; color: {theme.ON_ACCENT}; "
+                f"{_PILL_CSS}")
+    if state == FAULT:
+        return (f"background: {theme.ERROR}; color: {theme.ON_ACCENT}; "
+                f"{_PILL_CSS}")
+    return (f"background: {theme.SURFACE}; color: {theme.TEXT_DIM}; "
+            f"border: 1px solid {theme.BORDER}; {_PILL_CSS}")
 
 
 # ── per-device assembly specs ────────────────────────────────────────────
@@ -481,8 +485,7 @@ class DeviceConfigDialog(QDialog):
             state = OK if connected else "OFFLINE"
             sim = bool(getattr(self.adapter, "sim", False))
         self.lamp.setText(state + (" · SIM" if sim else ""))
-        self.lamp.setStyleSheet(_LAMP_STYLE.get(state,
-                                                _LAMP_STYLE["OFFLINE"]))
+        self.lamp.setStyleSheet(_lamp_style(state))
         self.conn_btn.setText("Disconnect" if connected else "Connect")
 
     def _toggle_connect(self) -> None:

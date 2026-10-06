@@ -282,11 +282,50 @@ center monitor tabs (<strong>Tunnel</strong>, <strong>Balance</strong>,
       Import Run Sheet&hellip;; Measurement Setup&hellip;; Exit.</td></tr>
   <tr><td>Devices</td><td>Rebuilt on open from the active registry &mdash; one submenu per
       device: Configure&hellip;, Connect, Disconnect.</td></tr>
+  <tr><td>View</td><td>Device Rail / Sweep Planner / Run Log toggles; Reset Layout;
+      Theme &rsaquo;; Appearance&hellip;; Toggle Light / Dark; zoom; Full Screen; Command
+      Palette (see <a href="#gui-themes">Themes &amp; view</a>).</td></tr>
   <tr><td>Advanced</td><td>Balance Calibration&hellip; (the balcal_gui .vol-acquisition
       window).</td></tr>
   <tr><td>Help</td><td>Documentation (this page); About Freestream (version +
       history).</td></tr>
 </table>
+
+
+<h3 id="gui-themes">Themes &amp; view</h3>
+<p>The whole UI re-themes live, with no restart. Open the <strong>View</strong>
+menu or click the theme chip at the right end of the status bar. Clicking the chip
+flips light and dark. Its arrow lists every theme. The theme, UI scale and density
+are saved per user and restored at launch. Freestream also remembers the window size and dock layout. Use <strong>View &rsaquo; Reset Layout</strong> to put every pane back.</p>
+<table>
+  <tr><th>Theme</th><th>Use</th></tr>
+  <tr><td>USAFA Night <em>(default)</em></td><td>Class Royal navy surfaces, Academy Blue
+      controls, Class Yellow focus/tab indicator. Built for the control room.</td></tr>
+  <tr><td>USAFA Day</td><td>White and Academy Grey surfaces, Academy Blue controls, a
+      Class Royal header. Use in bright rooms and for screenshots or reports.</td></tr>
+  <tr><td>Classic Dark</td><td>The original dark palette, value for value.</td></tr>
+  <tr><td>Classic Light</td><td>Neutral light grey with the classic blue accent.</td></tr>
+  <tr><td>High Contrast</td><td>Near-black surfaces, bright text, heavy borders and yellow
+      focus, for projectors, glare and low vision.</td></tr>
+</table>
+<p>The USAFA colors are the official usafa.edu brand values: Academy Blue
+<code>#003594</code>, Class Royal <code>#002554</code>, Academy Grey <code>#B2B4B2</code>,
+Class Yellow <code>#FFC72C</code> and Class Red <code>#A6192E</code>. Plot series colors
+are stepped for each theme's surface and keep the same hue order, so a channel stays
+the same hue when the theme changes. The Academy and Aeronautics marks are never
+recolored. On dark surfaces they sit on a white plate.</p>
+<table>
+  <tr><th>Shortcut</th><th>Action</th></tr>
+  <tr><td><span class="kbd">Ctrl+K</span> / <span class="kbd">Ctrl+Shift+P</span></td>
+      <td>Command palette: type part of any menu command and press Enter to run it.</td></tr>
+  <tr><td><span class="kbd">Ctrl+Shift+L</span></td><td>Toggle light / dark.</td></tr>
+  <tr><td><span class="kbd">Ctrl+=</span> / <span class="kbd">Ctrl+-</span> /
+      <span class="kbd">Ctrl+0</span></td><td>UI zoom in / out / reset (80&ndash;160&nbsp;%).</td></tr>
+  <tr><td><span class="kbd">F11</span></td><td>Full screen.</td></tr>
+</table>
+<p><strong>View &rsaquo; Appearance&hellip;</strong> shows a live preview card for each theme,
+a UI-scale slider and a density choice (Compact / Comfortable / Spacious). Changes apply
+as you click. Cancel restores the previous look.</p>
 
 <h3 id="gui-dashboard">Tunnel dashboard (Tunnel tab)</h3>
 <ul>

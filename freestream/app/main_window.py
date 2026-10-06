@@ -18,12 +18,13 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QComboBox, QDialog, QDockWidget, QFileDialog,
                              QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-                             QPushButton, QSizePolicy, QTabWidget,
-                             QTextBrowser, QToolBar, QVBoxLayout, QWidget)
+                             QPushButton, QSizePolicy, QStatusBar,
+                             QTabWidget, QTextBrowser, QToolBar, QVBoxLayout,
+                             QWidget)
 
 from .. import about, theme
 from ..config import (FreestreamConfig, delete_user_mode, load_user_modes,
@@ -201,12 +202,7 @@ class PaneHandle(QPushButton):
         self.setFixedWidth(14)
         self.setSizePolicy(QSizePolicy.Policy.Fixed,
                            QSizePolicy.Policy.Expanding)
-        self.setStyleSheet(
-            "QPushButton { background: transparent; border: none; "
-            f"color: {theme.TEXT_DIM}; font-size: 8pt; padding: 0; }}\n"
-            "QPushButton:hover { background: "
-            f"{theme.SURFACE}; color: {theme.ACCENT_LIGHT}; "
-            "border-radius: 3px; }")
+        self.setObjectName("paneHandle")              # styled by theme.py
         self.toggled.connect(self._update_arrow)
         self._update_arrow(self.isChecked())
 
@@ -226,15 +222,41 @@ class AboutDialog(QDialog):
         super().__init__(parent)
         import html as _html
         self.setWindowTitle(f"About {about.APP_NAME}")
-        self.setFixedSize(560, 520)
+        self.setFixedSize(600, 640)
 
         v = QVBoxLayout(self)
         v.setSpacing(10)
 
+        # brand plate: Aeronautics roundel + USAFA wordmark on white (the
+        # marks are never recolored, so they always sit on a white field)
+        plate = QWidget()
+        plate.setObjectName("aboutPlate")
+        plate.setStyleSheet("QWidget#aboutPlate { background: #ffffff; "
+                            "border-radius: 10px; }")
+        pl = QHBoxLayout(plate)
+        pl.setContentsMargins(18, 14, 18, 14)
+        roundel = QLabel()
+        roundel.setPixmap(theme.logo_pixmap("dfan-aeronautics.png", 96,
+                                            plate=False))
+        roundel.setStyleSheet("background: transparent;")
+        pl.addWidget(roundel)
+        pl.addStretch(1)
+        wordmark = QLabel()
+        wordmark.setPixmap(theme.logo_pixmap("wordmark-horizontal.png", 74,
+                                             plate=False))
+        wordmark.setStyleSheet("background: transparent;")
+        pl.addWidget(wordmark)
+        v.addWidget(plate)
+
         title = QLabel(about.APP_NAME)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 20pt; font-weight: bold;")
+        title.setProperty("role", "heading")
+        title.setStyleSheet("font-size: 22pt;")
         v.addWidget(title)
+        org = QLabel(theme.themekit.ORG_LINE)
+        org.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        org.setObjectName("dim")
+        v.addWidget(org)
 
         ver = QLabel(f"Version {about.__version__}")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -280,8 +302,11 @@ class FreestreamMainWindow(QMainWindow):
         super().__init__()
         self.config = config or FreestreamConfig()
         self.setWindowTitle("Freestream — Wind Tunnel Suite")
+        self.setWindowIcon(theme.app_icon())
         self.resize(1500, 950)
-        self.setStyleSheet(theme.get_stylesheet())
+        # the theme lives on the QApplication (live-switchable from
+        # View ▸ Theme); a per-window sheet would pin the old colors
+        theme.ensure_applied()
 
         startup_msgs: List[str] = []
         self.manager = manager or build_manager(
@@ -325,6 +350,7 @@ class FreestreamMainWindow(QMainWindow):
         self._build_central()
         self._build_docks()
         self._build_menus()
+        self._build_status_bar()
         # wheel over a spin/combo box must not edit it unless focused
         theme.install_wheel_guard(self)
         self._update_ui_state()
@@ -346,11 +372,16 @@ class FreestreamMainWindow(QMainWindow):
                   activated=self.left_handle.toggle)
         QShortcut(QKeySequence("Ctrl+2"), self,
                   activated=self.right_handle.toggle)
+        # window size + dock layout persist ONLY for real sessions (the
+        # entry point hands the theme manager a QSettings store; tests and
+        # embedded uses never touch the user's registry)
+        QTimer.singleShot(0, self._restore_layout)
 
     # ── construction ─────────────────────────────────────────────────────
     @staticmethod
     def _bar_spacer() -> QWidget:
         spacer = QWidget()
+        spacer.setObjectName("barSpacer")             # transparent on header
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding,
                              QSizePolicy.Policy.Preferred)
         return spacer
@@ -359,9 +390,16 @@ class FreestreamMainWindow(QMainWindow):
         """Mode selector left · Connect-All → E-STOP cluster CENTERED ·
         SIM/LIVE selector + status by the right header."""
         bar = QToolBar("Command")
+        bar.setObjectName("commandBar")               # brand header styling
         bar.setMovable(False)
         bar.setFloatable(False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
+        self.command_bar = bar
+
+        self.brand = theme.BrandBadge(about.APP_NAME,
+                                      "USAFA · Aeronautics Lab", height=34)
+        bar.addWidget(self.brand)
+        bar.addSeparator()
 
         mode_lbl = QLabel("Mode")   # toolbar spacing comes from the theme
         bar.addWidget(mode_lbl)
@@ -405,12 +443,14 @@ class FreestreamMainWindow(QMainWindow):
         bar.addWidget(self.start_btn)
 
         self.pause_btn = QPushButton("Pause")
+        self.pause_btn.setProperty("flat_header", True)
         self.pause_btn.setMinimumSize(90, 34)
         self.pause_btn.setToolTip("Pause after current point")
         self.pause_btn.clicked.connect(self._toggle_pause)
         bar.addWidget(self.pause_btn)
 
         self.abort_btn = QPushButton("Abort")
+        self.abort_btn.setProperty("flat_header", True)
         self.abort_btn.setMinimumSize(80, 34)
         self.abort_btn.clicked.connect(self._abort)
         bar.addWidget(self.abort_btn)
@@ -438,8 +478,7 @@ class FreestreamMainWindow(QMainWindow):
         bar.addWidget(self.sim_combo)
 
         self.status_lbl = QLabel("disconnected")
-        self.status_lbl.setStyleSheet(f"color: {theme.TEXT_DIM}; "
-                                      "padding: 0 10px;")
+        self.status_lbl.setObjectName("headerStatus")  # styled by theme.py
         bar.addWidget(self.status_lbl)
 
         self.sim_badge = QLabel()
@@ -449,10 +488,13 @@ class FreestreamMainWindow(QMainWindow):
     def _update_sim_badge(self) -> None:
         """Keep the SIM/LIVE badge in sync with the active manager."""
         self.sim_badge.setText("SIM" if self.manager.sim else "LIVE")
-        self.sim_badge.setStyleSheet(
-            "background: {bg}; color: white; border-radius: 8px; "
-            "padding: 3px 12px; font-weight: bold;".format(
-                bg=theme.ACCENT_DARK if self.manager.sim else theme.ERROR))
+        # SIM = calm accent, LIVE = loud red; colors come from the app
+        # stylesheet so a theme switch recolors it (re-polish picks up the
+        # changed property)
+        self.sim_badge.setObjectName("simBadge")
+        self.sim_badge.setProperty("live", not self.manager.sim)
+        self.sim_badge.style().unpolish(self.sim_badge)
+        self.sim_badge.style().polish(self.sim_badge)
 
     def _build_central(self) -> None:
         central = QWidget()
@@ -572,6 +614,7 @@ class FreestreamMainWindow(QMainWindow):
         self.console = ConsolePanel()
         dock = QDockWidget("Run Log", self)
         dock.setObjectName("consoleDock")
+        self.console_dock = dock
         dock.setWidget(self.console)
         dock.setMinimumHeight(120)
         dock.topLevelChanged.connect(
@@ -614,6 +657,24 @@ class FreestreamMainWindow(QMainWindow):
         self.devices_menu = self.menuBar().addMenu("&Devices")
         self.devices_menu.aboutToShow.connect(self._fill_devices_menu)
 
+        # View — panes, theme, appearance, zoom, full screen, command palette
+        view_menu = self.menuBar().addMenu("&View")
+        for text, handle, key in (("Device &Rail", self.left_handle, "Ctrl+1"),
+                                  ("Sweep &Planner", self.right_handle,
+                                   "Ctrl+2")):
+            act = QAction(f"{text}\t{key}", self)
+            act.setCheckable(True)
+            act.setChecked(handle.isChecked())
+            act.toggled.connect(handle.setChecked)
+            handle.toggled.connect(act.setChecked)
+            view_menu.addAction(act)
+        view_menu.addAction(self.console_dock.toggleViewAction())
+        act = QAction("Reset &Layout", self)
+        act.setToolTip("Dock every pane back to its default place and width")
+        act.triggered.connect(self._reset_layout)
+        view_menu.addAction(act)
+        theme.install_view_menu(self, view_menu)
+
         # Advanced — specialist tools that live outside the sweep workflow
         adv_menu = self.menuBar().addMenu("&Advanced")
         act = QAction("&Internal Balance Calibration…", self)
@@ -648,6 +709,61 @@ class FreestreamMainWindow(QMainWindow):
         act = QAction(f"&About {about.APP_NAME}", self)
         act.triggered.connect(self._show_about)
         help_menu.addAction(act)
+
+    def _build_status_bar(self) -> None:
+        """Bottom strip: transient messages left, theme chip right."""
+        sb = QStatusBar()
+        sb.setSizeGripEnabled(False)
+        self.setStatusBar(sb)
+        hint = QLabel("Ctrl+K  command palette")
+        hint.setObjectName("hint")
+        sb.addPermanentWidget(hint)
+        self.theme_toggle = theme.ThemeToggleButton()
+        sb.addPermanentWidget(self.theme_toggle)
+
+    # ── layout persistence ───────────────────────────────────────────────
+    _LAYOUT_VERSION = 1
+
+    def _restore_layout(self) -> None:
+        store = theme.manager().settings
+        if store is None:
+            return
+        geo = store.value("window/geometry")
+        state = store.value("window/state")
+        try:
+            if geo is not None:
+                self.restoreGeometry(geo)
+            if state is not None:
+                self.restoreState(state, self._LAYOUT_VERSION)
+        except TypeError:
+            pass
+        self._sync_pane_toggle(self.left_handle,
+                               self.devices_dock.isVisible())
+        self._sync_pane_toggle(self.right_handle,
+                               self.planner_dock.isVisible())
+
+    def _save_layout(self) -> None:
+        store = theme.manager().settings
+        if store is None:
+            return
+        store.setValue("window/geometry", self.saveGeometry())
+        store.setValue("window/state", self.saveState(self._LAYOUT_VERSION))
+        store.sync()
+
+    def _reset_layout(self) -> None:
+        for dock, area in ((self.devices_dock,
+                            Qt.DockWidgetArea.LeftDockWidgetArea),
+                           (self.planner_dock,
+                            Qt.DockWidgetArea.RightDockWidgetArea),
+                           (self.console_dock,
+                            Qt.DockWidgetArea.BottomDockWidgetArea)):
+            dock.setFloating(False)
+            self.addDockWidget(area, dock)
+            dock.show()
+        self.resizeDocks([self.devices_dock, self.planner_dock],
+                         [LEFT_DOCK_WIDTH, RIGHT_DOCK_WIDTH],
+                         Qt.Orientation.Horizontal)
+        self.console.log("layout reset to defaults")
 
     def _open_documentation(self) -> None:
         """Help ▸ Documentation — open docs/index.html in the browser."""
@@ -1735,6 +1851,7 @@ class FreestreamMainWindow(QMainWindow):
 
     # ── shutdown ─────────────────────────────────────────────────────────
     def closeEvent(self, event) -> None:               # noqa: N802
+        self._save_layout()
         if self.engine is not None:
             self.engine.abort()
         self._release_operator_wait("window close")    # unblock the worker

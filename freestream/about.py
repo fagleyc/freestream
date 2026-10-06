@@ -12,13 +12,19 @@ sweep-grammar unification, run-book import, ATE truth-naming, ...)
 rather than from commit dates.
 """
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 APP_NAME = "Freestream"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
 
 # (version, iso_date, one_line) — newest first.
 VERSION_HISTORY = [
+    ("2.3.0", "2026-10-02",
+     "Live themes (USAFA Night/Day in official Academy colors, Classic "
+     "Dark/Light, High Contrast) from View ▸ Theme or the status-bar "
+     "chip; Appearance dialog with UI scale + density; Ctrl+K command "
+     "palette; saved window/dock layout + Reset Layout; branded command "
+     "header, splash and About; theme-aware sweep-table row tints"),
     ("2.2.0", "2026-09-02",
      "South LSWT traverse mode (LSWT-S-Traverse-NI), lswt_traverse "
      "adapter, speed steps in x/y/z sweeps, named saved custom modes, "

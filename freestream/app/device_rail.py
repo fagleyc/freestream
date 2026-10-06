@@ -20,12 +20,16 @@ from ..manager import DeviceManager
 
 _PILL_CSS = ("border-radius: 8px; padding: 1px 8px; font-weight: bold; "
              "font-size: 8pt;")
-_STATE_STYLE = {
-    OK: f"background: {theme.SUCCESS}; color: white; {_PILL_CSS}",
-    FAULT: f"background: {theme.ERROR}; color: white; {_PILL_CSS}",
-    "OFFLINE": (f"background: {theme.SURFACE}; color: {theme.TEXT_DIM}; "
-                f"{_PILL_CSS}"),
-}
+def _state_style(state) -> str:
+    """Pill CSS for a device state, from the ACTIVE palette."""
+    if state == OK:
+        return (f"background: {theme.SUCCESS}; color: {theme.ON_ACCENT}; "
+                f"{_PILL_CSS}")
+    if state == FAULT:
+        return (f"background: {theme.ERROR}; color: {theme.ON_ACCENT}; "
+                f"{_PILL_CSS}")
+    return (f"background: {theme.SURFACE}; color: {theme.TEXT_DIM}; "
+            f"border: 1px solid {theme.BORDER}; {_PILL_CSS}")
 
 
 class DeviceCard(QFrame):
@@ -76,7 +80,7 @@ class DeviceCard(QFrame):
         self.sim_badge.hide()
         top.addWidget(self.sim_badge)
         self.pill = QLabel("OFFLINE")
-        self.pill.setStyleSheet(_STATE_STYLE["OFFLINE"])
+        self.pill.setStyleSheet(_state_style("OFFLINE"))
         top.addWidget(self.pill)
         lay.addLayout(top)
 
@@ -110,8 +114,7 @@ class DeviceCard(QFrame):
 
     def refresh(self, st: DeviceStatus) -> None:
         self.pill.setText(st.state)
-        self.pill.setStyleSheet(_STATE_STYLE.get(st.state,
-                                                 _STATE_STYLE["OFFLINE"]))
+        self.pill.setStyleSheet(_state_style(st.state))
         self.sim_badge.setVisible(bool(st.sim))
         if st.last_sample_age_s is None:
             self.age_lbl.setText("last sample: —")

@@ -99,10 +99,10 @@ class ResultsPanel(QWidget):
             symbol="o", symbolSize=7,
             symbolBrush=theme.series_color(0), name="α̇ > 0 (up)")
         self._scatter_dn = self._p_metric.plot(
-            [], [], pen=pg.mkPen(theme.series_color(5), width=2,
+            [], [], pen=pg.mkPen(theme.series_color(1), width=2,
                                  style=Qt.PenStyle.DashLine),
             symbol="t", symbolSize=7,
-            symbolBrush=theme.series_color(5), name="α̇ < 0 (down)")
+            symbolBrush=theme.series_color(1), name="α̇ < 0 (down)")
         self._map_scatter = self._p_map.plot(
             [], [], pen=None, symbol="o", symbolSize=8,
             symbolBrush=theme.series_color(2))

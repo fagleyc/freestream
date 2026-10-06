@@ -1,172 +1,105 @@
-﻿"""Dark theme for Freestream (Streamlined family palette).
+"""Freestream theme — thin wrapper over :mod:`freestream.themekit`.
 
-Self-contained copy of the ``Streamlined`` palette (VS-Code-style dark:
-``#1e1e1e`` background, ``#0078d4`` accent) so this standalone app is visually
-consistent with the Streamlined GUI it integrates with.
+The module-level color names (``BG``, ``TEXT_DIM``, ``ACCENT``…) and
+``PALETTE`` are LIVE: the theme manager rewrites them whenever the user
+switches theme, so code that reads ``theme.TEXT_DIM`` at paint/build time
+always gets the active palette. Don't copy them into module-level
+constants at import time — read them when you need them.
+
+Themes: USAFA Night (default), USAFA Day, Classic Dark (the original
+palette), Classic Light, High Contrast. View ▸ Theme / Appearance… switch
+them live; the choice persists between sessions.
 """
 
-# â”€â”€ palette (Streamlined DarkTheme) â”€â”€
-BG = "#1e1e1e"
-BG_LIGHT = "#252526"
-BG_LIGHTER = "#2d2d30"
-SURFACE = "#333333"
+from __future__ import annotations
 
-TEXT = "#e0e0e0"
-TEXT_DIM = "#a0a0a0"
-TEXT_DISABLED = "#606060"
+import sys
 
-ACCENT = "#0078d4"
-ACCENT_LIGHT = "#3399ff"
-ACCENT_DARK = "#005a9e"
+from . import themekit
+from .themekit import (AppearanceDialog, BrandBadge, CommandPalette,  # noqa: F401
+                       PALETTES, ThemeToggleButton, app_icon, current,
+                       install_view_menu, logo_pixmap, make_splash_pixmap,
+                       manager, mix)
 
-SUCCESS = "#4caf50"
-WARNING = "#ff9800"
-ERROR = "#f44336"
+# ── palette (initial values = USAFA Night; rewritten live on switch) ──
+BG = BG_LIGHT = BG_LIGHTER = SURFACE = ""
+TEXT = TEXT_DIM = TEXT_DISABLED = ON_ACCENT = ""
+ACCENT = ACCENT_LIGHT = ACCENT_DARK = INDICATOR = ""
+SUCCESS = WARNING = ERROR = INFO = ""
+BORDER = BORDER_LIGHT = SELECTION = HOVER = ""
+HEADER_BG = HEADER_TEXT = HEADER_DIM = ""
+PLOT_BG = PLOT_FIG = GRID = AXIS = ""
+ROW_ACTIVE = ROW_DONE = ROW_FAILED = ""
 
-BORDER = "#3f3f46"
-SELECTION = "#264f78"
-HOVER = "#3a3a3c"
-
-# â”€â”€ data-viz series palette (validated categorical set, dark surface) â”€â”€
+# ── data-viz series palette (categorical, CVD-validated per surface) ──
 # Channels get colors by enabled order; a color follows its channel in every
-# panel.  All â‰¥3:1 contrast on BG_LIGHT; order is the CVD-safe reference order.
-PALETTE = [
-    "#3987e5",   # blue    (slot 1 â€” Pdiff in the standard setup)
-    "#199e70",   # aqua    (slot 2 â€” Ptot)
-    "#c98500",   # yellow  (slot 3 â€” Temp)
-    "#008300",   # green
-    "#9085e9",   # violet
-    "#e66767",   # red
-    "#d55181",   # magenta
-    "#d95926",   # orange
-]
+# panel. Updated IN PLACE on theme switch (dark/light-stepped hues, same
+# order), so hold the list, not its items.
+PALETTE: list = []
+
+themekit.manager().register_sink(sys.modules[__name__], series_list=PALETTE)
 
 
 def series_color(index: int) -> str:
     return PALETTE[index % len(PALETTE)]
 
-# Chart chrome (recessive grid/axis ink for pyqtgraph)
-PLOT_BG = BG_LIGHT
-GRID = "#2c2c2a"
-AXIS = "#4a4a4f"
+
+def _extra_css(p, scale, density) -> str:
+    c = p.tokens
+    return f"""
+    /* Freestream: command bar sits on the brand header color */
+    QToolBar#commandBar {{ background-color: {c['HEADER_BG']};
+        border-bottom: 2px solid {c['INDICATOR'] if p.branded else c['BORDER']}; }}
+    QToolBar#commandBar QLabel {{ color: {c['HEADER_TEXT']}; }}
+    QToolBar#commandBar QLabel#brandTitle {{ color: {c['HEADER_TEXT']}; }}
+    QToolBar#commandBar QLabel#brandSub {{ color: {c['HEADER_DIM']}; }}
+    QToolBar#commandBar::separator {{ background-color: {mix(c['HEADER_BG'], c['HEADER_TEXT'], 0.25)}; }}
+    QToolBar#commandBar QComboBox {{ background-color: {mix(c['HEADER_BG'], c['HEADER_TEXT'], 0.10)};
+        border-color: {mix(c['HEADER_BG'], c['HEADER_TEXT'], 0.28)}; color: {c['HEADER_TEXT']}; }}
+    QWidget#barSpacer {{ background: transparent; }}
+    QLabel#headerStatus {{ color: {c['HEADER_DIM']}; padding: 0 10px; }}
+    QLabel#simBadge {{ background: {c['ACCENT_DARK'] if not p.branded else c['ACCENT']};
+        color: {c['ON_ACCENT']}; border-radius: 9px; padding: 3px 12px;
+        font-weight: bold; letter-spacing: 1px; }}
+    QLabel#simBadge[live="true"] {{ background: {c['ERROR']}; }}
+    QPushButton#paneHandle {{ background: transparent; border: none;
+        color: {c['TEXT_DIM']}; font-size: 8pt; padding: 0; min-height: 0; }}
+    QPushButton#paneHandle:hover {{ background: {c['SURFACE']};
+        color: {c['ACCENT_LIGHT']}; border-radius: 3px; }}
+    QPushButton#paneHandle:checked {{ background: transparent;
+        color: {c['TEXT_DIM']}; font-weight: normal; }}
+    QPushButton#paneHandle:checked:hover {{ background: {c['SURFACE']};
+        color: {c['ACCENT_LIGHT']}; }}
+    QToolBar#commandBar QPushButton[flat_header="true"] {{
+        background-color: {mix(c['HEADER_BG'], c['HEADER_TEXT'], 0.10)};
+        border-color: {mix(c['HEADER_BG'], c['HEADER_TEXT'], 0.28)}; color: {c['HEADER_TEXT']}; }}
+    QToolBar#commandBar QPushButton[flat_header="true"]:hover {{
+        background-color: {mix(c['HEADER_BG'], c['HEADER_TEXT'], 0.18)}; }}
+    QToolBar#commandBar QPushButton[flat_header="true"]:disabled {{
+        background-color: {mix(c['HEADER_BG'], c['HEADER_TEXT'], 0.05)};
+        color: {mix(c['HEADER_BG'], c['HEADER_TEXT'], 0.40)}; }}
+    """
+
+
+themekit.manager().add_stylesheet_extra(_extra_css)
 
 
 def get_stylesheet() -> str:
-    return f"""
-    QMainWindow, QWidget#root {{ background-color: {BG}; }}
-    QWidget {{ background-color: {BG}; color: {TEXT};
-               font-family: "Segoe UI", sans-serif; font-size: 10pt; }}
+    """The active theme's full application stylesheet."""
+    return themekit.manager().stylesheet()
 
-    QGroupBox {{ background-color: {BG_LIGHT}; border: 1px solid {BORDER};
-                 border-radius: 6px; margin-top: 12px; padding-top: 10px;
-                 font-weight: bold; }}
-    QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;
-                        left: 10px; padding: 0 5px; color: {ACCENT_LIGHT}; }}
 
-    QLabel {{ background: transparent; color: {TEXT}; }}
-    QLabel#dim {{ color: {TEXT_DIM}; }}
-    QLabel#mono {{ font-family: "Consolas", monospace; color: {SUCCESS}; }}
-    QLabel#value {{ font-family: "Consolas", monospace; font-size: 17pt;
-                    color: {ACCENT_LIGHT}; }}
-    QLabel#unit {{ color: {TEXT_DIM}; }}
-
-    QPushButton {{ background-color: {SURFACE}; border: 1px solid {BORDER};
-                   border-radius: 4px; padding: 6px 14px; color: {TEXT};
-                   min-height: 22px; }}
-    QPushButton:hover {{ background-color: {HOVER}; border-color: {ACCENT}; }}
-    QPushButton:pressed {{ background-color: {ACCENT_DARK}; }}
-    QPushButton:disabled {{ background-color: {BG_LIGHTER}; color: {TEXT_DISABLED}; }}
-    QPushButton:checked {{ background-color: {ACCENT}; border-color: {ACCENT};
-                           color: white; font-weight: bold; }}
-    QPushButton#primary {{ background-color: {ACCENT}; border: none; color: white;
-                           font-weight: bold; }}
-    QPushButton#primary:hover {{ background-color: {ACCENT_LIGHT}; }}
-    QPushButton#success {{ background-color: {SUCCESS}; border: none; color: white;
-                           font-weight: bold; }}
-    QPushButton#danger {{ background-color: {ERROR}; border: none; color: white;
-                          font-weight: bold; }}
-    QPushButton#primary:disabled, QPushButton#success:disabled,
-    QPushButton#danger:disabled {{ background-color: {BG_LIGHTER};
-                                   color: {TEXT_DISABLED}; }}
-
-    QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-        background-color: {SURFACE}; border: 1px solid {BORDER};
-        border-radius: 4px; padding: 5px 8px; color: {TEXT};
-        selection-background-color: {ACCENT}; }}
-    QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
-        border-color: {ACCENT}; }}
-    QComboBox QAbstractItemView {{ background-color: {SURFACE};
-        border: 1px solid {BORDER}; selection-background-color: {SELECTION};
-        color: {TEXT}; }}
-
-    QTableWidget {{ background-color: {BG_LIGHT}; border: 1px solid {BORDER};
-                    border-radius: 4px; gridline-color: {BORDER};
-                    font-family: "Consolas", monospace; }}
-    QTableWidget::item:selected {{ background-color: {SELECTION}; }}
-    QHeaderView::section {{ background-color: {BG_LIGHTER}; border: none;
-        border-right: 1px solid {BORDER}; border-bottom: 1px solid {BORDER};
-        padding: 6px; color: {ACCENT_LIGHT}; font-weight: bold; }}
-
-    QTabWidget::pane {{ background-color: {BG_LIGHT}; border: 1px solid {BORDER};
-                        border-radius: 4px; top: -1px; }}
-    QTabBar::tab {{ background-color: {BG_LIGHTER}; border: 1px solid {BORDER};
-                    border-bottom: none; border-top-left-radius: 4px;
-                    border-top-right-radius: 4px; padding: 8px 18px;
-                    margin-right: 2px; color: {TEXT_DIM}; }}
-    QTabBar::tab:selected {{ background-color: {BG_LIGHT}; color: {TEXT};
-                             border-bottom: 2px solid {ACCENT}; }}
-    QTabBar::tab:hover:!selected {{ background-color: {HOVER}; color: {TEXT}; }}
-
-    QCheckBox {{ spacing: 8px; color: {TEXT}; }}
-    QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {BORDER};
-        border-radius: 3px; background-color: {SURFACE}; }}
-    QCheckBox::indicator:checked {{ background-color: {ACCENT};
-        border-color: {ACCENT}; }}
-
-    QToolBar {{ background-color: {BG}; border: none;
-                padding: 5px 8px; spacing: 8px; }}
-    QToolBar::separator {{ background-color: {BORDER}; width: 1px;
-                           margin: 5px 8px; }}
-
-    QStatusBar {{ background-color: {BG_LIGHT}; border-top: 1px solid {BORDER};
-                  color: {TEXT_DIM}; }}
-    QMenuBar {{ background-color: {BG_LIGHT}; border-bottom: 1px solid {BORDER}; }}
-    QMenuBar::item {{ padding: 4px 10px; }}
-    QMenuBar::item:selected {{ background-color: {HOVER}; }}
-    QMenu {{ background-color: {SURFACE}; border: 1px solid {BORDER};
-             padding: 4px; }}
-    QMenu::item {{ padding: 6px 24px 6px 12px; border-radius: 3px; }}
-    QMenu::item:selected {{ background-color: {SELECTION}; }}
-    QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 8px; }}
-
-    QToolTip {{ background-color: {SURFACE}; color: {TEXT};
-                border: 1px solid {ACCENT}; padding: 4px 8px; }}
-
-    QSplitter::handle {{ background-color: {BORDER}; }}
-    QSplitter::handle:vertical {{ height: 3px; }}
-    QSplitter::handle:horizontal {{ width: 3px; }}
-    QSplitter::handle:hover {{ background-color: {ACCENT}; }}
-
-    QScrollBar:vertical {{ background: {BG_LIGHT}; width: 12px; margin: 0; }}
-    QScrollBar::handle:vertical {{ background: {SURFACE}; border-radius: 5px;
-                                   min-height: 24px; margin: 2px; }}
-    QScrollBar::handle:vertical:hover {{ background: {HOVER}; }}
-    QScrollBar:horizontal {{ background: {BG_LIGHT}; height: 12px; margin: 0; }}
-    QScrollBar::handle:horizontal {{ background: {SURFACE}; border-radius: 5px;
-                                     min-width: 24px; margin: 2px; }}
-    QScrollBar::handle:horizontal:hover {{ background: {HOVER}; }}
-    QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
-    QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
-
-    QDialog {{ background-color: {BG}; }}
-    """
+def ensure_applied() -> None:
+    """Apply the active theme to the running QApplication once (window
+    constructors call this; entry points call ``manager().init``)."""
+    themekit.manager().ensure_applied()
 
 
 def apply_pyqtgraph_theme() -> None:
-    """Set pyqtgraph global options to match the dark palette.
+    """Set pyqtgraph global options to the active palette.
 
-    Call once before any plot widget is created.
-    """
+    Call before plot widgets are created (the manager re-calls it on every
+    theme switch and restyles existing plots)."""
     import pyqtgraph as pg
     pg.setConfigOption("background", PLOT_BG)
     pg.setConfigOption("foreground", TEXT_DIM)

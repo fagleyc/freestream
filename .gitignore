@@ -32,3 +32,5 @@ devices/tests/_state_scratch.json
 devices/lswt_traverse/LSWT-S Traverse Photos/
 devices/lswt_traverse/Tool_SSWT_Traverse/bin/
 devices/lswt_traverse/Tool_SSWT_Traverse/obj/
+# stale pre-rename copy of aux_source.py; AUX is a reserved Windows name
+devices/ate_balance/aux.py
