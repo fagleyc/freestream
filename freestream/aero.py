@@ -69,6 +69,10 @@ class AeroResult:
     warn: bool = False
     worst_channel: str = ""
     worst_util: float = 0.0
+    #: Force|Moment actually used (the .vol declaration wins), and a note
+    #: when that overrode the requested layout
+    balance_config: str = "Force"
+    config_note: str = ""
 
     def means(self) -> Dict[str, float]:
         """Scalar mean of every load/coefficient (for tiles + result rows)."""
@@ -125,6 +129,20 @@ def wind_axis(body: Dict[str, np.ndarray], alpha_deg, beta_deg=0.0
     }
 
 
+def declared_balance_config(cal) -> Optional[str]:
+    """'Force'/'Moment' from the .vol 'Balance Type' declaration
+    ('5 Force/1 Moment' -> Force; '5 Moment/1 Force', '1-Force / 5-Moment'
+    -> Moment), or None when it declares neither. Mirrors Streamlined's
+    calibration.balance_config_from_type."""
+    import re
+    text = str(getattr(getattr(cal, "description", None),
+                       "balance_type", "") or "")
+    f = re.search(r"(\d+)\s*-?\s*Force", text, re.IGNORECASE)
+    m = re.search(r"(\d+)\s*-?\s*Moment", text, re.IGNORECASE)
+    nf, nm = (int(f.group(1)) if f else 0), (int(m.group(1)) if m else 0)
+    return "Force" if nf > nm else "Moment" if nm > nf else None
+
+
 def compute_aero(raw_volts: Dict[str, np.ndarray], cal, alpha_deg,
                  beta_deg=0.0, balance_config: str = "Force",
                  q: Optional[float] = None,
@@ -143,6 +161,15 @@ def compute_aero(raw_volts: Dict[str, np.ndarray], cal, alpha_deg,
     geom : model reference geometry.
     """
     from strainbook_616 import balcal
+    # The calibration defines what its elements ARE: a force balance run
+    # through the moment equations read CL ~2.75x low (F16 check model,
+    # 100 lb force balance under the 'Moment' layout, 2026-10-06).
+    declared = declared_balance_config(cal)
+    note = ""
+    if declared and declared != balance_config:
+        note = (f"layout '{balance_config}' overridden: the .vol declares "
+                f"'{cal.description.balance_type}' ({declared} balance)")
+        balance_config = declared
     brf = balcal.calc_brf_forces(raw_volts, cal,
                                  balance_config=balance_config)
     body = {f: np.asarray(getattr(brf, f), dtype=float) for f in _BODY_FIELDS}
@@ -170,4 +197,5 @@ def compute_aero(raw_volts: Dict[str, np.ndarray], cal, alpha_deg,
         body=body, wind=wind, coeffs=coeffs, elements=brf.elements,
         utilization=util, overstress=worst >= 1.0,
         warn=worst >= warn_utilization,
-        worst_channel=worst_name, worst_util=worst)
+        worst_channel=worst_name, worst_util=worst,
+        balance_config=balance_config, config_note=note)

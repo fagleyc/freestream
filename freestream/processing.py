@@ -99,7 +99,8 @@ def process_run(run_dir, config=None, facility: str = "",
     matplotlib.use("Agg")            # utils.windtunnel imports plotting
 
     from utils.windtunnel.calibration import (balance_cal_from_matrix,
-                                              calc_coeffs, read_vol_file)
+                                              calc_coeffs, read_vol_file,
+                                              resolve_balance_config)
     from utils.windtunnel.data_io import (copy_balance_markers,
                                           find_run_balance_cal,
                                           read_run_file,
@@ -175,6 +176,12 @@ def process_run(run_dir, config=None, facility: str = "",
                 "from an internal balance, so a .vol is required. Stage "
                 "one beside the run files or record with an injected "
                 "calibration matrix.")
+        # the .vol's declared type decides Force vs Moment (a force
+        # balance recorded under the Moment layout read CL ~2.75x low)
+        balance_config, conflict = resolve_balance_config(
+            cal, balance_config)
+        if conflict:
+            log(f"WARNING: {conflict}")
 
     geo_d = _geometry_from(cfg_snap, config)
     S = float(geo_d.get("ref_area") or 1.0)

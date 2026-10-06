@@ -329,6 +329,15 @@ class ForcesPanel(QWidget):
         self.config.cal_type = self._loaded_fit
         self.vol_lbl.setText(Path(path).name)
         self.info.setText(balance_summary(cal) + f"   [{Path(path).name}]")
+        # the .vol decides Force vs Moment (compute_aero enforces it); say
+        # so up front when the configured layout disagrees
+        from ..aero import declared_balance_config
+        declared = declared_balance_config(cal)
+        if declared and declared != (self._layout or "Force"):
+            self.info.setText(
+                self.info.text() + f"   — reduced as a {declared} balance "
+                f"(the .vol declares it; the '{self._layout}' layout is "
+                f"overridden)")
         for i, name in enumerate(cal.force_channels[:6]):
             self.util_labels[i].setText(name)
             limit = cal.max_loads.values.get(name)
