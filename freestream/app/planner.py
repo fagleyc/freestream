@@ -35,24 +35,28 @@ from ..runsheet import (SweepPoint, build_grid, load_runsheet,
 from ..sweep import PointOutcome
 from .runsheet_dialog import RunSheetDialog
 
-_STATUS_COLOR = {
-    "queued": theme.TEXT_DIM,
-    "moving": theme.WARNING,
-    "acquiring": theme.WARNING,
-    "done": theme.SUCCESS,
-    "failed": theme.ERROR,
-    "skipped": theme.TEXT_DISABLED,
+#: status → palette token for the status cell's text. Tokens (not colors)
+#: so a live theme switch recolors the table.
+_STATUS_TOKEN = {
+    "queued": "TEXT_DIM",
+    "moving": "WARNING",
+    "acquiring": "WARNING",
+    "done": "SUCCESS",
+    "failed": "ERROR",
+    "skipped": "TEXT_DISABLED",
 }
 
 #: per-status ROW tint for the point table, so the operator can read sweep
 #: progress at a glance from across the control room. Deliberately muted —
-#: these sit behind text on the dark theme. None = leave the row untinted
-#: (queued points stay plain, so the worked-through frontier is obvious).
-_STATUS_ROW_BG = {
-    "moving": "#3a3115",
-    "acquiring": "#3a3115",
-    "done": "#1b2a1b",
-    "failed": "#3a1d1b",
+#: a light wash of the status color over the panel surface (themekit
+#: ROW_* tokens), so text stays readable in light and dark themes alike.
+#: None = leave the row untinted (queued points stay plain, so the
+#: worked-through frontier is obvious).
+_STATUS_ROW_TOKEN = {
+    "moving": "ROW_ACTIVE",
+    "acquiring": "ROW_ACTIVE",
+    "done": "ROW_DONE",
+    "failed": "ROW_FAILED",
     "skipped": None,
     "queued": None,
 }
@@ -64,6 +68,10 @@ _ACTIVE_STATUSES = ("moving", "acquiring")
 #: axis-set definitions per positioner family: (field, row label, hint).
 #: "aero" = attitude sweeps (crescent/ate + tunnel); "xyz" = the Mode-3
 #: traverse position matrix (x innermost — see runsheet.DEFAULT_ORDER).
+#: Both sets carry the speed row ("mach" — nested OUTERMOST by
+#: runsheet.DEFAULT_ORDER), so a traverse flow survey can step the
+#: tunnel speed too; its label/hint are re-skinned per the configured
+#: speed unit in _populate_axis_rows.
 _AXIS_SETS = {
     "aero": (
         ("alpha", "alpha [deg]", "e.g. -4:2:8  (start:delta:end)"),
@@ -74,6 +82,7 @@ _AXIS_SETS = {
         ("x", "X [in]", "e.g. 0:0.5:12  (start:delta:end)"),
         ("y", "Y [in]", "e.g. 0:1:6  (blank = omit)"),
         ("z", "Z [in]", "e.g. 0  or  0,3,6"),
+        ("mach", "mach", "e.g. 0.3  or  0.3,0.5,0.7  (blank = omit)"),
     ),
 }
 
@@ -166,7 +175,7 @@ class PlannerPanel(QWidget):
         btns.addWidget(self.import_btn)
         lay.addLayout(btns)
 
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, len(self._table_cols()))
         self.table.setHorizontalHeaderLabels(self._table_cols())
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(
@@ -217,6 +226,8 @@ class PlannerPanel(QWidget):
 
         self._update_indicator()
 
+        theme.manager().changed.connect(self._on_theme_changed)
+
     def set_config(self, config: FreestreamConfig) -> None:
         """Adopt a freshly loaded config (source of dwell/samples).
         The loaded config may carry a different speed unit — refresh
@@ -244,17 +255,29 @@ class PlannerPanel(QWidget):
     def _speed_row_label(self) -> str:
         return f"speed [{speed.LABELS[self._speed_unit()]}]"
 
+    def _speed_row_hint(self) -> str:
+        """The speed-row placeholder for the ACTIVE axis mode: the aero
+        set keeps speed.PLANNER_HINTS verbatim; the xyz (traverse) set
+        drops the "(air-off 0 added)" note — the traverse planner does
+        NOT auto-prepend the air-off point (see _build_clicked)."""
+        hint = speed.PLANNER_HINTS[self._speed_unit()]
+        if self.axis_mode != "aero":
+            hint = (hint.replace("; air-off 0 added", "")
+                        .replace("  (air-off 0 added)", ""))
+        return hint
+
     def _refresh_speed_unit(self) -> None:
-        """Re-skin everything that names the speed unit (no rebuild)."""
-        if self.axis_mode == "aero":
-            unit = self._speed_unit()
-            lbl = self._axis_labels.get("mach")
-            if lbl is not None:
-                lbl.setText(self._speed_row_label())
-            edit = self._axis_edits.get("mach")
-            if edit is not None:
-                edit.setPlaceholderText(speed.PLANNER_HINTS[unit])
-        self.table.setHorizontalHeaderLabels(self._table_cols())
+        """Re-skin everything that names the speed unit (no rebuild).
+        Both axis modes carry the speed row now, so the label/placeholder
+        refresh is mode-agnostic (the .get() guards cover axis sets
+        without one)."""
+        lbl = self._axis_labels.get("mach")
+        if lbl is not None:
+            lbl.setText(self._speed_row_label())
+        edit = self._axis_edits.get("mach")
+        if edit is not None:
+            edit.setPlaceholderText(self._speed_row_hint())
+        self._reshape_table_columns()
         self._update_indicator()
 
     # legacy accessors (pre-axis-mode API); only valid in "aero" mode
@@ -280,12 +303,27 @@ class PlannerPanel(QWidget):
             name = f[0]
             # the mach column header shows the ENTERED unit (the cells
             # display what the operator typed); canonical mach keeps
-            # the historical plain header
-            if name == "mach" and self.axis_mode == "aero" \
-                    and self._speed_unit() != "mach":
+            # the historical plain header. Applies in BOTH axis modes —
+            # the xyz set carries the speed row too.
+            if name == "mach" and self._speed_unit() != "mach":
                 name = self._speed_row_label()
             cols.append(name)
         return ("#", *cols, "status")
+
+    def _reshape_table_columns(self) -> None:
+        """(Re)shape the point table to the active axis set: column count
+        (aero = 5, xyz = 6 — the traverse set carries a speed column),
+        header labels, and per-column sizing (content-sized parameters,
+        the status column takes the slack via the stretchy last
+        section)."""
+        cols = self._table_cols()
+        if self.table.columnCount() != len(cols):
+            self.table.setColumnCount(len(cols))
+            header = self.table.horizontalHeader()
+            for col in range(len(cols) - 1):
+                header.setSectionResizeMode(
+                    col, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setHorizontalHeaderLabels(cols)
 
     def _populate_axis_rows(self) -> None:
         while self._axis_grid.count():
@@ -296,11 +334,12 @@ class PlannerPanel(QWidget):
         self._axis_edits.clear()
         self._axis_labels.clear()
         for row, (field_name, label, hint) in enumerate(self._axis_fields()):
-            if field_name == "mach" and self.axis_mode == "aero":
+            if field_name == "mach":
                 # the tunnel row speaks the CONFIGURED speed unit
-                # (freestream.speed); the canonical axis stays Mach
+                # (freestream.speed) in BOTH axis modes; the canonical
+                # axis stays Mach (xyz hints drop the air-off-0 note)
                 label = self._speed_row_label()
-                hint = speed.PLANNER_HINTS[self._speed_unit()]
+                hint = self._speed_row_hint()
             edit = QLineEdit()
             edit.setPlaceholderText(hint)
             edit.setToolTip("Axis vector: start:delta:end range (the MIDDLE "
@@ -326,7 +365,7 @@ class PlannerPanel(QWidget):
         self._run_row = None
         self._named = {}
         self._populate_axis_rows()
-        self.table.setHorizontalHeaderLabels(self._table_cols())
+        self._reshape_table_columns()
         self.set_points([])
         self._update_indicator()
         self.message.emit(
@@ -351,15 +390,23 @@ class PlannerPanel(QWidget):
         # z → y → x innermost); dwell/samples from the ONE config. In aero
         # mode the mach axis gets the auto-prepended air-off 0 (workbook
         # grammar), so a manual Build Grid matches what a run sheet would.
+        # The xyz (traverse) set does NOT auto-prepend it: the air-off
+        # pass exists for BALANCE weight tares as the model attitude
+        # changes; a flow survey moves a probe, not the model, and speed
+        # nests OUTERMOST — a forced 0 would prepend the ENTIRE spatial
+        # matrix at air-off. An operator who wants a tare pass types the
+        # 0 explicitly. Speed-unit conversion + entered-value meta
+        # stamping are identical in both modes.
         specs: dict = {}
-        unit = self._speed_unit() if self.axis_mode == "aero" else "mach"
+        unit = self._speed_unit()
         value_by_mach = None          # canonical mach → entered value
         for name, edit in self._axis_edits.items():
             spec = self._spec(edit)
-            if (name == "mach" and self.axis_mode == "aero" and spec):
+            if name == "mach" and spec:
                 try:
                     entered = sweepgrammar.expand(
-                        spec, named=self._named, ensure_zero_for_mach=True)
+                        spec, named=self._named,
+                        ensure_zero_for_mach=(self.axis_mode == "aero"))
                 except sweepgrammar.GrammarError as exc:
                     self.message.emit(f"grid build failed: {exc}")
                     return
@@ -530,7 +577,7 @@ class PlannerPanel(QWidget):
         if self.axis_mode != "aero":
             self.axis_mode = "aero"
             self._populate_axis_rows()
-            self.table.setHorizontalHeaderLabels(self._table_cols())
+            self._reshape_table_columns()
         # fill the axis fields with the run's cells (operator can tweak)
         if run_row is not None:
             for name, cell in (("alpha", run_row.alpha_cell),
@@ -674,15 +721,20 @@ class PlannerPanel(QWidget):
             cell = cells[name]
             is_mach = name == "mach"
             try:
+                # the air-off 0 is only auto-added on the aero set (see
+                # _build_clicked) — the indicator's point count must
+                # match what Build Grid will actually produce
                 vals = sweepgrammar.expand(
                     cell, named=self._named,
-                    ensure_zero_for_mach=is_mach) if cell else []
+                    ensure_zero_for_mach=(
+                        is_mach and self.axis_mode == "aero")) \
+                    if cell else []
             except sweepgrammar.GrammarError:
                 return f"invalid {name} cell: {cell!r}"
             symbol = _AXIS_SYMBOL.get(name, name)
-            if is_mach and self.axis_mode == "aero":
+            if is_mach:
                 # the tunnel-axis symbol follows the entry unit
-                # (M / V / N — freestream.speed)
+                # (M / V / N — freestream.speed) in both axis modes
                 symbol = speed.AXIS_SYMBOLS.get(self._speed_unit(), "M")
             if is_mach and vals:
                 shown = ", ".join(f"{v:g}" for v in vals)
@@ -734,8 +786,9 @@ class PlannerPanel(QWidget):
     def _style_row(self, row: int, status: str) -> None:
         """Tint a whole row for its status — the point being acquired is
         highlighted, completed points read as done, failures stand out."""
-        bg = _STATUS_ROW_BG.get(status)
-        status_fg = QColor(_STATUS_COLOR.get(status, theme.TEXT))
+        tok = _STATUS_ROW_TOKEN.get(status)
+        bg = getattr(theme, tok) if tok else None
+        status_fg = QColor(getattr(theme, _STATUS_TOKEN.get(status, "TEXT")))
         active = status in _ACTIVE_STATUSES
         last_col = self.table.columnCount() - 1
         for col in range(self.table.columnCount()):
@@ -788,6 +841,14 @@ class PlannerPanel(QWidget):
                 item, QAbstractItemView.ScrollHint.PositionAtCenter)
         finally:
             self._programmatic_scroll = False
+
+    def _on_theme_changed(self, *_):
+        """Item colors are baked QColors — repaint every row's status."""
+        try:
+            self._row_status.clear()
+            self.refresh_statuses()
+        except RuntimeError:                           # panel deleted
+            pass
 
     def refresh_statuses(self) -> None:
         if not self.points or self.table.rowCount() != len(self.points):

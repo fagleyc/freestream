@@ -11,7 +11,8 @@ import logging
 import sys
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QSettings
+from PyQt6.QtWidgets import QApplication, QSplashScreen
 
 from .. import theme
 from ..config import FreestreamConfig, defaults_path
@@ -28,9 +29,10 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--mode", default=None,
         help="device mode from the manifest (SWT-AC-Internal, "
-             "SWT-External, SWT-Traverse, LSWT-LSWTSting-NI; legacy "
-             "mode1/mode2/mode3 still accepted). Default: config file / "
-             "SWT-AC-Internal")
+             "SWT-External, SWT-Traverse, LSWT-N-Crescent-NI, "
+             "LSWT-S-Traverse-NI — the South LSWT traverse survey mode; "
+             "legacy mode1/mode2/mode3 still accepted). Default: config "
+             "file / SWT-AC-Internal")
     parser.add_argument("--config", type=Path, default=None,
                         help="FreestreamConfig JSON to load")
     args = parser.parse_args(argv)
@@ -59,11 +61,23 @@ def main(argv=None) -> int:
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Freestream")
-    app.setStyleSheet(theme.get_stylesheet())
+    app.setOrganizationName("USAFA")
+    app.setWindowIcon(theme.app_icon())
+    # theme / UI scale / density / window layout persist per user
+    # (View ▸ Theme, View ▸ Appearance…); the default is USAFA Night
+    theme.manager().init(app, QSettings("USAFA", "Freestream"))
     theme.apply_pyqtgraph_theme()
+
+    from .. import about
+    splash = QSplashScreen(theme.make_splash_pixmap(
+        about.APP_NAME, about.__version__,
+        "Wind tunnel test orchestration & acquisition"))
+    splash.show()
+    app.processEvents()
 
     window = FreestreamMainWindow(config)
     window.show()
+    splash.finish(window)
     return app.exec()
 
 

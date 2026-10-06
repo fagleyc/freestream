@@ -83,12 +83,16 @@ from .config_form import ConfigForm
 # status-lamp pill styles (mirrors the device rail's traffic light)
 _PILL_CSS = ("border-radius: 8px; padding: 2px 10px; font-weight: bold; "
              "font-size: 9pt;")
-_LAMP_STYLE = {
-    OK: f"background: {theme.SUCCESS}; color: white; {_PILL_CSS}",
-    FAULT: f"background: {theme.ERROR}; color: white; {_PILL_CSS}",
-    "OFFLINE": (f"background: {theme.SURFACE}; color: {theme.TEXT_DIM}; "
-                f"{_PILL_CSS}"),
-}
+def _lamp_style(state) -> str:
+    """Pill CSS for a device state, from the ACTIVE palette."""
+    if state == OK:
+        return (f"background: {theme.SUCCESS}; color: {theme.ON_ACCENT}; "
+                f"{_PILL_CSS}")
+    if state == FAULT:
+        return (f"background: {theme.ERROR}; color: {theme.ON_ACCENT}; "
+                f"{_PILL_CSS}")
+    return (f"background: {theme.SURFACE}; color: {theme.TEXT_DIM}; "
+            f"border: 1px solid {theme.BORDER}; {_PILL_CSS}")
 
 
 # ── per-device assembly specs ────────────────────────────────────────────
@@ -164,8 +168,10 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
         # Forces tab — the single editor the Freestream Forces page
         # inherits from (the internal excitation banks are gone — the rig
         # uses an external supply that the driver never commands)
+        # ci_stale_s rides with the counter rows in the embedded
+        # panel's I/O & Trigger tab, like the trigger/AO/counter lists
         skip=("scan_hz", "vol_path", "cal_type", "balance_config",
-              "warn_utilization"),
+              "warn_utilization", "ci_stale_s"),
         # the standalone app's complete panel (live tiles + bridge history
         # + Forces load-limit monitor + Channels table) as the primary tab
         device_panel="strainbook_616.app.main_window:StrainbookPanel",
@@ -188,10 +194,15 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
             ("Communication", ("ogi_ip", "bind_host", "tmsc_port",
                                "tmsd_port", "ogit_port", "connect_mode",
                                "auto_trigger")),
-            ("Reduction reference", ("rho_kg_m3",)),
-            ("Display", ("plot_window_s", "bar_avg_ms")),
+            ("Reduction reference", ("rho_kg_m3", "load_units")),
+            ("Display", ("plot_window_s", "bar_avg_ms",
+                         "display_lpf_hz")),
         ),
-        choices={"connect_mode": ("listen", "dial")},
+        choices={"connect_mode": ("listen", "dial"),
+                 # must match the OGI's own Settings -> Units menu; the
+                 # loads arrive untagged so a mismatch is a silent scale
+                 # error (N read as lb is 4.45x)
+                 "load_units": ("N", "lb", "kg")},
         # acquisition timing is Freestream's samples/dwell, not the OGI's;
         # the model-span mapping (span_config) has exactly ONE editor —
         # the embedded panel's Motion tab combo (which relabels the drive
@@ -300,7 +311,8 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
         # motion tokens.)
         axis_skip=("unit", "enabled", "steps_per_degree", "steps_per_rev",
                    "direction", "zero_offset_deg", "zeroed", "min_deg",
-                   "max_deg", "tolerance_deg", "brake_output"),
+                   "max_deg", "tolerance_deg", "brake_output",
+                   "idle_shutdown"),   # live editor: panel Limits tab
         # the embedded panel's Limits tab is the single live editor for
         # the soft travel limits, park behaviour, poll period and the
         # connect-time Z reset — a second Settings-form editor would
@@ -316,6 +328,10 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
     "ni_daq": _spec(
         sections=(
             ("Communication", ("device_name",)),
+            # oversample: 0 = auto (fill the 1 MS/s aggregate budget);
+            # the ADC runs scan_hz*oversample and averages down to the
+            # suite sample rate — the record stream IS the average
+            ("Acquisition", ("oversample",)),
             ("Buffering", ("buffer_seconds", "poll_ms")),
             ("Analog output", ("ao_update_hz",)),
             ("Balance identity", ("balance_type", "balance_serial")),
@@ -324,8 +340,8 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
         # scan_hz follows the suite-wide sample rate (Measurement Setup);
         # the .vol/fit/layout pointers are edited in the embedded panel's
         # Forces tab — the single editor, exactly like the strainbook
-        # (trigger/AO channel setup lives in the embedded panel's
-        # Output & Trigger tab — nested dataclasses never reach this form)
+        # (trigger/AO/counter/pulse setup lives in the embedded panel's
+        # I/O & Trigger tab — nested dataclasses never reach this form)
         skip=("scan_hz", "vol_path", "cal_type", "balance_config",
               "warn_utilization"),
         # the standalone app's complete panel (live tiles + bridge history
@@ -352,7 +368,38 @@ DEVICE_SPECS: Dict[str, Dict[str, Any]] = {
         device_panel="heise.app.main_window:HeisePanel",
         device_kwarg="device", device_tab="Live && History",
     ),
+    "lswt_traverse": _spec(
+        sections=(
+            ("Communication", ("port", "serial_timeout_s")),
+            ("Monitor", ("poll_s", "drive_status_every",
+                         "move_timeout_s")),
+            ("Display", ("plot_window_s",)),
+        ),
+        axes=(("X axis", "x"), ("Y axis", "y"), ("Z axis", "z")),
+        # SmartStep axis dataclass shape (no Modbus fields, no counts
+        # calibration — the SmartDrives answer PA in user units): soft
+        # travel limits + motion shaping + the "Set home here" datum.
+        axis_sections=(
+            ("Soft travel limits", ("min_in", "max_in", "tolerance_in")),
+            ("Motion shaping", ("velocity_ips", "jog_velocity_ips",
+                                "accel")),
+            ("Referencing", ("home_datum_in", "enabled")),
+        ),
+        # "unit" is the daisy-chain drive address and "label" the fixed
+        # axis caption — rig identity, never per-session dialog fields
+        axis_skip=("unit", "label"),
+        # NO embedded device panel: devices/lswt_traverse/app has no
+        # TraversePanel-equivalent (TraverseMainWindow is a full
+        # QMainWindow, not an embeddable widget), so the dialog is the
+        # Settings form + the three axis tabs only.
+    ),
 }
+
+#: the South LSWT fan is the SAME LswtTunnelAdapter registered under the
+#: "lswt_south" id (manifest ``options: {"tunnel": "south"}``) — it gets
+#: the identical dialog spec (embedded LswtPanel + Settings; the
+#: tunnel/label identity fields stay skipped for the same reasons).
+DEVICE_SPECS["lswt_south"] = DEVICE_SPECS["lswt"]
 
 
 def _import_obj(dotted: str):
@@ -438,8 +485,7 @@ class DeviceConfigDialog(QDialog):
             state = OK if connected else "OFFLINE"
             sim = bool(getattr(self.adapter, "sim", False))
         self.lamp.setText(state + (" · SIM" if sim else ""))
-        self.lamp.setStyleSheet(_LAMP_STYLE.get(state,
-                                                _LAMP_STYLE["OFFLINE"]))
+        self.lamp.setStyleSheet(_lamp_style(state))
         self.conn_btn.setText("Disconnect" if connected else "Connect")
 
     def _toggle_connect(self) -> None:

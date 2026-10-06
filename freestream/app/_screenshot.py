@@ -20,7 +20,9 @@ from .main_window import FreestreamMainWindow      # noqa: E402
 
 def main(out_path: str) -> None:
     app = QApplication.instance() or QApplication([sys.argv[0]])
-    app.setStyleSheet(theme.get_stylesheet())
+    # FREESTREAM_THEME=usafa_day (etc.) picks the theme to capture
+    theme.manager().apply(os.environ.get("FREESTREAM_THEME", "usafa_night"),
+                          persist=False, force=True)
     theme.apply_pyqtgraph_theme()
 
     config = FreestreamConfig(operator="screenshot", config_name="demo",

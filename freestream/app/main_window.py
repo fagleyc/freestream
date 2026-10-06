@@ -18,15 +18,17 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QComboBox, QDialog, QDockWidget, QFileDialog,
                              QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-                             QPushButton, QSizePolicy, QTabWidget,
-                             QTextBrowser, QToolBar, QVBoxLayout, QWidget)
+                             QPushButton, QSizePolicy, QStatusBar,
+                             QTabWidget, QTextBrowser, QToolBar, QVBoxLayout,
+                             QWidget)
 
 from .. import about, theme
-from ..config import FreestreamConfig
+from ..config import (FreestreamConfig, delete_user_mode, load_user_modes,
+                      save_user_mode, user_modes_path)
 from ..hal import Streaming, capabilities
 from ..manager import DeviceManager
 from ..recorder import Hdf5Recorder
@@ -51,6 +53,12 @@ FAKE_MANIFEST = Path(__file__).resolve().parent / "_fake_manifest.json"
 LEFT_DOCK_WIDTH = 300                 # devices rail
 RIGHT_DOCK_WIDTH = 380                # sweep planner
 
+#: mode-combo prefix marking a user-SAVED custom mode (config.py
+#: user_modes.json) — visually separates them from the manifest modes
+#: while keeping the combo a flat, keyboard-searchable list. The raw
+#: saved name never carries the prefix; only the combo item does.
+USER_MODE_PREFIX = "★ "
+
 
 def build_manager(mode: str, sim: bool, on_log=None,
                   custom_devices: Optional[Sequence[str]] = None
@@ -72,6 +80,18 @@ def build_manager(mode: str, sim: bool, on_log=None,
             return DeviceManager.custom(list(custom_devices), sim=sim)
         return DeviceManager(mode, sim=sim)
     except Exception as exc:                           # noqa: BLE001
+        if custom_devices:
+            # a persisted custom set can go STALE (device dropped from
+            # the manifest, driver import broken). Fail soft to the
+            # default manifest mode on the REAL manifest rather than
+            # dragging the whole session into the bundled fakes.
+            _log(f"saved custom device set {list(custom_devices)} failed "
+                 f"({exc.__class__.__name__}: {exc}) — falling back to "
+                 f"the default mode")
+            try:
+                return DeviceManager(sim=sim)
+            except Exception:                          # noqa: BLE001
+                pass                                   # fall through to fakes
         _log(f"real adapter manifest failed ({exc.__class__.__name__}: "
              f"{exc}) — falling back to bundled FAKE adapters")
         root = Path(__file__).resolve().parents[2]     # project root
@@ -182,12 +202,7 @@ class PaneHandle(QPushButton):
         self.setFixedWidth(14)
         self.setSizePolicy(QSizePolicy.Policy.Fixed,
                            QSizePolicy.Policy.Expanding)
-        self.setStyleSheet(
-            "QPushButton { background: transparent; border: none; "
-            f"color: {theme.TEXT_DIM}; font-size: 8pt; padding: 0; }}\n"
-            "QPushButton:hover { background: "
-            f"{theme.SURFACE}; color: {theme.ACCENT_LIGHT}; "
-            "border-radius: 3px; }")
+        self.setObjectName("paneHandle")              # styled by theme.py
         self.toggled.connect(self._update_arrow)
         self._update_arrow(self.isChecked())
 
@@ -207,15 +222,41 @@ class AboutDialog(QDialog):
         super().__init__(parent)
         import html as _html
         self.setWindowTitle(f"About {about.APP_NAME}")
-        self.setFixedSize(560, 520)
+        self.setFixedSize(600, 640)
 
         v = QVBoxLayout(self)
         v.setSpacing(10)
 
+        # brand plate: Aeronautics roundel + USAFA wordmark on white (the
+        # marks are never recolored, so they always sit on a white field)
+        plate = QWidget()
+        plate.setObjectName("aboutPlate")
+        plate.setStyleSheet("QWidget#aboutPlate { background: #ffffff; "
+                            "border-radius: 10px; }")
+        pl = QHBoxLayout(plate)
+        pl.setContentsMargins(18, 14, 18, 14)
+        roundel = QLabel()
+        roundel.setPixmap(theme.logo_pixmap("dfan-aeronautics.png", 96,
+                                            plate=False))
+        roundel.setStyleSheet("background: transparent;")
+        pl.addWidget(roundel)
+        pl.addStretch(1)
+        wordmark = QLabel()
+        wordmark.setPixmap(theme.logo_pixmap("wordmark-horizontal.png", 74,
+                                             plate=False))
+        wordmark.setStyleSheet("background: transparent;")
+        pl.addWidget(wordmark)
+        v.addWidget(plate)
+
         title = QLabel(about.APP_NAME)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 20pt; font-weight: bold;")
+        title.setProperty("role", "heading")
+        title.setStyleSheet("font-size: 22pt;")
         v.addWidget(title)
+        org = QLabel(theme.themekit.ORG_LINE)
+        org.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        org.setObjectName("dim")
+        v.addWidget(org)
 
         ver = QLabel(f"Version {about.__version__}")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -261,8 +302,11 @@ class FreestreamMainWindow(QMainWindow):
         super().__init__()
         self.config = config or FreestreamConfig()
         self.setWindowTitle("Freestream — Wind Tunnel Suite")
+        self.setWindowIcon(theme.app_icon())
         self.resize(1500, 950)
-        self.setStyleSheet(theme.get_stylesheet())
+        # the theme lives on the QApplication (live-switchable from
+        # View ▸ Theme); a per-window sheet would pin the old colors
+        theme.ensure_applied()
 
         startup_msgs: List[str] = []
         self.manager = manager or build_manager(
@@ -270,6 +314,22 @@ class FreestreamMainWindow(QMainWindow):
             custom_devices=(self.config.custom_devices
                             if self.config.mode == DeviceManager.CUSTOM
                             else None))
+        if (self.config.mode == DeviceManager.CUSTOM
+                and self.manager.custom_devices is None):
+            # the persisted custom set could NOT be rebuilt (build_manager
+            # fell back to a manifest mode) — follow the manager so the
+            # combo shows the truth and the next save doesn't re-persist
+            # a broken selection.
+            startup_msgs.append(
+                f"custom device selection cleared — running mode "
+                f"{self.manager.mode!r} instead")
+            self.config.mode = self.manager.mode
+            self.config.custom_devices = []
+            self.config.custom_mode_name = ""
+        #: answers the "configuration folder already exists" question;
+        #: swappable so headless callers and tests skip the dialog
+        from .config_collision import resolve_config_collision
+        self.collision_resolver = resolve_config_collision
         self.recorder = self._make_recorder()
         self.engine: Optional[SweepEngine] = None
         self._connected = False
@@ -290,6 +350,9 @@ class FreestreamMainWindow(QMainWindow):
         self._build_central()
         self._build_docks()
         self._build_menus()
+        self._build_status_bar()
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
         self._update_ui_state()
         if self.config.device_configs:
             # startup defaults / passed-in config carry saved driver
@@ -309,11 +372,16 @@ class FreestreamMainWindow(QMainWindow):
                   activated=self.left_handle.toggle)
         QShortcut(QKeySequence("Ctrl+2"), self,
                   activated=self.right_handle.toggle)
+        # window size + dock layout persist ONLY for real sessions (the
+        # entry point hands the theme manager a QSettings store; tests and
+        # embedded uses never touch the user's registry)
+        QTimer.singleShot(0, self._restore_layout)
 
     # ── construction ─────────────────────────────────────────────────────
     @staticmethod
     def _bar_spacer() -> QWidget:
         spacer = QWidget()
+        spacer.setObjectName("barSpacer")             # transparent on header
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding,
                              QSizePolicy.Policy.Preferred)
         return spacer
@@ -322,26 +390,40 @@ class FreestreamMainWindow(QMainWindow):
         """Mode selector left · Connect-All → E-STOP cluster CENTERED ·
         SIM/LIVE selector + status by the right header."""
         bar = QToolBar("Command")
+        bar.setObjectName("commandBar")               # brand header styling
         bar.setMovable(False)
         bar.setFloatable(False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
+        self.command_bar = bar
+
+        self.brand = theme.BrandBadge(about.APP_NAME,
+                                      "USAFA · Aeronautics Lab", height=34)
+        bar.addWidget(self.brand)
+        bar.addSeparator()
 
         mode_lbl = QLabel("Mode")   # toolbar spacing comes from the theme
         bar.addWidget(mode_lbl)
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(list(self.manager.manifest["modes"]))
-        self.mode_combo.addItem(DeviceManager.CUSTOM)   # pick devices by hand
+        self._populate_mode_combo()
         self.mode_combo.setToolTip(
             "SWT-AC-Internal — crescent sting + StrainBook internal "
             "balance + DaqBook + tunnel PLC.\n"
             "SWT-External — ATE external balance rig + DaqBook + tunnel "
             "PLC.\n"
-            "SWT-Traverse — traverse X/Y/Z matrix + DaqBook.\n"
-            "LSWT-LSWTSting-NI — LSWT sting + NI USB-6351 balance DAQ + "
-            "Heise (Ptot/Temp) + LSWT fan drive (North tunnel).\n"
-            "'custom' opens a picker to choose any device subset.\n"
+            "SWT-Traverse — traverse X/Y/Z matrix + DaqBook + tunnel "
+            "PLC (speed-steppable surveys).\n"
+            "LSWT-N-Crescent-NI — North LSWT: arc-crescent (sting) "
+            "positioner + NI USB-6351 balance DAQ + Heise (Ptot/Temp) + "
+            "LSWT fan drive.\n"
+            "LSWT-S-Traverse-NI — South LSWT: traverse X/Y/Z matrix + NI "
+            "USB-6351 DAQ + Heise (Ptot/Temp) + LSWT fan drive (identical "
+            "fan to North, on the South LAN).\n"
+            f"{USER_MODE_PREFIX}entries — your saved custom modes: "
+            "selecting one builds its saved device set directly.\n"
+            "'custom' opens a picker to choose any device subset (and "
+            "save/delete named modes).\n"
             "Switchable only while disconnected.")
-        self.mode_combo.setCurrentText(self.manager.mode)
+        self.mode_combo.setCurrentText(self._current_mode_item())
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         bar.addWidget(self.mode_combo)
 
@@ -361,12 +443,14 @@ class FreestreamMainWindow(QMainWindow):
         bar.addWidget(self.start_btn)
 
         self.pause_btn = QPushButton("Pause")
+        self.pause_btn.setProperty("flat_header", True)
         self.pause_btn.setMinimumSize(90, 34)
         self.pause_btn.setToolTip("Pause after current point")
         self.pause_btn.clicked.connect(self._toggle_pause)
         bar.addWidget(self.pause_btn)
 
         self.abort_btn = QPushButton("Abort")
+        self.abort_btn.setProperty("flat_header", True)
         self.abort_btn.setMinimumSize(80, 34)
         self.abort_btn.clicked.connect(self._abort)
         bar.addWidget(self.abort_btn)
@@ -394,8 +478,7 @@ class FreestreamMainWindow(QMainWindow):
         bar.addWidget(self.sim_combo)
 
         self.status_lbl = QLabel("disconnected")
-        self.status_lbl.setStyleSheet(f"color: {theme.TEXT_DIM}; "
-                                      "padding: 0 10px;")
+        self.status_lbl.setObjectName("headerStatus")  # styled by theme.py
         bar.addWidget(self.status_lbl)
 
         self.sim_badge = QLabel()
@@ -405,10 +488,13 @@ class FreestreamMainWindow(QMainWindow):
     def _update_sim_badge(self) -> None:
         """Keep the SIM/LIVE badge in sync with the active manager."""
         self.sim_badge.setText("SIM" if self.manager.sim else "LIVE")
-        self.sim_badge.setStyleSheet(
-            "background: {bg}; color: white; border-radius: 8px; "
-            "padding: 3px 12px; font-weight: bold;".format(
-                bg=theme.ACCENT_DARK if self.manager.sim else theme.ERROR))
+        # SIM = calm accent, LIVE = loud red; colors come from the app
+        # stylesheet so a theme switch recolors it (re-polish picks up the
+        # changed property)
+        self.sim_badge.setObjectName("simBadge")
+        self.sim_badge.setProperty("live", not self.manager.sim)
+        self.sim_badge.style().unpolish(self.sim_badge)
+        self.sim_badge.style().polish(self.sim_badge)
 
     def _build_central(self) -> None:
         central = QWidget()
@@ -528,6 +614,7 @@ class FreestreamMainWindow(QMainWindow):
         self.console = ConsolePanel()
         dock = QDockWidget("Run Log", self)
         dock.setObjectName("consoleDock")
+        self.console_dock = dock
         dock.setWidget(self.console)
         dock.setMinimumHeight(120)
         dock.topLevelChanged.connect(
@@ -570,14 +657,48 @@ class FreestreamMainWindow(QMainWindow):
         self.devices_menu = self.menuBar().addMenu("&Devices")
         self.devices_menu.aboutToShow.connect(self._fill_devices_menu)
 
+        # View — panes, theme, appearance, zoom, full screen, command palette
+        view_menu = self.menuBar().addMenu("&View")
+        for text, handle, key in (("Device &Rail", self.left_handle, "Ctrl+1"),
+                                  ("Sweep &Planner", self.right_handle,
+                                   "Ctrl+2")):
+            act = QAction(f"{text}\t{key}", self)
+            act.setCheckable(True)
+            act.setChecked(handle.isChecked())
+            act.toggled.connect(handle.setChecked)
+            handle.toggled.connect(act.setChecked)
+            view_menu.addAction(act)
+        view_menu.addAction(self.console_dock.toggleViewAction())
+        act = QAction("Reset &Layout", self)
+        act.setToolTip("Dock every pane back to its default place and width")
+        act.triggered.connect(self._reset_layout)
+        view_menu.addAction(act)
+        theme.install_view_menu(self, view_menu)
+
         # Advanced — specialist tools that live outside the sweep workflow
         adv_menu = self.menuBar().addMenu("&Advanced")
-        act = QAction("Balance &Calibration…", self)
+        act = QAction("&Internal Balance Calibration…", self)
         act.setToolTip("Open the balance_cal .vol-acquisition window "
                        "(balcal_gui). Shares the live StrainBook when "
                        "Freestream is connected; standalone otherwise.")
         act.triggered.connect(self._open_balance_cal)
         adv_menu.addAction(act)
+        act = QAction("&External Balance Calibration…", self)
+        act.setToolTip(
+            "SPLAT dead-weight check for the ATE external balance: "
+            "step the same load up/down on all six channels, live "
+            "linear fits + residual analysis, full unsteady record "
+            "saved to .mat. Shares the live ATE when connected.")
+        act.triggered.connect(self._open_ext_balcal)
+        adv_menu.addAction(act)
+        self.process_report_act = QAction("&Process && Report…", self)
+        self.process_report_act.setToolTip(
+            "Headlessly reduce the current configuration's run directory "
+            "with Streamlined (calibration + geometry/MRC from this "
+            "session), write Excel + MAT exports and an interactive HTML "
+            "report into a processed/ subdirectory, and open the report.")
+        self.process_report_act.triggered.connect(self._process_report)
+        adv_menu.addAction(self.process_report_act)
 
         # Help — always the LAST menu in the bar
         help_menu = self.menuBar().addMenu("&Help")
@@ -588,6 +709,61 @@ class FreestreamMainWindow(QMainWindow):
         act = QAction(f"&About {about.APP_NAME}", self)
         act.triggered.connect(self._show_about)
         help_menu.addAction(act)
+
+    def _build_status_bar(self) -> None:
+        """Bottom strip: transient messages left, theme chip right."""
+        sb = QStatusBar()
+        sb.setSizeGripEnabled(False)
+        self.setStatusBar(sb)
+        hint = QLabel("Ctrl+K  command palette")
+        hint.setObjectName("hint")
+        sb.addPermanentWidget(hint)
+        self.theme_toggle = theme.ThemeToggleButton()
+        sb.addPermanentWidget(self.theme_toggle)
+
+    # ── layout persistence ───────────────────────────────────────────────
+    _LAYOUT_VERSION = 1
+
+    def _restore_layout(self) -> None:
+        store = theme.manager().settings
+        if store is None:
+            return
+        geo = store.value("window/geometry")
+        state = store.value("window/state")
+        try:
+            if geo is not None:
+                self.restoreGeometry(geo)
+            if state is not None:
+                self.restoreState(state, self._LAYOUT_VERSION)
+        except TypeError:
+            pass
+        self._sync_pane_toggle(self.left_handle,
+                               self.devices_dock.isVisible())
+        self._sync_pane_toggle(self.right_handle,
+                               self.planner_dock.isVisible())
+
+    def _save_layout(self) -> None:
+        store = theme.manager().settings
+        if store is None:
+            return
+        store.setValue("window/geometry", self.saveGeometry())
+        store.setValue("window/state", self.saveState(self._LAYOUT_VERSION))
+        store.sync()
+
+    def _reset_layout(self) -> None:
+        for dock, area in ((self.devices_dock,
+                            Qt.DockWidgetArea.LeftDockWidgetArea),
+                           (self.planner_dock,
+                            Qt.DockWidgetArea.RightDockWidgetArea),
+                           (self.console_dock,
+                            Qt.DockWidgetArea.BottomDockWidgetArea)):
+            dock.setFloating(False)
+            self.addDockWidget(area, dock)
+            dock.show()
+        self.resizeDocks([self.devices_dock, self.planner_dock],
+                         [LEFT_DOCK_WIDTH, RIGHT_DOCK_WIDTH],
+                         Qt.Orientation.Horizontal)
+        self.console.log("layout reset to defaults")
 
     def _open_documentation(self) -> None:
         """Help ▸ Documentation — open docs/index.html in the browser."""
@@ -603,6 +779,93 @@ class FreestreamMainWindow(QMainWindow):
         """Help ▸ About — shared-template About dialog."""
         dlg = AboutDialog(self)
         dlg.exec()
+
+    def _open_ext_balcal(self) -> None:
+        """Advanced ▸ External Balance Calibration — SPLAT window.
+
+        One window per session; shares the live ATE adapter when
+        Freestream is connected in a configuration that has one,
+        otherwise the window owns a standalone (sim-capable) adapter."""
+        win = getattr(self, "_ext_balcal_win", None)
+        if win is not None:
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            return
+        from .ext_balcal import ExternalBalCalWindow
+        shared = None
+        ate = self.manager.devices.get("ate")
+        if self._connected and ate is not None:
+            shared = ate
+        self._ext_balcal_win = ExternalBalCalWindow(
+            adapter=shared, sim=self.manager.sim,
+            data_root=self.config.data_root)
+        self._ext_balcal_win.show()
+        self.console.log(
+            "external balance calibration window opened"
+            + (" — sharing the live ATE" if shared is not None
+               else " (standalone)"))
+
+    def _process_report(self) -> None:
+        """Advanced ▸ Process & Report — headless Streamlined reduction
+        of the current configuration's run directory, in a worker
+        thread; opens the interactive HTML report when done."""
+        from .. import processing
+        run_dir = Path(self.recorder.config_dir)
+        if not (run_dir / "manifest.json").exists():
+            QMessageBox.warning(
+                self, "Process & Report",
+                f"No recorded runs found for this configuration:\n"
+                f"{run_dir}\n\nRun a sweep first.")
+            return
+        if getattr(self, "_proc_thread", None) is not None:
+            self.console.log("processing already running")
+            return
+        self.process_report_act.setEnabled(False)
+        self.console.log(f"processing {run_dir} …")
+        facility = processing.facility_for_mode(self.manager.mode)
+
+        class _ProcWorker(QObject):
+            logEvent = pyqtSignal(str)
+            done = pyqtSignal(object)      # dict of paths | Exception
+
+            def __init__(self, run_dir, config, facility):
+                super().__init__()
+                self._args = (run_dir, config, facility)
+
+            def run(self):
+                run_dir, config, facility = self._args
+                try:
+                    paths = processing.process_run(
+                        run_dir, config=config, facility=facility,
+                        log=self.logEvent.emit)
+                    self.done.emit(paths)
+                except Exception as exc:               # noqa: BLE001
+                    log.exception("process & report failed")
+                    self.done.emit(exc)
+
+        thread = QThread(self)
+        worker = _ProcWorker(run_dir, self.config, facility)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.logEvent.connect(self.console.log)
+        worker.done.connect(self._on_process_done)
+        worker.done.connect(lambda _r: thread.quit())
+        thread.finished.connect(thread.deleteLater)
+        self._proc_thread, self._proc_worker = thread, worker
+        thread.start()
+
+    def _on_process_done(self, result) -> None:
+        self._proc_thread = None
+        self._proc_worker = None
+        self.process_report_act.setEnabled(True)
+        if isinstance(result, Exception):
+            QMessageBox.warning(self, "Process & Report", str(result))
+            self.console.log(f"processing FAILED: {result}")
+            return
+        self.console.log("processing complete — opening report")
+        import webbrowser
+        webbrowser.open(Path(result["report"]).as_uri())
 
     def _open_balance_cal(self) -> None:
         """Advanced ▸ Balance Calibration — the balcal_gui window.
@@ -783,10 +1046,13 @@ class FreestreamMainWindow(QMainWindow):
 
     def _on_mode_changed(self, mode: str) -> None:
         if self._connected:                            # combo is disabled;
-            self._set_mode_combo(self.manager.mode)    # belt & braces
+            self._set_mode_combo(self._current_mode_item())  # belt & braces
             return
         if mode == DeviceManager.CUSTOM:               # always (re)pick
             self._enter_custom_mode()
+            return
+        if mode.startswith(USER_MODE_PREFIX):          # saved custom mode
+            self._select_user_mode(mode[len(USER_MODE_PREFIX):])
             return
         if mode == self.manager.mode:
             return
@@ -795,48 +1061,141 @@ class FreestreamMainWindow(QMainWindow):
                                 manifest_path=self.manager.manifest_path)
         except Exception as exc:                       # noqa: BLE001
             self.console.log(f"mode switch to {mode} failed: {exc}")
-            self._set_mode_combo(self.manager.mode)
+            self._set_mode_combo(self._current_mode_item())
             return
         self._adopt_manager(mgr)
         self.config.mode = mode
         self.config.custom_devices = []                # leaving custom mode
+        self.config.custom_mode_name = ""
         self.console.log(f"mode → {mode}: devices "
                          + ", ".join(mgr.devices))
 
-    # ── custom mode (pick devices one by one) ────────────────────────────
+    # ── custom mode (pick devices one by one; save/select named sets) ────
+    def _populate_mode_combo(self) -> None:
+        """Fill the mode combo: manifest modes first, then the user-SAVED
+        custom modes (★-prefixed, sorted), then "custom" last. Keeps the
+        current selection when its item survives the rebuild."""
+        current = self.mode_combo.currentText()
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.clear()
+        self.mode_combo.addItems(list(self.manager.manifest["modes"]))
+        for name in sorted(load_user_modes(), key=str.lower):
+            self.mode_combo.addItem(USER_MODE_PREFIX + name)
+        self.mode_combo.addItem(DeviceManager.CUSTOM)  # pick devices by hand
+        if current and self.mode_combo.findText(current) < 0:
+            current = self._current_mode_item()        # item was deleted
+        if current:
+            self.mode_combo.setCurrentText(current)
+        self.mode_combo.blockSignals(False)
+
+    def _current_mode_item(self) -> str:
+        """The combo item text describing the ACTIVE manager: a custom set
+        that came from a saved user mode shows as its ★-prefixed name,
+        everything else as the manager's own mode name."""
+        if (self.manager.mode == DeviceManager.CUSTOM
+                and self.config.custom_mode_name):
+            item = USER_MODE_PREFIX + self.config.custom_mode_name
+            if self.mode_combo.findText(item) >= 0:
+                return item
+        return self.manager.mode
+
     def _enter_custom_mode(self) -> None:
         """Open the device picker; on accept, build a manager from EXACTLY
-        the ticked subset (roles inferred from capabilities)."""
+        the ticked subset (roles inferred from capabilities), optionally
+        saving it as a named user mode first."""
         catalog = self._device_catalog()
         preselected = (self.config.custom_devices
                        or list(self.manager.devices))
-        dlg = DevicePickerDialog(catalog, preselected, self)
+        dlg = DevicePickerDialog(
+            catalog, preselected, self,
+            refresh=self._device_catalog,              # "Detect devices"
+            saved_modes=sorted(load_user_modes(), key=str.lower),
+            on_delete_mode=self._delete_user_mode,
+            current_name=self.config.custom_mode_name)
         if not dlg.exec():                             # cancelled → revert
-            self._set_mode_combo(self.manager.mode)
+            self._set_mode_combo(self._current_mode_item())
             return
         chosen = dlg.selected_devices()
+        name = dlg.save_mode_name()
+        if name:
+            self._save_user_mode(name, chosen)
         try:
-            self._build_and_adopt_custom(chosen)
+            self._build_and_adopt_custom(chosen, mode_name=name)
         except Exception as exc:                       # noqa: BLE001
             self.console.log(f"custom mode build failed: {exc}")
-            self._set_mode_combo(self.manager.mode)
+            self._set_mode_combo(self._current_mode_item())
 
-    def _build_and_adopt_custom(self, device_ids: Sequence[str]) -> None:
+    def _select_user_mode(self, name: str) -> None:
+        """Build a SAVED user mode's device list through the custom path —
+        no picker. A stale list (device gone from the manifest, driver
+        broken) fails SOFT: console message, combo reverted."""
+        ids = load_user_modes().get(name)
+        if not ids:
+            self.console.log(f"saved mode {name!r} is missing from "
+                             f"{user_modes_path()} — nothing built")
+            self._set_mode_combo(self._current_mode_item())
+            return
+        try:
+            self._build_and_adopt_custom(ids, mode_name=name)
+        except Exception as exc:                       # noqa: BLE001
+            self.console.log(
+                f"saved mode {name!r} failed to build ({exc}) — its device "
+                f"list is {ids}; re-save it from the custom picker")
+            self._set_mode_combo(self._current_mode_item())
+
+    def _save_user_mode(self, name: str, device_ids: Sequence[str]) -> None:
+        """Persist ``name`` → ``device_ids`` (overwrite updates) and show
+        it in the mode combo immediately."""
+        save_user_mode(name, list(device_ids))
+        self._populate_mode_combo()
+        self.console.log(f"saved custom mode {USER_MODE_PREFIX}{name}: "
+                         + ", ".join(device_ids)
+                         + f"  → {user_modes_path()}")
+
+    def _delete_user_mode(self, name: str) -> None:
+        """Explicitly delete ONE saved mode (picker's Delete button) and
+        drop its combo item. The active device set is untouched — only
+        its saved name goes away."""
+        delete_user_mode(name)
+        if self.config.custom_mode_name == name:
+            self.config.custom_mode_name = ""          # now an unnamed set
+        self._populate_mode_combo()
+        self.console.log(f"deleted saved mode {USER_MODE_PREFIX}{name}")
+
+    def _build_and_adopt_custom(self, device_ids: Sequence[str],
+                                mode_name: str = "") -> None:
+        """Adopt an explicit device subset. ``mode_name`` labels the set
+        with the SAVED user mode it came from ("" = unnamed one-off);
+        persistence stays mode="custom" + the id list either way — the
+        name only picks the combo item shown."""
         mgr = DeviceManager.custom(list(device_ids), sim=self.manager.sim,
                                    manifest_path=self.manager.manifest_path)
         self._adopt_manager(mgr)
         self.config.mode = DeviceManager.CUSTOM
         self.config.custom_devices = list(device_ids)
-        self._set_mode_combo(DeviceManager.CUSTOM)
-        self.console.log("custom mode: devices " + ", ".join(mgr.devices)
+        self.config.custom_mode_name = mode_name
+        item = DeviceManager.CUSTOM
+        if mode_name and self.mode_combo.findText(
+                USER_MODE_PREFIX + mode_name) >= 0:
+            item = USER_MODE_PREFIX + mode_name
+        self._set_mode_combo(item)
+        label = (f"saved mode {USER_MODE_PREFIX}{mode_name}" if mode_name
+                 else "custom mode")
+        self.console.log(f"{label}: devices " + ", ".join(mgr.devices)
                          + "  (" + self._roles_summary(mgr) + ")")
 
     def _device_catalog(self
-                        ) -> Dict[str, Tuple[str, List[str]]]:
-        """id → (label, capability-tags) for EVERY device in the manifest
-        registry, built by instantiating each adapter once in sim. Failures
-        (driver not importable) still list the id with no tags."""
-        catalog: Dict[str, Tuple[str, List[str]]] = {}
+                        ) -> Dict[str, Tuple[str, List[str], str]]:
+        """id → (label, capability-tags, unavailable-reason) for EVERY
+        device in the manifest registry — the custom picker's AUTO-DETECT.
+
+        Availability is probed by instantiating each adapter once in sim
+        (import + construct; fast, touches no hardware): success →
+        reason "" and real capability tags; failure (driver package not
+        installed, import error, constructor raise) → the short exception
+        text, so the picker renders the row disabled instead of offering
+        a device that could never build."""
+        catalog: Dict[str, Tuple[str, List[str], str]] = {}
         for dev_id, entry in self.manager.manifest["devices"].items():
             try:
                 module_name, cls_name = entry["adapter"].rsplit(".", 1)
@@ -844,11 +1203,12 @@ class FreestreamMainWindow(QMainWindow):
                 adapter = cls(sim=True, **entry.get("options", {}))
                 adapter.id = dev_id
                 catalog[dev_id] = (getattr(adapter, "label", dev_id),
-                                   capabilities(adapter))
+                                   capabilities(adapter), "")
             except Exception as exc:                   # noqa: BLE001
+                reason = f"{exc.__class__.__name__}: {exc}"
                 self.console.log(f"device {dev_id} unavailable for the "
-                                 f"custom picker: {exc}")
-                catalog[dev_id] = (dev_id, [])
+                                 f"custom picker: {reason}")
+                catalog[dev_id] = (dev_id, [], reason)
         return catalog
 
     @staticmethod
@@ -970,10 +1330,49 @@ class FreestreamMainWindow(QMainWindow):
                              + "; ".join(blockers))
             return
         self.banner.hide()
+        if not self._resolve_config_collision():
+            return
         for p in points:
             p.status = "queued"
         self.planner.refresh_statuses()
         self._launch(points)
+
+    def _resolve_config_collision(self) -> bool:
+        """Ask before recording into a configuration folder that already
+        holds runs. Returns False when the operator cancels.
+
+        The prompt goes through :attr:`collision_resolver` so a headless
+        caller or a test can answer without a modal dialog; it has the
+        signature ``(parent, data_root, config_name) ->
+        (action, new_name)`` with action in proceed | repeat |
+        overwrite | cancel.
+        """
+        from .config_collision import clear_config_dir
+        action, new_name = self.collision_resolver(
+            self, self.config.data_root, self.config.config_name)
+        if action == "cancel":
+            self.console.log("start cancelled — configuration folder "
+                             f"{self.config.config_name} already holds "
+                             f"recorded runs")
+            return False
+        if action == "repeat":
+            old = self.config.config_name
+            self.config.config_name = new_name
+            # the recorder owns the folder, so rebuild it, and re-push
+            # the measurement settings so every later save and the
+            # manifest agree with the new name
+            self.recorder = self._make_recorder()
+            self._update_ui_state()
+            self.console.log(f"repeating {old} — recording into "
+                             f"{new_name} (measurement configuration "
+                             f"renamed)")
+            return True
+        if action == "overwrite":
+            n = clear_config_dir(self.recorder.config_dir)
+            self.recorder = self._make_recorder()
+            self.console.log(f"overwriting {self.config.config_name} — "
+                             f"{n} file(s) deleted")
+        return True
 
     def _rerun_point(self, row: int) -> None:
         if self._running:
@@ -1084,9 +1483,9 @@ class FreestreamMainWindow(QMainWindow):
     def _estop(self) -> None:
         # DIRECT call from the GUI thread — must never be queued
         if self.engine is not None:
-            self.engine.estop()        # sets abort + stops all motion
+            self.engine.estop()    # sets abort + stops motion AND tunnel
         self._release_operator_wait("E-STOP")      # a stuck dialog must
-        self.manager.stop_all_motion()             # never defeat E-STOP
+        self.manager.estop_all()                   # never defeat E-STOP
         self.console.log("E-STOP pressed")
         self.status_lbl.setText("E-STOP")
 
@@ -1388,9 +1787,12 @@ class FreestreamMainWindow(QMainWindow):
             if (self.config.mode == DeviceManager.CUSTOM
                     and self.config.custom_devices):
                 # rebuild the exact saved subset WITHOUT re-opening the
-                # picker (going through the combo would prompt)
+                # picker (going through the combo would prompt); the saved
+                # user-mode name (if any) just re-labels the combo
                 try:
-                    self._build_and_adopt_custom(self.config.custom_devices)
+                    self._build_and_adopt_custom(
+                        self.config.custom_devices,
+                        mode_name=self.config.custom_mode_name)
                 except Exception as exc:               # noqa: BLE001
                     self.console.log(f"custom set from config failed: {exc}")
             elif self.config.mode != self.manager.mode:
@@ -1449,6 +1851,7 @@ class FreestreamMainWindow(QMainWindow):
 
     # ── shutdown ─────────────────────────────────────────────────────────
     def closeEvent(self, event) -> None:               # noqa: N802
+        self._save_layout()
         if self.engine is not None:
             self.engine.abort()
         self._release_operator_wait("window close")    # unblock the worker
