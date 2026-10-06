@@ -10,9 +10,14 @@ without translation:
 
 * **Reduced layer** (mirrors ``Streamlined`` ``utils/gui/models/case.py``):
   :class:`TunnelConditions` and :class:`TestCase`, plus :class:`ReducedPoint`
-  for a single dwell-averaged test point.  Everything here is **raw wind-axis
-  loads** (N, N·m) — aerodynamic coefficient reduction (reference geometry,
-  air density) is owned by the Freestream suite, not this package.
+  for a single dwell-averaged test point.
+
+Everything here is **raw balance-frame loads** — Fx/Fy/Fz/Mx/My/Mz in the
+balance reference frame (X back, Y right, Z up), exactly what the load cells
+resolve.  Wind-axis lift/drag/side only exist after the span-aware resolution
+in the Freestream suite, which also owns coefficient reduction (reference
+geometry, air density).  Wire-name mapping: Fz was "Lift", Fx was "Drag",
+Fy was "Side", Mx was "Roll", My was "Pitch", Mz was "Yaw".
 """
 
 from __future__ import annotations
@@ -35,8 +40,10 @@ import numpy as np
 class BalanceFrame:
     """One TMSD scan straight off the wire (no reduction applied yet).
 
-    ``loads`` holds the six wire-order values (Lift, Pitch, Drag, Side, Yaw,
-    Roll) in N and N.m, exactly as the OGI transmits them.
+    ``loads`` is keyed by the balance-frame axes (``Fx``, ``Fy``, ``Fz``,
+    ``Mx``, ``My``, ``Mz``) in the units the OGI streams; the wire's
+    Lift/Pitch/Drag/... labels are translated away at the decode boundary
+    (``protocol.loads_to_balance_named``).
     """
     timestamp: float = 0.0
     loads: Dict[str, float] = field(default_factory=dict)
@@ -44,18 +51,18 @@ class BalanceFrame:
 
     @property
     def ordered(self) -> List[float]:
-        from .protocol import WIRE_AXES
-        return [self.loads.get(a, 0.0) for a in WIRE_AXES]
+        from .protocol import BALANCE_AXES
+        return [self.loads.get(a, 0.0) for a in BALANCE_AXES]
 
 
 # Field layout of a merged/derived master frame.  Same spirit as
-# ``wtdaq.core.data_buffer.FIELDS`` but in wind-axis / Streamlined naming
-# (the ATE/OGI already resolves loads to the wind frame about the virtual
-# centre, so no body->wind transform is applied here).
+# ``wtdaq.core.data_buffer.FIELDS``, in balance-frame naming (X back,
+# Y right, Z up) — no wind-frame words at this layer, because the wind
+# resolution is span-dependent and owned by the Freestream suite.
 FIELDS = (
     "t", "alpha", "beta",
-    # Wind reference frame loads (N, N.m)
-    "Lift", "Drag", "Side", "Roll", "Pitch", "Yaw",
+    # Balance reference frame loads
+    "Fx", "Fy", "Fz", "Mx", "My", "Mz",
     # Tunnel dynamic pressure (measured by the aux source, not derived)
     "Q",
     # Hardware sync flag
@@ -69,12 +76,12 @@ class MasterFrame:
     t: float = 0.0
     alpha: float = 0.0
     beta: float = 0.0
-    Lift: float = 0.0
-    Drag: float = 0.0
-    Side: float = 0.0
-    Roll: float = 0.0
-    Pitch: float = 0.0
-    Yaw: float = 0.0
+    Fx: float = 0.0
+    Fy: float = 0.0
+    Fz: float = 0.0
+    Mx: float = 0.0
+    My: float = 0.0
+    Mz: float = 0.0
     Q: float = 0.0
     sync: int = 0
 
@@ -163,7 +170,7 @@ class RingBuffer:
 
 # Numeric channels that get mean+std reduction during a dwell.
 _REDUCE_FIELDS = (
-    "Lift", "Drag", "Side", "Roll", "Pitch", "Yaw",
+    "Fx", "Fy", "Fz", "Mx", "My", "Mz",
     "Q",
 )
 
@@ -221,12 +228,13 @@ class TunnelConditions:
 
 @dataclass
 class TestCase:
-    """A wind tunnel test case (subset-faithful mirror of Streamlined ``TestCase``).
+    """A wind tunnel test case (structure mirrors Streamlined ``TestCase``).
 
-    Field *names* match Streamlined exactly so a case assembled here drops
-    straight into the Streamlined GUI / reduction tooling.  This package
-    carries only the **raw wind-axis loads** — Streamlined/Freestream forms
-    the coefficients from them using its own reference geometry.
+    Carries the **raw balance-frame loads** per dwell point — Fx/Fy/Fz/Mx/My/Mz
+    in the balance axes (X back, Y right, Z up).  Wind-axis resolution and
+    coefficients are formed downstream (Streamlined / Freestream) using the
+    span configuration and reference geometry; naming them lift/drag here
+    would bake in the full-span assumption.
     """
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     name: str = ""
@@ -242,13 +250,13 @@ class TestCase:
     alphas: np.ndarray = field(default_factory=lambda: np.array([]))
     betas: np.ndarray = field(default_factory=lambda: np.array([]))
 
-    # WRF forces / moments (N, N.m on this rig)
-    lift_forces: np.ndarray = field(default_factory=lambda: np.array([]))
-    drag_forces: np.ndarray = field(default_factory=lambda: np.array([]))
-    side_forces: np.ndarray = field(default_factory=lambda: np.array([]))
-    roll_moments: np.ndarray = field(default_factory=lambda: np.array([]))
-    pitch_moments: np.ndarray = field(default_factory=lambda: np.array([]))
-    yaw_moments: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Balance-frame forces / moments, one entry per dwell point
+    Fx: np.ndarray = field(default_factory=lambda: np.array([]))
+    Fy: np.ndarray = field(default_factory=lambda: np.array([]))
+    Fz: np.ndarray = field(default_factory=lambda: np.array([]))
+    Mx: np.ndarray = field(default_factory=lambda: np.array([]))
+    My: np.ndarray = field(default_factory=lambda: np.array([]))
+    Mz: np.ndarray = field(default_factory=lambda: np.array([]))
 
     tunnel_conditions: TunnelConditions = field(default_factory=TunnelConditions)
 
@@ -266,9 +274,11 @@ class TestCase:
 
     def get_channel(self, name: str) -> np.ndarray:
         cmap = {
-            "Lift": self.lift_forces, "Drag": self.drag_forces,
-            "Side": self.side_forces, "Roll": self.roll_moments,
-            "Pitch": self.pitch_moments, "Yaw": self.yaw_moments,
+            "Fx": self.Fx, "Fy": self.Fy, "Fz": self.Fz,
+            "Mx": self.Mx, "My": self.My, "Mz": self.Mz,
+            # legacy wire-name aliases (pre-rename callers / archives)
+            "Lift": self.Fz, "Drag": self.Fx, "Side": self.Fy,
+            "Roll": self.Mx, "Pitch": self.My, "Yaw": self.Mz,
             "alpha": self.alphas, "Alpha": self.alphas,
             "beta": self.betas, "Beta": self.betas,
         }
@@ -297,8 +307,7 @@ class TestCase:
             name=name, run_number=run_number,
             alphas=np.array([p.alpha for p in points], dtype=float),
             betas=np.array([p.beta for p in points], dtype=float),
-            lift_forces=col("Lift"), drag_forces=col("Drag"),
-            side_forces=col("Side"), roll_moments=col("Roll"),
-            pitch_moments=col("Pitch"), yaw_moments=col("Yaw"),
+            Fx=col("Fx"), Fy=col("Fy"), Fz=col("Fz"),
+            Mx=col("Mx"), My=col("My"), Mz=col("Mz"),
             tunnel_conditions=tc,
         )

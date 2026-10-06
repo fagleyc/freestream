@@ -16,13 +16,13 @@ from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QTimer, pyqtSignal
+from PyQt6.QtCore import QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDoubleSpinBox, QFileDialog, QGridLayout,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton,
-    QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
-    QWidget,
+    QBoxLayout, QCheckBox, QDialog, QDoubleSpinBox, QFileDialog, QFrame,
+    QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QPushButton, QScrollArea, QSizePolicy, QStatusBar, QTableWidget,
+    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from traverse_swt import about, theme
@@ -39,6 +39,21 @@ theme.apply_pyqtgraph_theme()
 
 _MAX_PLOT_BINS = 1200
 _AXIS_TITLES = {"X": "X — Axial", "Y": "Y — Lateral", "Z": "Z — Vertical"}
+
+
+def _unbind_width(*labels: QLabel) -> None:
+    """Stop live-text labels from binding layout minimums.
+
+    Readouts change width with their values ("+3.000", "→ +3.000\"",
+    "module 21·00·00"), and a QLabel's minimum hint is its text width —
+    so every value change would breathe the axis-card minimums and with
+    them the reflow thresholds. Ignored horizontal policy makes the
+    labels take whatever the grid gives them instead.
+    """
+    for lbl in labels:
+        pol = lbl.sizePolicy()
+        pol.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        lbl.setSizePolicy(pol)
 
 
 def _envelope(x: np.ndarray, y: np.ndarray, max_bins: int = _MAX_PLOT_BINS):
@@ -63,10 +78,15 @@ class _AxisCard(QGroupBox):
     calibrated. Each card carries an emphatic per-axis STOP.
     """
 
+    #: usable floor for one axis card — the reflow container derives its
+    #: 4-column / 2-column / stacked thresholds from the cards' minimums.
+    MIN_WIDTH = 240
+
     def __init__(self, name: str, color: str, parent=None):
         super().__init__(_AXIS_TITLES.get(name, name), parent)
         self.axis_name = name
         self._calibrated = False
+        self.setMinimumWidth(self.MIN_WIDTH)
         g = QGridLayout(self)
 
         chip = QLabel()
@@ -74,8 +94,11 @@ class _AxisCard(QGroupBox):
         chip.setStyleSheet(f"background-color: {color}; border-radius: 5px;")
         g.addWidget(chip, 0, 0)
         self.big_lbl = QLabel("--")
+        # 20pt, unpadded numbers: the readout's text width sets each
+        # card's minimum, and the cards' minimums set every reflow
+        # threshold — a space-padded 24pt string cost ~90 px per card
         self.big_lbl.setStyleSheet(
-            "font-family: 'Segoe UI'; font-size: 24pt; font-weight: 600; "
+            "font-family: 'Segoe UI'; font-size: 20pt; font-weight: 600; "
             f"color: {theme.TEXT};")
         g.addWidget(self.big_lbl, 0, 1, 1, 2)
         self.unit_lbl = QLabel("counts")
@@ -130,10 +153,15 @@ class _AxisCard(QGroupBox):
         foot.addWidget(self.mod_lbl)
         g.addLayout(foot, 4, 0, 1, 4)
 
+        # live-value labels must not set the card's minimum (and thereby
+        # the reflow thresholds) — the Target/Move/Home row is the floor
+        _unbind_width(self.big_lbl, self.sub_lbl, self.state_lbl,
+                      self.home_lbl, self.mod_lbl)
+
     def set_state(self, st: dict):
         self._calibrated = st["calibrated"]
         if self._calibrated:
-            self.big_lbl.setText(f"{st['inches']:+8.3f}")
+            self.big_lbl.setText(f"{st['inches']:+.3f}")
             self.unit_lbl.setText("in")
             self.sub_lbl.setText(f"cnt {st['counts']:+d}")
         else:
@@ -186,6 +214,153 @@ class _AxisCard(QGroupBox):
 
     def set_limits(self, lo: float, hi: float):
         self.target.setRange(lo, hi)
+
+
+def _scrolled(page: QWidget) -> QScrollArea:
+    """Wrap a tab page in a scroll area so its widest fixed-width row can
+    never jail the WINDOW's minimum width — when the window is narrower
+    than the page, the page scrolls instead of pinning the window open."""
+    sa = QScrollArea()
+    sa.setWidgetResizable(True)
+    sa.setFrameShape(QFrame.Shape.NoFrame)
+    sa.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+    sa.setWidget(page)
+    return sa
+
+
+class _ReflowRow(QWidget):
+    """Two cluster widgets side-by-side (wide) or stacked (narrow) — the
+    sting app's ``_ReflowAxes`` pattern, reused for the Connection bar so
+    its seven controls stop dictating the window's minimum width."""
+
+    _MARGIN = 24
+
+    def __init__(self, first: QWidget, second: QWidget, parent=None):
+        super().__init__(parent)
+        self._first, self._second = first, second
+        self._lay = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(8)
+        self._lay.addWidget(first)
+        self._lay.addWidget(second)
+        self._horizontal = True
+
+    @staticmethod
+    def _minw(w: QWidget) -> int:
+        return max(w.minimumSizeHint().width(), w.minimumWidth(), 1)
+
+    @property
+    def threshold(self) -> int:
+        return self._minw(self._first) + self._minw(self._second) + self._MARGIN
+
+    @property
+    def stacked(self) -> bool:
+        return not self._horizontal
+
+    def minimumSizeHint(self) -> QSize:                # noqa: N802
+        hint = super().minimumSizeHint()
+        return QSize(max(self._minw(self._first), self._minw(self._second)),
+                     hint.height())
+
+    def reflow(self, width: int) -> None:
+        horizontal = width >= self.threshold
+        if horizontal == self._horizontal:
+            return
+        self._horizontal = horizontal
+        self._lay.setDirection(
+            QBoxLayout.Direction.LeftToRight if horizontal
+            else QBoxLayout.Direction.TopToBottom)
+
+    def resizeEvent(self, event):                      # noqa: N802
+        super().resizeEvent(event)
+        self.reflow(self.width())
+
+
+class _ReflowCards(QWidget):
+    """Holds the three axis cards + the "All axes" box and REFLOWS between
+    three arrangements as the panel is resized (same idea as the sting
+    app's ``_ReflowAxes``, generalized to four boxes):
+
+        wide    1 x 4   X | Y | Z | All axes     (``columns == 4``)
+        medium  2 x 2   X  Y  /  Z  All axes     (``columns == 2``)
+        narrow  stacked                           (``columns == 1``)
+
+    One :class:`QGridLayout` is repopulated in place — the boxes stay
+    children of this container, nothing is reparented, so every control
+    (Move, Home, STOP, E-STOP) stays wired in every arrangement.
+
+    ``minimumSizeHint`` reports a ONE-card width so the panel/window can
+    be shrunk BELOW the wide row's own minimum — that shrink is exactly
+    what drives the reflow (without it, the 1x4 row's minimum would hold
+    the window open and the narrower modes could never trigger).
+    """
+
+    _SPACING = 8
+
+    def __init__(self, cards, side: QWidget, parent=None):
+        super().__init__(parent)
+        self._cards = list(cards)              # X, Y, Z axis cards
+        self._side = side                      # "All axes" E-STOP box
+        self._widgets = self._cards + [side]
+        self._lay = QGridLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(self._SPACING)
+        self._columns = 0
+        self.reflow(10_000)                    # start in the wide layout
+
+    @staticmethod
+    def _minw(w: QWidget) -> int:
+        return max(w.minimumSizeHint().width(), w.minimumWidth(), 1)
+
+    @property
+    def columns(self) -> int:
+        """Current arrangement: 4 (row), 2 (2x2) or 1 (stacked)."""
+        return self._columns
+
+    @property
+    def wide_threshold(self) -> int:
+        """Width needed for the 1x4 row (sum of minimums + spacing)."""
+        return (sum(self._minw(w) for w in self._widgets)
+                + 3 * self._SPACING + 16)
+
+    @property
+    def two_col_threshold(self) -> int:
+        """Width needed for the 2x2 grid (widest row-pair of minimums)."""
+        pairs = (self._minw(self._cards[0]) + self._minw(self._cards[1]),
+                 self._minw(self._cards[2]) + self._minw(self._side))
+        return max(pairs) + self._SPACING + 16
+
+    def minimumSizeHint(self) -> QSize:                # noqa: N802
+        hint = super().minimumSizeHint()
+        return QSize(max(self._minw(w) for w in self._widgets),
+                     hint.height())
+
+    def reflow(self, width: int) -> None:
+        """Pick the arrangement for *width* (also the tests' entry point)."""
+        cols = (4 if width >= self.wide_threshold else
+                2 if width >= self.two_col_threshold else 1)
+        if cols == self._columns:
+            return
+        self._columns = cols
+        while self._lay.count():
+            self._lay.takeAt(0)
+        for c in range(4):
+            self._lay.setColumnStretch(c, 0)
+        for i, w in enumerate(self._widgets):
+            r, c = divmod(i, cols)
+            self._lay.addWidget(w, r, c)
+        if cols == 4:
+            # keep the wide row's visual weights: axis cards 2, E-STOP 1
+            for c in range(3):
+                self._lay.setColumnStretch(c, 2)
+            self._lay.setColumnStretch(3, 1)
+        else:
+            for c in range(cols):
+                self._lay.setColumnStretch(c, 1)
+
+    def resizeEvent(self, event):                      # noqa: N802
+        super().resizeEvent(event)
+        self.reflow(self.width())
 
 
 class TraversePanel(QWidget):
@@ -259,35 +434,51 @@ class TraversePanel(QWidget):
         root.setSpacing(8)
 
         conn = self.conn_group = QGroupBox("Connection")
-        cl = QHBoxLayout(conn)
-        cl.setSpacing(8)
-        cl.addWidget(QLabel("WAGO PLC IP"))
+        cl = QVBoxLayout(conn)
+        cl.setSpacing(4)
+
+        left = QWidget()
+        ll = QHBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(8)
+        ll.addWidget(QLabel("WAGO PLC IP"))
         self.ip_edit = QLineEdit(self.config.ip)
         self.ip_edit.setFixedWidth(120)
-        cl.addWidget(self.ip_edit)
+        ll.addWidget(self.ip_edit)
         self.sim = QCheckBox("Simulate")
         self.sim.setChecked(self.config.force_sim)
-        cl.addWidget(self.sim)
-        cl.addStretch(1)
+        ll.addWidget(self.sim)
+        ll.addStretch(1)
+
+        right = QWidget()
+        rl = QHBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(8)
+        rl.addStretch(1)
         self.lamp = QLabel("DISCONNECTED")
         self.lamp.setProperty("mono", "true")
         self.lamp.setStyleSheet(f"color: {theme.TEXT_DIM}; "
                                 f"font-weight: bold;")
-        cl.addWidget(self.lamp)
+        rl.addWidget(self.lamp)
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.setObjectName("primary")
         self.connect_btn.clicked.connect(self._handle_connect)
-        cl.addWidget(self.connect_btn)
+        rl.addWidget(self.connect_btn)
         self.disconnect_btn = QPushButton("Disconnect")
         self.disconnect_btn.clicked.connect(self._handle_disconnect)
-        cl.addWidget(self.disconnect_btn)
+        rl.addWidget(self.disconnect_btn)
         self.defaults_btn = QPushButton("Set as Defaults")
         self.defaults_btn.setToolTip(
             "Save the CURRENT settings (including live calibration) as "
             "the startup defaults — auto-loaded at every launch. "
             "Separate from File → Save/Load config files.")
         self.defaults_btn.clicked.connect(self.save_defaults)
-        cl.addWidget(self.defaults_btn)
+        rl.addWidget(self.defaults_btn)
+
+        # the two clusters sit side-by-side when there is room and stack
+        # into two rows when the window narrows
+        self.conn_row = _ReflowRow(left, right)
+        cl.addWidget(self.conn_row)
         root.addWidget(conn)
         if self._embedded:                  # host owns connect/disconnect
             conn.hide()
@@ -297,7 +488,6 @@ class TraversePanel(QWidget):
         ml = QVBoxLayout(motion)
         ml.setSpacing(8)
 
-        cards = QHBoxLayout()
         self.cards = {}
         for i, name in enumerate("XYZ"):
             card = _AxisCard(name, theme.series_color(i))
@@ -309,9 +499,8 @@ class TraversePanel(QWidget):
             card.home_btn.clicked.connect(
                 lambda _=False, n=name: self._home(n))
             self.cards[name] = card
-            cards.addWidget(card, 2)
 
-        side = QGroupBox("All axes")
+        side = self.side_group = QGroupBox("All axes")
         sg = QVBoxLayout(side)
         self.estop_btn = QPushButton("■  E-STOP")
         # same danger "stop-sign" family as the per-axis STOPs, but the
@@ -325,12 +514,16 @@ class TraversePanel(QWidget):
         self.stop_all_btn.clicked.connect(self.device.stop_all)
         sg.addWidget(self.stop_all_btn)
         sg.addStretch(1)
-        note = QLabel("Uncalibrated axes are\nmoved from the physical\n"
-                      "console; calibrate to\nenable Move.")
+        note = QLabel("Uncalibrated axes are moved from the physical "
+                      "console; calibrate to enable Move.")
+        note.setWordWrap(True)
         note.setObjectName("dim")
         sg.addWidget(note)
-        cards.addWidget(side, 1)
-        ml.addLayout(cards)
+
+        # the four boxes reflow (1x4 ↔ 2x2 ↔ stacked) with panel width
+        self.cards_container = _ReflowCards(
+            [self.cards[n] for n in "XYZ"], side)
+        ml.addWidget(self.cards_container)
 
         # position history
         self.plot = pg.PlotWidget()
@@ -357,11 +550,13 @@ class TraversePanel(QWidget):
         ml.addWidget(self.plot, 1)
         self.tabs.addTab(motion, "Motion")
 
+        # scroll-wrapped so their widest fixed row never pins the window
+        # open — narrow windows scroll these tabs instead
         self.diag_panel = DiagnosticsPanel(self.config, self.device)
-        self.tabs.addTab(self.diag_panel, "Diagnostics")
+        self.tabs.addTab(_scrolled(self.diag_panel), "Diagnostics")
 
         self.cal_panel = CalibrationPanel(self.config, self.device)
-        self.tabs.addTab(self.cal_panel, "Calibration")
+        self.tabs.addTab(_scrolled(self.cal_panel), "Calibration")
         root.addWidget(self.tabs, 1)
 
     # ── actions ──
@@ -552,7 +747,10 @@ class TraverseMainWindow(QMainWindow):
     def __init__(self, cfg: Optional[TraverseConfig] = None):
         super().__init__()
         self.setWindowTitle("SSWT Traverse — WAGO PLC")
-        self.resize(1080, 780)
+        # opens in the 2x2 card layout with a single-row Connection bar;
+        # widen past the cards' wide threshold for the classic 1x4 row,
+        # or shrink to ~720 and everything reflows/stacks/scrolls
+        self.resize(1160, 780)
         self.setStyleSheet(theme.get_stylesheet())
         self.panel = TraversePanel(cfg, self)
         self.setCentralWidget(self.panel)

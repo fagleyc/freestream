@@ -47,6 +47,20 @@ def test_loads_to_named_wire_order():
                      "Side": 4.0, "Yaw": 5.0, "Roll": 6.0}
 
 
+def test_loads_to_balance_named_mapping():
+    """The device layer renames the wire words to the balance-frame axes
+    (X back, Y right, Z up) at the decode boundary: wire Lift is the
+    vertical component Fz, wire Drag the downstream component Fx, wire
+    Side the lateral Fy; Roll/Pitch/Yaw are Mx/My/Mz."""
+    named = P.loads_to_balance_named((1, 2, 3, 4, 5, 6))
+    assert named == {"Fz": 1.0, "My": 2.0, "Fx": 3.0,
+                     "Fy": 4.0, "Mz": 5.0, "Mx": 6.0}
+    # the two views agree value-for-value through the declared mapping
+    wire = P.loads_to_named((1, 2, 3, 4, 5, 6))
+    for w, b in P.WIRE_TO_BALANCE.items():
+        assert wire[w] == named[b]
+
+
 def test_build_command():
     assert P.build_command(1234, "GOTO_YAW_POS", 12.5) == b"{M1234:GOTO_YAW_POS 12.5}"
     assert P.build_command(7, "ZERO") == b"{M7:ZERO}"

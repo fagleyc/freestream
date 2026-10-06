@@ -1,10 +1,10 @@
 """Frame merging and dwell averaging for the ATE balance.
 
-The ATE/OGI already resolves the six loads to the **wind reference frame**
-about the virtual centre (Lift, Pitch, Drag, Side, Yaw, Roll, in N and N.m),
-and this standalone package deals in those raw loads only — aerodynamic
-coefficient reduction (reference geometry, air density) lives in the
-Freestream suite / Streamlined tooling, not here.
+The OGI resolves the six load cells to force/moment components about the
+virtual centre **in the balance reference frame** (X back, Y right, Z up):
+Fx/Fy/Fz/Mx/My/Mz.  This standalone package deals in those raw components
+only — span-aware wind-axis resolution and coefficient reduction (reference
+geometry, air density) live in the Freestream suite / Streamlined tooling.
 """
 
 from __future__ import annotations
@@ -21,9 +21,9 @@ def build_master_frame(bf: BalanceFrame, *, alpha: float, beta: float,
     """Merge one balance scan + attitude + tunnel q into a MasterFrame."""
     return MasterFrame(
         t=bf.timestamp, alpha=alpha, beta=beta,
-        Lift=bf.loads.get("Lift", 0.0), Drag=bf.loads.get("Drag", 0.0),
-        Side=bf.loads.get("Side", 0.0), Roll=bf.loads.get("Roll", 0.0),
-        Pitch=bf.loads.get("Pitch", 0.0), Yaw=bf.loads.get("Yaw", 0.0),
+        Fx=bf.loads.get("Fx", 0.0), Fy=bf.loads.get("Fy", 0.0),
+        Fz=bf.loads.get("Fz", 0.0), Mx=bf.loads.get("Mx", 0.0),
+        My=bf.loads.get("My", 0.0), Mz=bf.loads.get("Mz", 0.0),
         Q=q_dyn, sync=bf.sync,
     )
 

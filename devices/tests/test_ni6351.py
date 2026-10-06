@@ -38,8 +38,10 @@ def test_default_channel_set():
                      "Excitation", "Spare"]
     for c in cfg.channels[:6]:                     # bridges + Axial/Roll
         assert c.balance and c.enabled and c.terminal == "DIFF"
+    # tightest range on ALL balance bridges (mV signals, no instrument
+    # amp — 2026-07-24 SNR work)
     assert [c.native_range for c in cfg.channels[:6]] == \
-        [0.2, 0.2, 0.2, 0.2, 0.5, 0.5]
+        [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
     exc = cfg.channels[6]
     assert not exc.balance and exc.enabled and exc.native_range == 10.0
     spare = cfg.channels[7]
@@ -408,6 +410,24 @@ def _hw_config(**kw):
     return cfg
 
 
+def test_mux_settle_guard_disabled():
+    """mux_settle_reread=False restores the plain 7-row scan list."""
+    fake, saved = _patch_fake_hw()
+    try:
+        dev = NiUsb6351(_hw_config(mux_settle_reread=False))
+        try:
+            dev.connect()
+            task = fake.tasks[0]
+            assert [c["name"] for c in task.ai_calls] == \
+                ["N1", "N2", "Y1", "Y2", "Axial", "Roll", "Excitation"]
+            assert list(dev._keep_rows) == list(range(7))
+            assert dev.oversample_actual == 142   # 7 rows -> 142x
+        finally:
+            dev.disconnect()
+    finally:
+        _unpatch_fake_hw(saved)
+
+
 def test_hw_channels_ranges_and_timing():
     fake, saved = _patch_fake_hw()
     try:
@@ -416,22 +436,38 @@ def test_hw_channels_ranges_and_timing():
             dev.connect()
             assert dev.connected and not dev.sim_mode
             task = fake.tasks[0]
-            # every ENABLED channel added as Dev2/aiN — Spare (ai7) absent
+            # every ENABLED channel added as Dev2/aiN — Spare (ai7)
+            # absent — PLUS the mux-settle absorber: the wrapped scan
+            # order steps Excitation (±10) -> N1 (±0.1), so N1 gets a
+            # discarded ghost-absorbing re-read first (F16_Val find)
             assert [c["physical"] for c in task.ai_calls] == \
-                [f"Dev2/ai{i}" for i in range(7)]
+                ["Dev2/ai0"] + [f"Dev2/ai{i}" for i in range(7)]
+            # 'settle_' prefix: DAQmx rejects names with a leading
+            # underscore (rig-found on Dev3, 2026-08-06)
             assert [c["name"] for c in task.ai_calls] == \
-                ["N1", "N2", "Y1", "Y2", "Axial", "Roll", "Excitation"]
-            # symmetric ±native_range limits, snapped from the requested span
+                ["settle_N1", "N1", "N2", "Y1", "Y2", "Axial", "Roll",
+                 "Excitation"]
+            # symmetric ±native_range limits: all six balance bridges on
+            # the TIGHTEST range (mV signals — 2026-07-24 SNR work)
             for call, r in zip(task.ai_calls,
-                               (0.2, 0.2, 0.2, 0.2, 0.5, 0.5, 10.0)):
+                               (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 10.0)):
                 assert call["min_val"] == -r and call["max_val"] == r
             assert all(c["terminal"] == _FakeTC.DIFF for c in task.ai_calls)
-            # continuous hardware-timed clock at scan_hz, ≥5 s buffer
+            # absorber row dropped from the published stream, and the
+            # (absorber, kept) pair registered for the ghost monitor
+            assert list(dev._keep_rows) == list(range(1, 8))
+            assert dev._ghost_pairs == [(0, 1, "N1")]
+            # hardware clock at scan_hz x oversample (default AUTO fills
+            # the 1 MS/s aggregate over the 8 TASK rows: 125x);
+            # delivered rate is still scan_hz after the mean-decimation
             t = task.timing_calls[0]
-            assert t["rate"] == 1000.0
+            assert t["rate"] == 1000.0 * 125
             assert t["sample_mode"] == _FakeAcqType.CONTINUOUS
-            assert t["samps_per_chan"] == 5000
+            assert t["samps_per_chan"] == 5000 * 125
             assert dev.actual_hz == 1000.0
+            assert dev.oversample_actual == 125
+            # convert clock spread evenly across the scan interval
+            assert task.timing.ai_conv_rate == 1000.0 * 125 * 8
             # immediate trigger → NO trigger configuration at all
             assert task.dig_trig_calls == [] and task.anlg_trig_calls == []
             assert task.started

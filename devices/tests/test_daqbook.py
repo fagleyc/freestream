@@ -27,20 +27,61 @@ def test_counts_to_volts_bipolar():
 
 
 def test_counts_to_volts_unipolar():
-    assert daqx.counts_to_volts(0, 1, False) == 0.0
-    assert abs(daqx.counts_to_volts(65535, 1, False) - 10.0) < 1e-3
-    assert abs(daqx.counts_to_volts(32768, 2, False) - 2.5) < 1e-6
+    # Unipolar span is TWICE the bipolar span at the same gain code
+    # (0..20/gain — the manual's 13-range table). Assuming 0..10/gain
+    # here is the bug that read the rig's Pdiff at exactly half scale.
+    assert daqx.counts_to_volts(0, 2, False) == 0.0
+    assert abs(daqx.counts_to_volts(65535, 2, False) - 10.0) < 1e-3
+    assert abs(daqx.counts_to_volts(32768, 4, False) - 2.5) < 1e-6
+
+
+def test_unipolar_half_scale_regression():
+    # 2.000 V into the native 0..10 V unipolar range (gain code ×2):
+    # counts = 2/10 * 65536. Must read back 2 V, not 1 V.
+    counts = int(round(2.0 / 10.0 * daqx.ADC_COUNTS))
+    v = daqx.counts_to_volts(counts, 2, False)
+    assert abs(v - 2.0) < 1e-3
+
+
+def test_thirteen_native_ranges():
+    # Manual: "13 software programmable ranges (±10 V to ±156 mV)":
+    # 7 bipolar (±10/gain, ×1..×64) + 6 unipolar (0..20/gain, ×2..×64).
+    ranges = {daqx.range_for(g, True) for g in daqx.GAIN_CODE}
+    ranges |= {daqx.range_for(g, False) for g in daqx.GAIN_CODE if g >= 2}
+    assert len(ranges) == 13
+    try:
+        daqx.range_for(1, False)            # 0..20 V does not exist
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("×1 unipolar should be rejected")
 
 
 def test_pick_range_matches_rig_setup():
-    assert daqx.pick_range(0.0, 3.0, True) == (2, False)    # Pdiff -> 0..5 V
+    # Pdiff 0..3 V diff -> native 0..5 V unipolar = gain code ×4
+    assert daqx.pick_range(0.0, 3.0, True) == (4, False)
     assert daqx.pick_range(-10.0, 10.0, True) == (1, True)  # Ptot  -> ±10 V
     # Temp is single-ended: unipolar is illegal on SE channels (DaqX err
     # 134 verified on the DaqBook/2005), so 0..10 V SE -> bipolar ±10 V.
     assert daqx.pick_range(0.0, 10.0, False) == (1, True)
-    assert daqx.pick_range(0.0, 10.0, True) == (1, False)   # diff may be uni
+    # diff may be uni: 0..10 V is the ×2 unipolar range
+    assert daqx.pick_range(0.0, 10.0, True) == (2, False)
     assert daqx.pick_range(-0.4, 0.4) == (16, True)          # high gain
     assert daqx.pick_range(-42.0, 42.0) == (1, True)         # fallback widest
+
+
+def test_selected_range_and_conversion_agree():
+    # Whatever pick_range chooses, converting full-scale counts must land
+    # on that range's own (lo, hi) — the scan setup and the conversion can
+    # never disagree again.
+    for req, diff in (((0.0, 3.0), True), ((-10.0, 10.0), True),
+                      ((0.0, 10.0), True), ((0.0, 10.0), False),
+                      ((-0.4, 0.4), True)):
+        gain, bipolar = daqx.pick_range(req[0], req[1], diff)
+        lo, hi = daqx.range_for(gain, bipolar)
+        assert abs(daqx.counts_to_volts(0, gain, bipolar) - lo) < 1e-6
+        assert abs(daqx.counts_to_volts(65535, gain, bipolar) - hi) < 1e-2
+        assert lo <= req[0] and req[1] <= hi
 
 
 def test_channel_flags():

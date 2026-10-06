@@ -389,8 +389,9 @@ def test_momentary_pulse_writes_1_then_0_with_hold():
         # the sim plant reacts: fan spins up toward the setpoint
         ctl.set_rpm(400)
         deadline = time.time() + 3.0
+        # wait strictly past 50: rpm_scale quantization can read exactly 50.0
         while time.time() < deadline and \
-                mon.snapshot().actual_rpm < 50:
+                mon.snapshot().actual_rpm <= 50:
             time.sleep(0.05)
         snap = mon.snapshot()
         assert snap.fan_running and snap.actual_rpm > 50

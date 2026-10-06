@@ -46,7 +46,7 @@ def main() -> int:
     forces_bars = panel.live_panel.bars._forces._bars
     assert any(abs(h) > 0 for h in forces_bars.opts["height"]), \
         "bar graph never updated"
-    hist_curve = panel.run_panel.history._curves["Lift"]
+    hist_curve = panel.run_panel.history._curves["Fz"]
     xs, _ys = hist_curve.getData()
     assert xs is not None and len(xs) >= 20, "time history has no samples"
 

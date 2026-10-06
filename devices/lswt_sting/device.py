@@ -60,6 +60,7 @@ class _AxisState:
         self.target: Optional[float] = None
         self.deadline = 0.0
         self.responding = False
+        self.energized = True       # SX ST shutdown state (drive current)
 
     def update_from_counts(self, counts: int) -> None:
         self.counts = counts
@@ -114,7 +115,7 @@ class StingDrive:
                 "angle": st.angle, "counts": st.counts,
                 "moving": st.moving, "target": st.target,
                 "zeroed": st.cfg.zeroed, "enabled": st.cfg.enabled,
-                "responding": st.responding,
+                "responding": st.responding, "energized": st.energized,
             }
         out["fault"] = self._fault
         return out
@@ -234,18 +235,85 @@ class StingDrive:
             p.command(st.cfg.unit, f"A{st.cfg.acceleration}")
             p.command(st.cfg.unit, f"AD{st.cfg.deceleration}")
             p.command(st.cfg.unit, f"V{st.cfg.velocity}")
-            if st.cfg.brake_output:
-                # OUT<n>B = output n follows Moving/Not-Moving: the
-                # DRIVE releases the brake while stepping and engages
-                # it when stopped/faulted/off. RAM setting on the SX —
-                # (re)sent at every connect on purpose.
-                p.command(st.cfg.unit,
-                          f"OUT{st.cfg.brake_output}B")
+        p.command_blind("", "FSD1")     # broadcast — echo not guaranteed
+        # Brake output LAST (rig-found 2026-08-06): with the Z reset
+        # live at connect, OUT3B sent mid-burst could be lost to the
+        # reboot tail / clobbered by the blind FSD broadcast — O3 then
+        # never asserted 24 V and the motor fought the engaged brake.
+        # OUT<n>B = output n follows Moving/Not-Moving: the DRIVE
+        # releases the brake while stepping and engages it when
+        # stopped/faulted/off. RAM setting on the SX — (re)sent at
+        # every connect, after a settle, as the FINAL init command so
+        # nothing later can wipe it.
+        if any(st.cfg.enabled and st.cfg.brake_output
+               for st in self._axes()):
+            time.sleep(0.2)
+            p.clear_input()
+            for st in self._axes():
+                if not (st.cfg.enabled and st.cfg.brake_output):
+                    continue
+                p.command(st.cfg.unit, f"OUT{st.cfg.brake_output}B")
                 self._status(
                     f"{st.cfg.name} brake: O{st.cfg.brake_output} set "
                     f"to Moving/Not-Moving (released while moving, "
                     f"engaged at rest)")
-        p.command_blind("", "FSD1")     # broadcast — echo not guaranteed
+        # idle shutdown: de-energize configured axes now that init is
+        # done (brake engaged since not moving) — kills the stepper
+        # holding-current chopping EMI in the balance wiring
+        for st in self._axes():
+            st.energized = True
+            if st.cfg.enabled and st.cfg.idle_shutdown:
+                self._shutdown_axis(st)
+
+    def _shutdown_axis(self, st: "_AxisState") -> None:
+        """SX ``ST1`` — remove motor current (brake must hold)."""
+        try:
+            self._proto.command(st.cfg.unit, "ST1")
+            st.energized = False
+            self._status(f"{st.cfg.name} drive de-energized "
+                         f"(idle — brake holding, EMI quiet)")
+        except StingError as exc:
+            self._status(f"{st.cfg.name} shutdown failed: {exc}")
+
+    def _energize_axes(self, states) -> None:
+        """SX ``ST0`` on ANY shut-down axis about to move (idle-
+        shutdown or manual toggle), then one settle wait for the
+        current loop to stabilize."""
+        woke = False
+        for st in states:
+            if not st.energized:
+                self._proto.command(st.cfg.unit, "ST0")
+                st.energized = True
+                woke = True
+                self._status(f"{st.cfg.name} drive energized")
+        if woke and self.config.energize_settle_s > 0:
+            time.sleep(self.config.energize_settle_s)
+
+    def set_energized(self, name: str, on: bool) -> None:
+        """Manual drive-current toggle (SX ``ST0``/``ST1``) — the
+        noise A/B switch: kill an axis's holding current and watch the
+        balance floor. A de-energized axis has ZERO holding torque
+        (fine for Alpha with its brake; Beta relies on mechanism
+        friction — jog it back if it drifts). Any commanded move
+        re-energizes automatically."""
+        self._require_ready()
+        st = self._axis(name)
+        if st.moving:
+            raise RuntimeError(f"{st.cfg.name} is moving — stop first")
+        with self._cmd_lock:
+            if on and not st.energized:
+                self._proto.command(st.cfg.unit, "ST0")
+                st.energized = True
+                if self.config.energize_settle_s > 0:
+                    time.sleep(self.config.energize_settle_s)
+                self._status(f"{st.cfg.name} drive energized (manual)")
+            elif not on and st.energized:
+                self._proto.command(st.cfg.unit, "ST1")
+                st.energized = False
+                note = "" if st.cfg.brake_output else \
+                    " — NO brake on this axis: zero holding torque!"
+                self._status(f"{st.cfg.name} drive de-energized "
+                             f"(manual){note}")
 
     def disconnect(self) -> None:
         if not self._connected:
@@ -393,6 +461,7 @@ class StingDrive:
                                    f"stop first")
             req.append((st, float(value)))
         with self._cmd_lock:
+            self._energize_axes([st for st, _v in req])
             started = []
             for st, value in req:
                 delta = st.cfg.angle_to_counts(value) - st.counts
@@ -436,6 +505,7 @@ class StingDrive:
         if steps == 0:
             return
         with self._cmd_lock:
+            self._energize_axes([st])
             self._proto.move_steps(st.cfg.unit, steps)
             st.target = (st.angle + delta_deg) if st.cfg.zeroed else None
             st.moving = True
@@ -457,6 +527,9 @@ class StingDrive:
             st.target = None
         self._proto.stop_all_now([st.cfg.unit for st in self._axes()])
         self._status("STOP issued to both axes")
+        for st in self._axes():
+            if st.cfg.enabled and st.cfg.idle_shutdown and st.energized:
+                self._shutdown_axis(st)
 
     def stop_axis(self, name: str) -> None:
         st = self._axis(name)
@@ -466,6 +539,8 @@ class StingDrive:
         st.target = None
         self._proto.stop_all_now([st.cfg.unit])
         self._status(f"{st.cfg.name} stopped")
+        if st.cfg.enabled and st.cfg.idle_shutdown and st.energized:
+            self._shutdown_axis(st)
 
     # ── zero / fault management ──────────────────────────────────────────
     def set_current_angle(self, name: str, angle: float) -> None:
@@ -542,6 +617,11 @@ class StingDrive:
                                     self._proto.position(st.cfg.unit))
                                 st.moving = False
                                 completed.append(st.cfg.name)
+                                # settle done → brake engaged (O3
+                                # dropped) → safe to kill the motor
+                                # current and its EMI
+                                if st.cfg.idle_shutdown:
+                                    self._shutdown_axis(st)
                             elif time.monotonic() > st.deadline:
                                 self._trip(
                                     f"{st.cfg.name} move TIMED OUT — "

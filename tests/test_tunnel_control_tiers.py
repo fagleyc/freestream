@@ -267,7 +267,14 @@ def test_manual_verify_on_never_writes_the_fan(tmp_path):
     assert tun.calls == []                         # fan NEVER commanded
 
 
-def test_manual_verify_off_records_immediately(tmp_path):
+def test_manual_verify_off_waits_for_the_operator(tmp_path):
+    """Verification OFF still stops for the operator (2026-08-21).
+
+    Manual is the monitor-only tier either way: the fan is never
+    written. What changed is that a speed step no longer records blind
+    — the operator has to confirm the tunnel is up, with no tolerance
+    check and no auto-proceed behind it.
+    """
     tun = RecordingSwtTunnel(sim=True, rpm_max=2000.0)
     mgr, rec, cfg = _rig(tmp_path, tunnel=tun, mach_check_enabled=False)
     waits, events = [], []
@@ -276,9 +283,9 @@ def test_manual_verify_off_records_immediately(tmp_path):
         on_operator_wait=lambda r: waits.append(r) or "proceed"))
     out = engine.run([_mach_point(0.3)])[0]
     assert out.status == DONE
-    assert waits == []                             # no dialog
+    assert len(waits) == 1                         # prompted once
+    assert waits[0].verify is False                # no auto-proceed
     assert tun.calls == []                         # still no write
-    assert any("verification disabled" in e for e in events)
 
 
 # ═══ Tier B: AUTO (open-loop native command) ═════════════════════════════

@@ -233,21 +233,10 @@ class MeasurementSetupDialog(QDialog):
             "recorded metadata inherit them. NEVER applied to the raw "
             "data at capture time.")
         bal.addRow("Balance .vol file", self.vol_note)
-        geom_row = QHBoxLayout()
-        geom_row.setSpacing(8)
-        self.area_spin = self._geom_spin(config.ref_area, " in²")
-        self.chord_spin = self._geom_spin(config.ref_chord, " in")
-        self.span_spin = self._geom_spin(config.ref_span, " in")
-        for lbl, spin, tip in (
-                ("S", self.area_spin, "Reference area"),
-                ("c", self.chord_spin, "Reference chord"),
-                ("b", self.span_spin, "Reference span")):
-            tag = QLabel(lbl)
-            tag.setToolTip(tip)
-            spin.setToolTip(tip)
-            geom_row.addWidget(tag)
-            geom_row.addWidget(spin, 1)
-        bal.addRow("Ref S / c / b", geom_row)
+        # reference dims were duplicated here (ref_area/ref_chord/
+        # ref_span) AND in Model/Test (Sref/cref/bref) — unified
+        # 2026-08-06: the Model/Test "Ref dims" row is the ONE editor;
+        # the legacy display fields are mirrored from it on apply.
         grid.addWidget(bal_box, 2, 0, 1, 2)
 
         # ── Model / Test (inherited from an imported run sheet; §5) ──────
@@ -275,15 +264,45 @@ class MeasurementSetupDialog(QDialog):
             edit.setToolTip(tip)
             mt.addWidget(QLabel(label), 1, col * 2)
             mt.addWidget(edit, 1, col * 2 + 1)
-        self.ref_dims_lbl = QLabel(self._ref_dims_text(config))
-        self.ref_dims_lbl.setStyleSheet(f"color: {theme.TEXT_DIM};")
-        self.ref_dims_lbl.setToolTip(
-            "Reference dimensions from the run sheet's Test Info tab — "
-            "recorded in metadata for Streamlined's coefficient "
-            "reduction (read-only here; re-import the run sheet to "
-            "change them)")
+        # editable reference dims + MRC (2026-08-06): seeded by a run
+        # sheet, but the operator can set them directly — Streamlined's
+        # reduction and Advanced ▸ Process & Report read Sref/cref/bref
+        # and the MRC_x/y/z shift from the recorded config snapshot
+        self.sref_spin = self._ref_spin(config.Sref, " in²")
+        self.cref_spin = self._ref_spin(config.cref, " in")
+        self.bref_spin = self._ref_spin(config.bref, " in")
+        ref_row = QHBoxLayout()
+        ref_row.setSpacing(8)
+        for lbl, spin, tip in (
+                ("Sref", self.sref_spin, "Reference area (0 = not set)"),
+                ("cref", self.cref_spin, "Reference chord / MAC"),
+                ("bref", self.bref_spin, "Reference span")):
+            tag = QLabel(lbl)
+            tag.setToolTip(tip)
+            spin.setToolTip(tip)
+            ref_row.addWidget(tag)
+            ref_row.addWidget(spin, 1)
         mt.addWidget(QLabel("Ref dims"), 2, 0)
-        mt.addWidget(self.ref_dims_lbl, 2, 1, 1, 3)
+        mt.addLayout(ref_row, 2, 1, 1, 3)
+        self.mrc_x_spin = self._mrc_spin(config.MRC_x)
+        self.mrc_y_spin = self._mrc_spin(config.MRC_y)
+        self.mrc_z_spin = self._mrc_spin(config.MRC_z)
+        mrc_row = QHBoxLayout()
+        mrc_row.setSpacing(8)
+        for lbl, spin in (("x", self.mrc_x_spin), ("y", self.mrc_y_spin),
+                          ("z", self.mrc_z_spin)):
+            tag = QLabel(lbl)
+            spin.setToolTip(
+                "Moment reference center shift from the balance "
+                "mechanical center [in]: x + forward, y + port, z + "
+                "down (Streamlined convention). Applied by the "
+                "reduction, never to raw data.")
+            mrc_row.addWidget(tag)
+            mrc_row.addWidget(spin, 1)
+        mrc_lbl = QLabel("MRC shift")
+        mrc_lbl.setToolTip("Moment reference center offset")
+        mt.addWidget(mrc_lbl, 3, 0)
+        mt.addLayout(mrc_row, 3, 1, 1, 3)
         grid.addWidget(model_box, 3, 0, 1, 2)
 
         lay.addLayout(grid)
@@ -308,6 +327,9 @@ class MeasurementSetupDialog(QDialog):
         self.defaults_btn.clicked.connect(
             lambda: setattr(self, "defaults_requested", True))
         lay.addWidget(buttons)
+
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
 
     # ── speed unit / tolerance (freestream.speed hint tables) ────────────
     def _range_tolerance_spin(self, unit: str) -> None:
@@ -343,6 +365,23 @@ class MeasurementSetupDialog(QDialog):
         return (f"Sref {config.Sref:g} in²   cref {config.cref:g} in   "
                 f"bref {config.bref:g} in   MRC ({config.MRC_x:g}, "
                 f"{config.MRC_y:g}, {config.MRC_z:g}) in")
+
+    def _ref_spin(self, value: float, suffix: str) -> QDoubleSpinBox:
+        """Reference-dimension spin: 0 = unset (unlike _geom_spin)."""
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 1_000_000.0)
+        spin.setDecimals(4)
+        spin.setValue(value)
+        spin.setSuffix(suffix)
+        return spin
+
+    def _mrc_spin(self, value: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(-1000.0, 1000.0)
+        spin.setDecimals(3)
+        spin.setValue(value)
+        spin.setSuffix(" in")
+        return spin
 
     def _geom_spin(self, value: float, suffix: str) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
@@ -389,9 +428,21 @@ class MeasurementSetupDialog(QDialog):
         config.mach_check_enabled = self.mach_check_chk.isChecked()
         # config.vol_path is DEVICE-OWNED (StrainBook panel → Forces tab);
         # the Forces page mirrors it into the config each tick
-        config.ref_area = self.area_spin.value()
-        config.ref_chord = self.chord_spin.value()
-        config.ref_span = self.span_spin.value()
+        # ONE reference-dimension editor (Sref/cref/bref + MRC below);
+        # the legacy ref_area/ref_chord/ref_span display fields are
+        # mirrors kept for old readers of the config snapshot
+        config.Sref = self.sref_spin.value()
+        config.cref = self.cref_spin.value()
+        config.bref = self.bref_spin.value()
+        config.MRC_x = self.mrc_x_spin.value()
+        config.MRC_y = self.mrc_y_spin.value()
+        config.MRC_z = self.mrc_z_spin.value()
+        if config.Sref > 0:
+            config.ref_area = config.Sref
+        if config.cref > 0:
+            config.ref_chord = config.cref
+        if config.bref > 0:
+            config.ref_span = config.bref
         config.test_name = self.test_name_edit.text().strip()
         config.model_name = self.model_name_edit.text().strip()
         config.engineer = self.engineer_edit.text().strip()

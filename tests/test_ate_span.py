@@ -54,8 +54,12 @@ def test_axes_follow_span_config():
     assert (specs["alpha"].min, specs["alpha"].max) == P.INC_LIMITS_DEG
     assert (specs["beta"].min, specs["beta"].max) == P.YAW_LIMITS_DEG
     assert a.span_config == "full"
+    # load_units joined the record 2026-08-21: the OGI's unit setting is
+    # operator-selectable and never appears on the wire, so it has to be
+    # written down or the reduction cannot know what to convert from
     assert a.extra_meta() == {"span_config": "full",
-                              "balance_type": "external"}
+                              "balance_type": "external",
+                              "load_units": "lb"}
 
     a.config.span_config = "half"          # live rebind — no reconnect
     specs = {s.name: s for s in a.axes()}
@@ -63,7 +67,8 @@ def test_axes_follow_span_config():
     assert (specs["alpha"].min, specs["alpha"].max) == P.YAW_LIMITS_DEG
     assert a.span_config == "half"
     assert a.extra_meta() == {"span_config": "half",
-                              "balance_type": "external"}
+                              "balance_type": "external",
+                              "load_units": "lb"}
     # position channels follow: no Beta ChannelSpec in ½ span
     pos_chans = [c.name for c in a.channels() if c.group == "Positioner"]
     assert pos_chans == ["Alpha"]
@@ -165,7 +170,7 @@ def test_half_span_file_loads_through_streamlined(half_span_sweep):
     _mgr, _ate, _events, paths = half_span_sweep
     from utils.windtunnel.data_io import read_hdf5_file
     raw, _props = read_hdf5_file(str(paths[0]))
-    for ch in ("Lift", "Pitch", "Drag", "Side", "Yaw", "Roll",
+    for ch in ("Fx", "Fy", "Fz", "Mx", "My", "Mz",
                "Alpha", "Beta"):
         assert ch in raw.data, f"{ch} missing"
         assert len(raw.data[ch]) == len(raw.time)

@@ -9,9 +9,12 @@ two files (spec §5.2).
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Sequence
+
+log = logging.getLogger(__name__)
 
 #: the three explicit tunnel-speed control tiers (config.tunnel_control_mode):
 #: * "manual"   — monitor-only; the OPERATOR brings the tunnel to speed and
@@ -37,6 +40,14 @@ class FreestreamConfig:
     #: when ``mode == "custom"``; empty for the manifest modes. Persisted
     #: so Save/Load round-trips the exact chosen subset.
     custom_devices: list = field(default_factory=list)
+    #: Display name of the SAVED user mode (see :func:`user_modes_path`)
+    #: the current custom set came from; "" for an unnamed hand-picked
+    #: set. Persistence shape: a saved-mode selection round-trips as
+    #: ``mode="custom"`` + ``custom_devices=[ids]`` + this name — the
+    #: device list stays authoritative (it rebuilds even if the named
+    #: mode was deleted or edited since this config was saved); the name
+    #: only re-labels the mode combo on restore.
+    custom_mode_name: str = ""
     sim: bool = True
     operator: str = ""
     config_name: str = "default"     # folder-per-configuration name
@@ -112,6 +123,18 @@ class FreestreamConfig:
     cal_type: str = "Linear"         # Linear | Quadratic | Cubic
     balance_config: str = "Force"    # Force | Moment balance layout
     warn_utilization: float = 0.8    # amber threshold (fraction of rated)
+    #: monitoring low-pass [Hz] applied to the raw balance volts before
+    #: the live reduction (tiles, utilization bars, overstress record
+    #: blocker). 0 = off. Mechanical loads live well below 10 Hz;
+    #: without this, raw 1 kHz electrical noise peaks inflate the
+    #: peak-based utilization above 100% and BLOCK RUNS while the
+    #: displayed mean loads sit comfortably in range (field
+    #: 2026-07-24, LSWT 50lb moment balance). Recorded data stays raw.
+    # Display-only low-pass cutoff (Hz) for the live force readouts.
+    # 1 Hz: at the raw stream rate the last digits churn faster than
+    # they can be read, and peak-based overstress trips on noise
+    # spikes. Recorded data is never filtered.
+    display_lpf_hz: float = 1.0
     ref_area: float = 1.0            # S — reference area (coefficient denom)
     ref_chord: float = 1.0           # c — reference chord
     ref_span: float = 1.0            # b — reference span
@@ -213,3 +236,76 @@ def defaults_path() -> Path:
     import os
     env = os.environ.get("FREESTREAM_DEFAULTS")
     return Path(env) if env else Path.home() / ".freestream" / "defaults.json"
+
+
+# ── named user-saved custom modes ────────────────────────────────────────
+# A user can hand-build a device subset in the custom picker and SAVE it
+# under a name; the name then appears in the mode combo like a manifest
+# mode. Stored as a flat {mode name: [device ids]} JSON mapping — device
+# IDS, not roles: role derivation is lossy (a custom set may carry
+# devices that fill no role), so the id list is the source of truth and
+# roles are re-derived at build time by DeviceManager.custom().
+
+def user_modes_path() -> Path:
+    """The user-saved custom modes file — {mode name: [device ids]}.
+
+    Lives beside the startup defaults (user-level, not per-config): a
+    rig's hand-built device sets belong to the operator's machine, not to
+    any one saved config file. Override with the ``FREESTREAM_USER_MODES``
+    env var (tests).
+    """
+    import os
+    env = os.environ.get("FREESTREAM_USER_MODES")
+    return (Path(env) if env
+            else Path.home() / ".freestream" / "user_modes.json")
+
+
+def load_user_modes() -> Dict[str, List[str]]:
+    """Read the saved user modes; ``{}`` for a missing/corrupt file.
+
+    Never raises — a broken file costs the saved modes, not the app.
+    Entries are sanitized: a mode must be a non-empty string name mapped
+    to a non-empty list of device-id strings; anything else is skipped.
+    """
+    path = user_modes_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception:                                  # noqa: BLE001
+        log.warning("user modes file %s is unreadable — ignoring it", path)
+        return {}
+    if not isinstance(raw, dict):
+        log.warning("user modes file %s is not a name→ids mapping — "
+                    "ignoring it", path)
+        return {}
+    modes: Dict[str, List[str]] = {}
+    for name, ids in raw.items():
+        if (isinstance(name, str) and name.strip()
+                and isinstance(ids, list) and ids
+                and all(isinstance(i, str) for i in ids)):
+            modes[name] = list(ids)
+    return modes
+
+
+def save_user_mode(name: str, device_ids: Sequence[str]
+                   ) -> Dict[str, List[str]]:
+    """Add or OVERWRITE one named mode; returns the updated mapping."""
+    modes = load_user_modes()
+    modes[str(name)] = [str(d) for d in device_ids]
+    _write_user_modes(modes)
+    return modes
+
+
+def delete_user_mode(name: str) -> Dict[str, List[str]]:
+    """Remove one named mode (no-op if absent); returns the mapping."""
+    modes = load_user_modes()
+    modes.pop(name, None)
+    _write_user_modes(modes)
+    return modes
+
+
+def _write_user_modes(modes: Dict[str, List[str]]) -> None:
+    path = user_modes_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(modes, indent=2), encoding="utf-8")

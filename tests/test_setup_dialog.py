@@ -190,13 +190,19 @@ def test_format_change_takes_effect_for_next_sweep(app, window, tmp_path):
     # settings change (what Measurement Setup's OK does) — NO restart
     win.config.output_format = "mat"
 
-    # sweep 2 — _launch rebuilds the recorder from the live config
+    # sweep 2 into the SAME configuration name now hits the collision
+    # prompt; answer "repeat", which records into <name>_a and leaves
+    # sweep 1 intact
+    win.collision_resolver = lambda parent, root, name: (
+        "repeat", f"{name}_a")
     win.start_btn.click()
     assert _spin(app, lambda: win.sweep_active, timeout_s=10)
     assert _spin(app, lambda: not win.sweep_active, timeout_s=60)
     mats = list(runs.rglob("*.mat"))
     assert len(mats) == 1                          # the point IS the .mat
     assert len(list(runs.rglob("*.h5"))) == 1      # still just sweep 1's
-    assert mats[0].name.startswith("run_0002")     # numbering continues
+    assert win.config.config_name.endswith("_a")   # renamed for the repeat
+    assert mats[0].parent.name == win.config.config_name
+    assert mats[0].name.startswith("run_0001")     # fresh folder, fresh no.
     # run log shows the real primary path ("point N done → …")
     assert str(mats[0]) in win.console.toPlainText()

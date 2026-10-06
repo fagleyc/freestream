@@ -27,6 +27,7 @@ from ni_usb_6351.config import NiDaqConfig
 from ni_usb_6351.device import NiUsb6351
 
 from .channels_panel import ChannelsPanel
+from .filter_panel import FilterPanel
 from .forces_panel import ForcesPanel
 from .output_trigger_panel import OutputTriggerPanel
 from .plots import ChannelHistory, ChannelTiles
@@ -36,6 +37,11 @@ log = logging.getLogger(__name__)
 
 _WINDOWS = [("10 s", 10.0), ("30 s", 30.0), ("2 min", 120.0),
             ("5 min", 300.0)]
+
+#: oversample picks for the Connection row (config value 0 = auto/max)
+_OVERSAMPLE_CHOICES = [("Avg: auto (max)", 0), ("Avg: off", 1),
+                       ("Avg: 4×", 4), ("Avg: 16×", 16),
+                       ("Avg: 64×", 64), ("Avg: 128×", 128)]
 
 
 class NiDaqPanel(QWidget):
@@ -114,6 +120,17 @@ class NiDaqPanel(QWidget):
         self.rate_spin.setValue(self.config.scan_hz)
         self.rate_spin.setSuffix(" Hz")
         cl.addWidget(self.rate_spin)
+        self.os_combo = QComboBox()
+        for label, val in _OVERSAMPLE_CHOICES:
+            self.os_combo.addItem(label, val)
+        self.os_combo.setToolTip(
+            "Hardware oversampling: the ADC runs this many times faster "
+            "than the scan rate and each group is averaged down to one "
+            "sample — the averaged stream IS the data of record. "
+            "Auto = fill the device's 1 MS/s aggregate budget "
+            "(~142× for 7 ch @ 1 kHz, ~12× less uncorrelated noise).")
+        self._sync_os_combo()
+        cl.addWidget(self.os_combo)
         self.sim = QCheckBox("Simulate")
         self.sim.setChecked(self.config.force_sim)
         cl.addWidget(self.sim)
@@ -175,11 +192,43 @@ class NiDaqPanel(QWidget):
         self.follow_btn.clicked.connect(
             lambda: self.history.set_follow(True))
         bar.addWidget(self.follow_btn)
+        bar.addSpacing(24)
+        bar.addWidget(QLabel("LPF"))
+        self.lpf_spin = QDoubleSpinBox()
+        self.lpf_spin.setRange(0.0, 500.0)
+        self.lpf_spin.setDecimals(1)
+        self.lpf_spin.setSuffix(" Hz")
+        self.lpf_spin.setSpecialValueText("off")
+        self.lpf_spin.setValue(self.config.display_lpf_hz)
+        self.lpf_spin.setToolTip(
+            "Display low-pass for the voltage/force plots, tiles and "
+            "utilization bars (0 = off). Recorded data stays raw.")
+        self.lpf_spin.valueChanged.connect(self._lpf_changed)
+        bar.addWidget(self.lpf_spin)
+        bar.addSpacing(24)
+        # live mux-ghost readout: the settle-guard absorber read minus
+        # the kept read of the same channel — proof the fix is working
+        # (should sit near the noise floor; F16_Val defect was ~450 µV)
+        self.ghost_lbl = QLabel("")
+        self.ghost_lbl.setProperty("mono", "true")
+        self.ghost_lbl.setToolTip(
+            "Mux settling residual measured by the guard channel's "
+            "absorbed pre-read (absorber − kept, same channel, same "
+            "scan). Near the noise floor = front end settling; large "
+            "and air-on-correlated = the AI7→AI0 coupling is back.")
+        bar.addWidget(self.ghost_lbl)
         bar.addStretch(1)
         ll.addLayout(bar)
 
+        # per-channel plot visibility toggles (rebuilt on channel attach)
+        self.chan_row = QHBoxLayout()
+        self.chan_row.setSpacing(10)
+        self._chan_checks = {}
+        ll.addLayout(self.chan_row)
+
         self.history = ChannelHistory()
         self.history.window_s = self.config.plot_window_s
+        self.history.lpf_hz = self.config.display_lpf_hz
         ll.addWidget(self.history, 1)
         self.tabs.addTab(live, "Live")
 
@@ -188,17 +237,23 @@ class NiDaqPanel(QWidget):
             self._on_balance_config_changed)
         self.tabs.addTab(self.forces_panel, "Forces")
 
+        self.filter_panel = FilterPanel()
+        self.tabs.addTab(self.filter_panel, "Filter Study")
+
         self.channels_panel = ChannelsPanel(self.config)
         self.tabs.addTab(self.channels_panel, "Channels")
 
         self.output_panel = OutputTriggerPanel(self.config, self.device)
         self.output_panel.statusSignal.connect(self.statusSignal)
-        self.tabs.addTab(self.output_panel, "Output && Trigger")
+        self.tabs.addTab(self.output_panel, "I/O && Trigger")
         root.addWidget(self.tabs, 1)
 
         # auto-load a previously used .vol calibration
         if self.config.vol_path:
             self.forces_panel.load_vol(self.config.vol_path)
+
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
 
     # ── balance layout (Force ↔ Moment) ──
     def _on_balance_config_changed(self, text: str):
@@ -211,10 +266,21 @@ class NiDaqPanel(QWidget):
         self.channels_panel.reload()
 
     # ── connect / disconnect ──
+    def _sync_os_combo(self):
+        """Point the oversample combo at the config value (custom values
+        from a loaded config get their own entry)."""
+        idx = self.os_combo.findData(self.config.oversample)
+        if idx < 0:
+            self.os_combo.addItem(f"Avg: {self.config.oversample}×",
+                                  self.config.oversample)
+            idx = self.os_combo.count() - 1
+        self.os_combo.setCurrentIndex(idx)
+
     def _handle_connect(self):
         self.config.device_name = self.name_edit.text().strip() or \
             self.config.device_name
         self.config.scan_hz = float(self.rate_spin.value())
+        self.config.oversample = int(self.os_combo.currentData())
         self.config.force_sim = self.sim.isChecked()
         try:
             self.device.connect()
@@ -232,8 +298,38 @@ class NiDaqPanel(QWidget):
         chans = self.config.enabled_channels()
         self.tiles.set_channels(chans)
         self.history.set_channels(chans, self.device.ring)
+        self.filter_panel.set_channels(chans, self.device.ring)
+        self._rebuild_channel_toggles(chans)
         self._last_count = 0
         self._last_time = time.perf_counter()
+
+    def _rebuild_channel_toggles(self, chans):
+        """One colored checkbox per channel — shows/hides its curve on the
+        live history plot (e.g. hide Excitation to zoom the bridges).
+        Visibility state lives in the history widget, keyed by name, so
+        it survives rebinds while names persist."""
+        while self.chan_row.count():
+            item = self.chan_row.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._chan_checks = {}
+        lbl = QLabel("Show")
+        lbl.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        self.chan_row.addWidget(lbl)
+        for i, ch in enumerate(chans):
+            chk = QCheckBox(ch.name)
+            chk.setChecked(self.history.channel_visible(ch.name))
+            chk.setStyleSheet(
+                f"QCheckBox {{ color: {theme.series_color(i)}; "
+                f"font-weight: bold; }}")
+            chk.setToolTip(f"Show/hide {ch.name} on the plot")
+            chk.toggled.connect(
+                lambda on, n=ch.name:
+                self.history.set_channel_visible(n, on))
+            self._chan_checks[ch.name] = chk
+            self.chan_row.addWidget(chk)
+        self.chan_row.addStretch(1)
 
     def _handle_disconnect(self):
         self.device.disconnect()
@@ -244,18 +340,21 @@ class NiDaqPanel(QWidget):
         self.disconnect_btn.setEnabled(connected)
         self.tare_btn.setEnabled(connected)
         self.clear_tare_btn.setEnabled(connected)
-        for w in (self.name_edit, self.rate_spin, self.sim):
+        for w in (self.name_edit, self.rate_spin, self.os_combo, self.sim):
             w.setEnabled(not connected)
+        os_ = getattr(self.device, "oversample_actual", 1)
+        avg = f" × {os_} avg" if connected and os_ > 1 else ""
         if not connected:
             self._set_lamp("DISCONNECTED", theme.TEXT_DIM)
         elif self.device.sim_mode:
             self._set_lamp("SIMULATION", theme.WARNING)
         elif self.device.waiting_for_trigger:
-            self._set_lamp(f"ARMED @ {self.device.actual_hz:.0f} Hz",
+            self._set_lamp(f"ARMED @ {self.device.actual_hz:.0f} Hz{avg}",
                            theme.WARNING)
         else:
-            self._set_lamp(f"ACQUIRING @ {self.device.actual_hz:.0f} Hz",
-                           theme.SUCCESS)
+            self._set_lamp(
+                f"ACQUIRING @ {self.device.actual_hz:.0f} Hz{avg}",
+                theme.SUCCESS)
 
     def _set_lamp(self, text: str, color: str):
         self.lamp.setText(text)
@@ -277,6 +376,10 @@ class NiDaqPanel(QWidget):
             self.trig_lamp.setStyleSheet(f"color: {color};")
 
     # ── live controls ──
+    def _lpf_changed(self, hz: float):
+        self.config.display_lpf_hz = float(hz)
+        self.history.lpf_hz = float(hz)
+
     def _window_changed(self, idx: int):
         self.history.window_s = _WINDOWS[idx][1]
 
@@ -305,6 +408,17 @@ class NiDaqPanel(QWidget):
             self._set_connected_ui(True)
         self.tiles.refresh(self.device.ring, self.device.actual_hz)
         self.history.refresh()
+        self.filter_panel.refresh(self.device.actual_hz)
+        ghost = getattr(self.device, "settle_ghost_v", None) or {}
+        if ghost:
+            worst = max(ghost.items(), key=lambda kv: abs(kv[1]))
+            self.ghost_lbl.setText(
+                f"mux ghost {worst[0]}: {worst[1] * 1e6:+,.0f} µV")
+            color = (theme.WARNING if abs(worst[1]) > 50e-6
+                     else theme.TEXT_DIM)
+            self.ghost_lbl.setStyleSheet(f"color: {color};")
+        elif self.ghost_lbl.text():
+            self.ghost_lbl.setText("")
         self.forces_panel.refresh(self.device.ring, self.device.actual_hz,
                                   self.history.window_s)
         if self.forces_panel.overstress:
@@ -330,6 +444,7 @@ class NiDaqPanel(QWidget):
         self.history.window_s = self.config.plot_window_s
         self.rate_spin.setValue(self.config.scan_hz)
         self.name_edit.setText(self.config.device_name)
+        self._sync_os_combo()
 
 
 class _AboutDialog(QDialog):

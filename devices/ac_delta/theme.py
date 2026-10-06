@@ -166,3 +166,26 @@ def apply_pyqtgraph_theme() -> None:
     pg.setConfigOption("background", PLOT_BG)
     pg.setConfigOption("foreground", TEXT_DIM)
     pg.setConfigOption("antialias", True)
+
+
+def install_wheel_guard(root) -> None:
+    """Stop the mouse wheel from editing spin/combo boxes the pointer
+    merely passes over while scrolling: they take wheel input only when
+    focused (clicked/tabbed into). Arrow-button and keyboard behaviour
+    are untouched. Call after a panel's widgets are built; safe to call
+    again after dynamic rebuilds."""
+    from PyQt6.QtCore import QEvent, QObject, Qt
+    from PyQt6.QtWidgets import QAbstractSpinBox, QComboBox
+
+    class _WheelGuard(QObject):
+        def eventFilter(self, obj, ev):                # noqa: N802
+            return (ev.type() == QEvent.Type.Wheel
+                    and not obj.hasFocus())
+
+    guard = getattr(root, "_wheel_guard", None)
+    if guard is None:
+        guard = _WheelGuard(root)
+        root._wheel_guard = guard
+    for w in root.findChildren((QAbstractSpinBox, QComboBox)):
+        w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        w.installEventFilter(guard)

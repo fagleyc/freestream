@@ -44,6 +44,8 @@ class RpmGauge(QWidget):
         self._setpoint = 0.0
         self._rpm_max = 0.0
         self._range = 1000.0
+        #: hub unit label — an embedding app may set "Hz" (LSWT drive)
+        self.unit = "RPM"
         self.setMinimumSize(240, 220)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Expanding)
@@ -144,8 +146,8 @@ class RpmGauge(QWidget):
         p.setPen(QColor(theme.TEXT_DIM))
         p.setFont(QFont("Segoe UI", max(int(side * 0.032), 8)))
         fm = p.fontMetrics()
-        p.drawText(QPointF(cx - fm.horizontalAdvance("RPM") / 2,
-                           cy + radius * 0.48 + fm.height()), "RPM")
+        p.drawText(QPointF(cx - fm.horizontalAdvance(self.unit) / 2,
+                           cy + radius * 0.48 + fm.height()), self.unit)
         sp = f"set {self._setpoint:g}"
         p.setPen(QColor(theme.series_color(2)))
         fm = p.fontMetrics()

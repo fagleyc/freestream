@@ -154,8 +154,10 @@ def test_dialogs_have_maximize_buttons(app, sim_manager):
     assert sdlg.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint
 
     from freestream.app.device_picker import DevicePickerDialog
+    # legacy 2-tuple catalog entries (no availability field) still work
     pdlg = DevicePickerDialog({"daqbook": ("DaqBook", ["streaming"])}, [])
     assert pdlg.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint
+    assert pdlg.save_mode_name() == ""            # no name typed → no save
 
 
 # ── non-modal device dialogs (other windows stay interactable) ───────────
@@ -312,7 +314,7 @@ def test_traverse_own_defaults_file(app, all_manifest, tmp_path,
 
 def test_lswt_own_defaults_file(app, tmp_path, monkeypatch):
     monkeypatch.setenv("LSWT_DEFAULTS", str(tmp_path))
-    mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     dlg = DeviceConfigDialog(mgr.devices["lswt"])
     try:
         path = dlg._save_device_defaults()

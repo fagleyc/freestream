@@ -47,7 +47,9 @@ class DiagnosticsPanel(QWidget):
         wg.addWidget(self.ctrl_lbl, 0, 1)
         leg1 = QLabel(_CONTROL_LEGEND)
         leg1.setObjectName("dim")
+        leg1.setWordWrap(True)     # long legend must not set the window min
         wg.addWidget(leg1, 0, 2)
+        wg.setColumnStretch(2, 1)
 
         wg.addWidget(QLabel("750-673 module status (S1·S2·S3)"), 1, 0)
         self.mod_lbl = QLabel("--")

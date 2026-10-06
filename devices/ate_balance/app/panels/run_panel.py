@@ -24,11 +24,22 @@ from ate_balance.datamodel import ReducedPoint, RingBuffer, TestCase
 from ate_balance.device import AteBalanceDevice
 from ate_balance.app.plots import TimeHistory
 
-# Loads only — the balance measures forces and moments, nothing aerodynamic.
-_COLUMNS = ["alpha", "beta", "n",
-            "Lift (N)", "Drag (N)", "Side (N)",
-            "Roll (N·m)", "Pitch (N·m)", "Yaw (N·m)"]
-_MEAN_KEYS = ["Lift", "Drag", "Side", "Roll", "Pitch", "Yaw"]
+# Loads only — the balance measures balance-frame components (X back,
+# Y right, Z up), nothing aerodynamic.
+_MEAN_KEYS = ["Fx", "Fy", "Fz", "Mx", "My", "Mz"]
+_FORCE_KEYS = ("Fx", "Fy", "Fz")
+
+
+def _columns(force_u: str = "N", moment_u: str = "N·m") -> List[str]:
+    """Table headers carrying the CONFIGURED unit system — the OGI's
+    Units menu decides what the numbers mean, so nothing here is
+    hardcoded."""
+    return ["alpha", "beta", "n"] + [
+        f"{k} ({force_u if k in _FORCE_KEYS else moment_u})"
+        for k in _MEAN_KEYS]
+
+
+_COLUMNS = _columns()
 
 _WINDOWS = [("5 s", 5.0), ("10 s", 10.0), ("30 s", 30.0), ("60 s", 60.0)]
 
@@ -42,6 +53,12 @@ class RunPanel(QWidget):
         self._dev = device
         self._points: List[ReducedPoint] = []
         self._build(ring)
+
+    def set_units(self, force_u: str, moment_u: str) -> None:
+        """Relabel the results table and the trace axes for the
+        configured unit system."""
+        self.table.setHorizontalHeaderLabels(_columns(force_u, moment_u))
+        self.history.set_units(force_u, moment_u)
 
     def _build(self, ring: RingBuffer):
         root = QVBoxLayout(self)
@@ -176,7 +193,7 @@ class RunPanel(QWidget):
     # ── updates from replies / dwell ──
     def show_sample(self, kind: str, named: dict):
         txt = "  ".join(f"{k}={named.get(k, 0.0):.2f}"
-                        for k in ("Lift", "Drag", "Side", "Pitch", "Yaw", "Roll"))
+                        for k in ("Fx", "Fy", "Fz", "Mx", "My", "Mz"))
         self.sample_lbl.setText(f"Last {kind}:  {txt}")
 
     def add_point(self, rp: ReducedPoint):
@@ -216,7 +233,7 @@ class RunPanel(QWidget):
             w.writerows(rows)
 
     def _export_npz(self):
-        """Save a Streamlined-shaped TestCase as a .npz of named arrays."""
+        """Save a TestCase as a .npz of named arrays (balance-frame axes)."""
         if not self._points:
             return
         path, _ = QFileDialog.getSaveFileName(self, "Export TestCase",
@@ -226,7 +243,6 @@ class RunPanel(QWidget):
         tc = TestCase.from_reduced_points(self._points, name="ATE run")
         np.savez(path,
                  alphas=tc.alphas, betas=tc.betas,
-                 lift_forces=tc.lift_forces, drag_forces=tc.drag_forces,
-                 side_forces=tc.side_forces, roll_moments=tc.roll_moments,
-                 pitch_moments=tc.pitch_moments, yaw_moments=tc.yaw_moments,
+                 Fx=tc.Fx, Fy=tc.Fy, Fz=tc.Fz,
+                 Mx=tc.Mx, My=tc.My, Mz=tc.Mz,
                  Q=tc.tunnel_conditions.Q)

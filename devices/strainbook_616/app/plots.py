@@ -38,6 +38,15 @@ def _envelope(x: np.ndarray, y: np.ndarray, max_bins: int = _MAX_PLOT_BINS):
     return xs, ys
 
 
+def add_clear_action(pw: pg.PlotWidget, callback) -> None:
+    """'Clear plot' entry in the plot's right-click menu. Plots draw from
+    the device ring buffer, so clearing is a per-plot display watermark —
+    stored/recorded samples are untouched."""
+    vb = pw.getPlotItem().getViewBox()
+    vb.menu.addSeparator()
+    vb.menu.addAction("Clear plot").triggered.connect(callback)
+
+
 def _style_plot(pw: pg.PlotWidget) -> None:
     pi = pw.getPlotItem()
     pi.showGrid(x=False, y=True, alpha=0.25)
@@ -139,6 +148,9 @@ class BridgeHistory(QWidget):
         # per-channel plot visibility (name-keyed so it survives channel
         # rebuilds; unknown names default to visible)
         self._visible: Dict[str, bool] = {}
+        # clear watermark: only samples newer than this are drawn
+        self._clear_t = -np.inf
+        self._last_t: Optional[float] = None
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -153,6 +165,7 @@ class BridgeHistory(QWidget):
                      pen=pg.mkPen(theme.BORDER))
         bp.getAxis("bottom").setStyle(showValues=False)
         bp.getViewBox().sigRangeChangedManually.connect(self._user_zoomed)
+        add_clear_action(self._bridge_plot, self.clear_plot)
         lay.addWidget(self._bridge_plot, 4)
 
         self._exc_plot = pg.PlotWidget()
@@ -161,6 +174,7 @@ class BridgeHistory(QWidget):
         ep.setLabel("left", "Exc  (V)")
         ep.setLabel("bottom", "time before now  (s)")
         self._exc_plot.setXLink(self._bridge_plot)
+        add_clear_action(self._exc_plot, self.clear_plot)
         lay.addWidget(self._exc_plot, 1)
 
     def set_channels(self, channels: List[StrainChannelConfig],
@@ -222,6 +236,12 @@ class BridgeHistory(QWidget):
     def set_follow(self, follow: bool) -> None:
         self.follow = follow
 
+    def clear_plot(self) -> None:
+        """Display watermark: only samples newer than 'now' are drawn
+        from here on (the ring buffer / recorded data are untouched)."""
+        if self._last_t is not None:
+            self._clear_t = self._last_t
+
     def refresh(self) -> None:
         if self.paused or self._ring is None or not self.isVisible():
             return
@@ -231,8 +251,9 @@ class BridgeHistory(QWidget):
         t = data["t"]
         if t.size < 2:
             return
+        self._last_t = float(t[-1])
         x = t - t[-1]
-        keep = x >= -self.window_s
+        keep = (x >= -self.window_s) & (t > self._clear_t)
         x = x[keep]
         for curves in (self._bridge_curves, self._exc_curves):
             for name, curve in curves.items():

@@ -155,6 +155,9 @@ class HeisePanel(QWidget):
         self.tabs.addTab(self._build_history_tab(), "History")
         root.addWidget(self.tabs, 1)
 
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
+
     def _build_live_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout(w)
@@ -205,6 +208,10 @@ class HeisePanel(QWidget):
         v = QVBoxLayout(w)
         self.plots = {}
         self.curves = {}
+        # clear watermark: only ring samples newer than this are drawn
+        # (the x-linked stacked plots share one clear)
+        self._clear_t = -np.inf
+        self._last_t = None
         enabled = self.config.enabled_ports()
         for i, p in enumerate(enabled):
             plot = pg.PlotWidget()
@@ -215,12 +222,22 @@ class HeisePanel(QWidget):
             self.plots[p.name] = plot
             self.curves[p.name] = plot.plot(
                 pen=pg.mkPen(theme.series_color(i), width=1))
+            # "Clear plot" in the right-click menu — display watermark
+            # only, the ring/recorded data are untouched
+            vb = plot.getPlotItem().getViewBox()
+            vb.menu.addSeparator()
+            vb.menu.addAction("Clear plot").triggered.connect(
+                self._clear_plot)
             v.addWidget(plot)
         # link time axes so the stacked plots pan/zoom together
         plots = list(self.plots.values())
         for pl in plots[1:]:
             pl.setXLink(plots[0])
         return w
+
+    def _clear_plot(self) -> None:
+        if self._last_t is not None:
+            self._clear_t = self._last_t
 
     # ── COM search (comscan in a worker thread) ──────────────────────────
     def _com_ports(self) -> list:
@@ -395,9 +412,12 @@ class HeisePanel(QWidget):
         names = list(self.curves)
         data = self.device.ring.tail(n, fields=["t"] + names)
         if data["t"].size >= 2:
-            x = data["t"] - data["t"][-1]
+            t = data["t"]
+            self._last_t = float(t[-1])
+            keep = t > self._clear_t          # clear-plot watermark
+            x = t[keep] - t[-1]
             for name in names:
-                self.curves[name].setData(x, data[name])
+                self.curves[name].setData(x, data[name][keep])
 
     def closeEvent(self, event) -> None:              # noqa: N802
         self._ui_timer.stop()

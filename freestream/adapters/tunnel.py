@@ -43,6 +43,17 @@ class TunnelAdapter(ConfigurableAdapter):
     label = "Tunnel PLC (fan RPM)"
     settings_dialog_path = "tunnel_plc.app.settings_dialog:SettingsDialog"
 
+    #: Freestream panel speed display: fan RPM, ceiling ``config.rpm_max``
+    #: (0 = not configured — the dashboard falls back to its default).
+    speed_display_unit = "RPM"
+
+    @property
+    def speed_display_max(self) -> float:
+        try:
+            return float(self._cfg.rpm_max or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def __init__(self, sim: bool = False,
                  config_path: Optional[str] = None,
                  rpm_tol: float = 25.0,
@@ -131,6 +142,25 @@ class TunnelAdapter(ConfigurableAdapter):
     def readback(self) -> Dict[str, float]:
         snap = self._monitor.snapshot()
         return {"rpm": snap.actual_rpm, "rpm_set": snap.rpm_set}
+
+    # ── safety ───────────────────────────────────────────────────────────
+    def estop(self) -> None:
+        """E-stop: zero the speed command (best effort) + fan STOP button.
+
+        Builds the control directly with ``enable_writes=True``, BYPASSING
+        the rpm_max arming guard in :meth:`_get_control` — stopping is the
+        safe direction (mirrors TunnelControl.stop_tunnel_fan's own
+        interlock bypass)."""
+        if self._control is None:
+            from tunnel_plc.control import TunnelControl
+            self._control = TunnelControl(self._cfg, self._monitor,
+                                          enable_writes=True)
+        try:
+            self._control.set_rpm(0.0)
+        except Exception:                              # noqa: BLE001
+            pass       # rpm_max unarmed/stale — the STOP below still fires
+        self._target = 0.0
+        self._control.stop_tunnel_fan()
 
     # ── tunnel-environment widgets (Freestream live monitor) ─────────────
     def snapshot(self):

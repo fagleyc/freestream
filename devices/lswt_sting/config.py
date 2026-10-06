@@ -109,6 +109,15 @@ class StingAxisConfig:
     #: power-to-release through this output so it fails safe.
     brake_output: int = 0
 
+    #: de-energize the motor windings (SX ``ST1`` shutdown) whenever
+    #: the axis is idle, re-energizing (``ST0`` + settle) before any
+    #: move. Kills the stepper holding-current chopping that couples
+    #: EMI into the balance wiring. ONLY safe with a brake (or a
+    #: self-locking mechanism) — a shut-down stepper has ZERO holding
+    #: torque. The position counter lives in the indexer, so no
+    #: re-zero is needed across shutdown cycles.
+    idle_shutdown: bool = False
+
     def counts_to_angle(self, counts: int) -> float:
         return (self.zero_offset_deg
                 + self.direction * counts / self.steps_per_degree)
@@ -129,7 +138,13 @@ class StingAxisConfig:
 
 def _alpha() -> StingAxisConfig:
     """Alpha axis defaults (unit 1). Travel guess −15…+30° — the legacy
-    limits come from the Tunnel Default File; park position is ~+29.3°."""
+    limits come from the Tunnel Default File; park position is ~+29.3°.
+
+    idle_shutdown back OFF (2026-08-05): a manual A/B test with BOTH
+    drives de-energized left the balance noise unchanged — the stepper
+    holding current is not the noise source — so the motors stay
+    engaged like the legacy tool. The manual Drive Current buttons /
+    ``set_energized`` remain for future diagnostics."""
     return StingAxisConfig(name="Alpha", unit="1",
                            steps_per_degree=ALPHA_STEPS_PER_DEG,
                            acceleration="10.8528", deceleration="10.8528",
@@ -158,14 +173,18 @@ class StingConfig:
     com_port: str = "COM1"
     baud: int = 9600                # drives are fixed 9600-8N1, CR newline
     serial_timeout_s: float = 0.5
+    #: settle time after re-energizing a shut-down drive (``ST0``)
+    #: before motion is commanded — the SX needs a moment for the
+    #: current loop to stabilize
+    energize_settle_s: float = 0.5
+
     #: send Z (drive reset) during connect init, like the legacy
-    #: InitHw. OFF by default (2026-07-23): Z wipes the indexer step
-    #: counter — which fights the position-restore safety feature —
-    #: and the legacy manual warns the reset may cause uncontrolled
-    #: movement. Enable per-session (Limits tab / settings) when a
-    #: genuine drive re-boot is wanted; reinitialize() still offers
-    #: the full legacy sequence with an explicit confirmation.
-    init_reset: bool = False
+    #: InitHw. ON by default (restored 2026-07-24): the drives NEED the
+    #: Z after a power cycle to come up clean, and power-cycling is the
+    #: normal daily sequence. The cost — Z wipes the indexer counter —
+    #: is covered by the position-restore feature, which re-derives the
+    #: zero reference from the saved state after the reset.
+    init_reset: bool = True
 
     # ── control/poll loop ────────────────────────────────────────────────
     poll_ms: int = 250              # status/position poll period
@@ -206,6 +225,16 @@ class StingConfig:
     @classmethod
     def from_dict(cls, d: dict) -> "StingConfig":
         d = dict(d)
+        # init_reset is NOT restored from saved configs (2026-08-05):
+        # defaults files / Freestream config bundles saved while the Z
+        # reset was opt-in (2026-07-23..08-04) persisted False and kept
+        # resurrecting it through load_startup_config — so an embedded
+        # Freestream connect after a drive power cycle failed until the
+        # operator toggled Z in the standalone app. The drives NEED the
+        # Z after a power cycle and position restore covers the counter
+        # wipe, so Z-at-connect always starts ON; the Limits-tab switch
+        # remains a per-session override.
+        d.pop("init_reset", None)
         known = {f for f in cls.__dataclass_fields__}      # noqa: E1101
         ax_fields = {f for f in
                      StingAxisConfig.__dataclass_fields__}  # noqa: E1101

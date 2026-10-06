@@ -24,7 +24,7 @@ from ni_usb_6351 import balcal, theme
 from ni_usb_6351.config import NiDaqConfig
 from ni_usb_6351.datamodel import ScanRingBuffer
 
-from .plots import _style_plot
+from .plots import _style_plot, add_clear_action, lowpass
 
 _FORCES = [("Fx", "lb"), ("Fy", "lb"), ("Fz", "lb"),
            ("Mx", "in·lb"), ("My", "in·lb"), ("Mz", "in·lb")]
@@ -61,9 +61,9 @@ class _ForceTile(QFrame):
         lay.addWidget(u)
 
     def update_value(self, v: float):
-        mag = abs(v)
-        dec = 4 if mag < 1 else (3 if mag < 10 else 2)
-        self.value.setText(f"{v:+,.{dec}f}")
+        # FIXED format: hopping decimal counts resized the tile row
+        # every refresh (window-size bounce)
+        self.value.setText(f"{v:+9.3f}")
 
 
 class ForcesPanel(QWidget):
@@ -80,6 +80,10 @@ class ForcesPanel(QWidget):
         self.config = cfg
         self.cal: Optional[balcal.BalanceCalibration] = None
         self.overstress: bool = False
+        # history-plot clear watermark (display only — the safety path
+        # and recorded data always see every sample)
+        self._plot_clear_t = -np.inf
+        self._last_t: Optional[float] = None
         self._build()
 
     # ── UI ──
@@ -170,7 +174,12 @@ class ForcesPanel(QWidget):
             self._curves[name] = pi.plot(
                 [], [], name=name, antialias=False,
                 pen=pg.mkPen(theme.series_color(i), width=1))
+        add_clear_action(self._hist, self._clear_plot)
         root.addWidget(self._hist, 1)
+
+    def _clear_plot(self):
+        if self._last_t is not None:
+            self._plot_clear_t = self._last_t
 
     # ── calibration ──
     def _browse_vol(self):
@@ -271,6 +280,7 @@ class ForcesPanel(QWidget):
         t = data["t"]
         if t.size < 2:
             return
+        self._last_t = float(t[-1])
         n_safe = min(t.size, int(self._SAFETY_S * rate) + 2)
 
         # excitation normalization — only with a live excitation reading
@@ -286,6 +296,14 @@ class ForcesPanel(QWidget):
             self.cal_info.setText("calibration loaded, but the channel "
                                   "names don't match the balance channels")
             return
+        # display/monitoring low-pass at the TOP of the pipeline: the
+        # tiles, the peak-based utilization bars and the history plot
+        # all inherit it. Without this, 1 kHz electrical noise peaks
+        # inflate the utilization far above the (mean) displayed loads.
+        # Recorded data is untouched — this is the panel's view only.
+        lpf = getattr(self.config, "display_lpf_hz", 0.0)
+        if lpf > 0:
+            raw = {k: lowpass(v, rate, lpf) for k, v in raw.items()}
 
         def forces_of(sel):
             r = {k: v[sel] for k, v in raw.items()}
@@ -305,10 +323,12 @@ class ForcesPanel(QWidget):
         for name, _u in _FORCES:
             self.tiles[name].update_value(
                 float(np.mean(getattr(brf, name)[-n_tile:])))
-        if self.exc_v is not None and self.exc_v < 7.0:
+        min_exc = getattr(self.config, "min_excitation_v", 4.0)
+        if self.exc_v is not None and self.exc_v < min_exc:
             self.cal_info.setText(
                 balcal.balance_summary(self.cal) +
-                f"   ⚠ excitation {self.exc_v:.2f} V < 7 V — forces "
+                f"   ⚠ excitation {self.exc_v:.2f} V < {min_exc:g} V — "
+                f"forces "
                 f"{'UNNORMALIZED' if self.exc_v < 1.0 else 'suspect'}")
 
         # history plot: decimate BEFORE the cal pipeline (display-grade;
@@ -321,10 +341,11 @@ class ForcesPanel(QWidget):
                     t.size > n_safe else brf
             except Exception:                          # noqa: BLE001
                 brf_plot = brf
-            x = (t[sel] - t[-1]) if brf_plot is not brf else \
-                (t[-n_safe:] - t[-1])
+            t_plot = t[sel] if brf_plot is not brf else t[-n_safe:]
+            keep = t_plot > self._plot_clear_t     # clear-plot watermark
+            x = t_plot[keep] - t[-1]
             for name, _u in _FORCES:
-                self._curves[name].setData(x, getattr(brf_plot, name))
+                self._curves[name].setData(x, getattr(brf_plot, name)[keep])
 
         # utilization / overstress (newest slice — live load state)
         util = balcal.element_utilization(self.cal, brf.elements)

@@ -261,6 +261,9 @@ class StrainbookPanel(QWidget):
         if self.config.vol_path:
             self.forces_panel.load_vol(self.config.vol_path)
 
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
+
     # ── balance layout (Force ↔ Moment) ──
     def _on_balance_config_changed(self, text: str):
         """Route a Forces-tab layout pick to the driver: it renames the four

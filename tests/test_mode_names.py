@@ -1,6 +1,6 @@
 """Intuitive mode names (Task: drop "mode N") — manifest round-trip,
 legacy "mode1"/"mode2"/"mode3" aliases, config-load normalization, the
-new LSWT-LSWTSting-NI mode wiring, and the manifest-driven mode combo.
+new LSWT-N-Crescent-NI mode wiring, and the manifest-driven mode combo.
 """
 
 import json
@@ -19,7 +19,7 @@ from freestream.manager import (DEFAULT_MANIFEST, LEGACY_MODE_ALIASES,
                                 DeviceManager)
 
 NEW_MODES = ("SWT-AC-Internal", "SWT-External", "SWT-Traverse",
-             "LSWT-LSWTSting-NI")
+             "LSWT-N-Crescent-NI", "LSWT-S-Traverse-NI")
 
 
 # ── manifest round-trip ──────────────────────────────────────────────────
@@ -40,8 +40,10 @@ def test_new_names_build_the_old_device_sets():
     assert set(mgr.devices) == {"ate", "daqbook", "tunnel"}
     # the DaqBook stays the tunnel_conditions device in SWT-External
     assert mgr.roles["tunnel_conditions"] == "daqbook"
+    # SWT-Traverse gained the tunnel PLC so traverse surveys can
+    # command speed steps (sweep._set_tunnel needs a SetpointDevice)
     mgr = DeviceManager("SWT-Traverse", sim=True)
-    assert set(mgr.devices) == {"traverse", "daqbook"}
+    assert set(mgr.devices) == {"traverse", "daqbook", "tunnel"}
 
 
 # ── legacy aliases ───────────────────────────────────────────────────────
@@ -81,16 +83,25 @@ def test_config_load_normalises_legacy_mode(tmp_path):
     FreestreamConfig(mode="mode2").save(path)
     assert FreestreamConfig.load(path).mode == "SWT-External"
     # current names round-trip untouched
+    FreestreamConfig(mode="LSWT-N-Crescent-NI").save(path)
+    assert FreestreamConfig.load(path).mode == "LSWT-N-Crescent-NI"
+    # the retired North name (pre arc-crescent rename) maps forward
     FreestreamConfig(mode="LSWT-LSWTSting-NI").save(path)
-    assert FreestreamConfig.load(path).mode == "LSWT-LSWTSting-NI"
+    assert FreestreamConfig.load(path).mode == "LSWT-N-Crescent-NI"
     # custom mode untouched
     FreestreamConfig(mode="custom", custom_devices=["heise"]).save(path)
     assert FreestreamConfig.load(path).mode == "custom"
 
 
 # ── the new LSWT mode ────────────────────────────────────────────────────
-def test_lswt_mode_builds_and_wires_roles():
+def test_retired_north_name_builds_crescent_mode():
+    # pre-rename configs / muscle memory: the sting-era name still works
     mgr = DeviceManager("LSWT-LSWTSting-NI", sim=True)
+    assert set(mgr.devices) == {"lswt_sting", "ni_daq", "heise", "lswt"}
+
+
+def test_lswt_mode_builds_and_wires_roles():
+    mgr = DeviceManager("LSWT-N-Crescent-NI", sim=True)
     assert set(mgr.devices) == {"lswt_sting", "ni_daq", "heise", "lswt"}
     assert mgr.roles == {"positioner": "lswt_sting", "balance": "ni_daq",
                          "tunnel_conditions": "heise", "tunnel": "lswt"}
@@ -100,8 +111,34 @@ def test_lswt_mode_builds_and_wires_roles():
     assert {s.id for s in mgr.streaming} == {"ni_daq", "heise"}
 
 
+# ── the South LSWT traverse mode ─────────────────────────────────────────
+def test_lswt_south_mode_builds_and_wires_roles():
+    """LSWT-S-Traverse-NI = the North NI mode with the South traverse as
+    the Positioner and the fan adapter built for tunnel='south'."""
+    mgr = DeviceManager("LSWT-S-Traverse-NI", sim=True)
+    assert set(mgr.devices) == {"lswt_traverse", "ni_daq", "heise",
+                                "lswt_south"}
+    assert mgr.roles == {"positioner": "lswt_traverse",
+                         "balance": "ni_daq",
+                         "tunnel_conditions": "heise",
+                         "tunnel": "lswt_south"}
+    assert isinstance(mgr.positioner, Positioner)
+    assert {a.name for a in mgr.positioner.axes()} == {"x", "y", "z"}
+    assert isinstance(mgr.setpoint, SetpointDevice)
+    # the manifest options reached the adapter: it IS the South drive
+    assert mgr.setpoint.id == "lswt_south"
+    assert mgr.setpoint.config.tunnel == "south"
+    assert "South" in mgr.setpoint.label
+    assert {s.id for s in mgr.streaming} == {"ni_daq", "heise"}
+
+
 # ── GUI: manifest-driven mode combo ──────────────────────────────────────
-def test_mode_combo_lists_manifest_modes_plus_custom():
+def test_mode_combo_lists_manifest_modes_plus_custom(tmp_path, monkeypatch):
+    """With NO saved user modes (env override → empty store, so a
+    developer's real ~/.freestream never leaks in) the combo is exactly
+    the manifest modes + "custom"."""
+    monkeypatch.setenv("FREESTREAM_USER_MODES",
+                       str(tmp_path / "user_modes.json"))
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([sys.argv[0]])  # noqa: F841
     from freestream.app.main_window import FreestreamMainWindow
@@ -112,8 +149,12 @@ def test_mode_combo_lists_manifest_modes_plus_custom():
                  for i in range(win.mode_combo.count())]
         assert items == list(NEW_MODES) + [DeviceManager.CUSTOM]
         assert win.mode_combo.currentText() == "SWT-AC-Internal"
-        # the custom-mode picker catalog offers EVERY manifest device
+        # the custom-mode picker catalog offers EVERY manifest device,
+        # each carrying (label, caps, availability-probe reason)
         catalog = win._device_catalog()
         assert set(catalog) == set(mgr.manifest["devices"])
+        for label, caps, reason in catalog.values():
+            assert isinstance(label, str)
+            assert isinstance(reason, str)
     finally:
         win.close()

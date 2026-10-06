@@ -52,6 +52,25 @@ def main() -> int:
     xe, _ye = panel.history._curves["Excitation"].getData()
     assert xe is not None and len(xe) >= 100, "excitation trace empty"
 
+    # oversample selector: default is AUTO (config 0); sim runs at 1x
+    assert panel.os_combo.currentData() == 0
+    assert panel.device.oversample_actual == 1
+
+    # filter study tab: cutoff ladder + live noise stats for one channel
+    panel.tabs.setCurrentWidget(panel.filter_panel)
+    panel.filter_panel.chan_combo.setCurrentText("N1")
+    _pump(app, 0.6)
+    fs = panel.filter_panel
+    assert 0.0 in fs._curves and 10.0 in fs._curves
+    xf, _yf = fs._curves[10.0].getData()
+    assert xf is not None and len(xf) >= 50, "filter study trace empty"
+    assert fs.stats.item(0, 1).text() != "--", "noise stats not filled"
+    fs._checks[100.0].setChecked(False)      # untick drops the curve
+    _pump(app, 0.2)
+    assert 100.0 not in fs._curves
+    fs._checks[100.0].setChecked(True)
+    panel.tabs.setCurrentIndex(0)
+
     # tare via the GUI button
     panel.tare_btn.click()
     _pump(app, 0.5)

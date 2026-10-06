@@ -8,6 +8,10 @@ sim. Per-point cycle::
     → move positioner(alpha, beta) → wait settled → (optional zero) →
     drain stale → dwell → acquire → write .h5 → advance
 
+An opted-in positioner (``overlap_tunnel_ramp`` — the crescent) is
+commanded BEFORE the tunnel settle wait so the move overlaps the fan
+ramp; recording still waits BOTH speed settle and position settle.
+
 THREE explicit tunnel-speed control tiers (``config.tunnel_control_mode``),
 each keyed off the SELECTED speed unit (``config.speed_unit``) and the
 adapter's NATIVE command parameter — never forced through Mach/RPM:
@@ -111,6 +115,11 @@ class OperatorWaitRequest:
     #: live measured speed in ``unit`` (None-returning callable when
     #: unavailable); only set for velocity/rpm display units
     measure_value: Optional[Callable[[], Optional[float]]] = None
+    #: True = the dialog may auto-proceed once the measurement holds
+    #: inside ``tolerance`` (the verify-before-recording toggle ON).
+    #: False = hold until the OPERATOR clicks proceed: the tunnel still
+    #: has to come up to speed, but nothing verifies that it did.
+    verify: bool = True
 
     @property
     def is_rpm(self) -> bool:
@@ -174,6 +183,8 @@ class SweepEngine:
         self.config = config
         self.cb = callbacks or SweepCallbacks()
         self._abort = threading.Event()
+        #: speed step the operator has already confirmed in verify-off manual mode
+        self._speed_confirmed = None
         self._pause = threading.Event()      # requested (checked at boundary)
         self._holding = False                # actually holding right now
         self._running = False
@@ -231,11 +242,12 @@ class SweepEngine:
         self._abort.set()
 
     def estop(self) -> None:
-        """Immediate: stop all motion NOW, then abort the sweep."""
+        """Immediate: stop ALL devices NOW (motion + tunnel drives), then
+        abort the sweep."""
         self._abort.set()
         self._estopped = True
-        self.manager.stop_all_motion()
-        self._event("E-STOP: all motion stopped, sweep aborted")
+        self.manager.estop_all()
+        self._event("E-STOP: all motion and tunnel stopped, sweep aborted")
 
     # ── main entry (call on a worker thread) ─────────────────────────────
     def run(self, points: List[SweepPoint]) -> List[PointOutcome]:
@@ -247,6 +259,13 @@ class SweepEngine:
         # marker written into every point file's root attrs — Feature 2).
         self._run_speed_unit, self._run_speed_setpoints = \
             self._collect_speed_setpoints(points)
+        # calibration hand-off: copy the active balance .vol beside the run
+        # files + record it in manifest.json (never applied — raw stays raw;
+        # a staging failure must never stop the run).
+        try:
+            self._stage_balance_cal()
+        except Exception:                          # noqa: BLE001
+            log.exception("balance cal staging failed")
         outcomes: List[PointOutcome] = []
         try:
             # arm/run the tunnel fan ONCE before commanding any point (only
@@ -451,8 +470,14 @@ class SweepEngine:
         try:
             self._check_blockers()
             self._require_data_devices()
+            # overlap: an opted-in positioner (crescent) is commanded
+            # toward the point BEFORE the tunnel settle wait — the move
+            # rides the fan ramp. Sampling never starts early: speed
+            # settle (inside _set_tunnel) AND position settle (inside
+            # _move) must both hold first.
+            moving = self._start_overlap_move(point)
             self._set_tunnel(point)
-            self._move(point)
+            self._move(point, pre_commanded=moving)
             self._zero_if_wanted(point)
             path = self._acquire_and_write(point)
             point.status = DONE
@@ -561,22 +586,45 @@ class SweepEngine:
     def _tunnel_manual(self, point: SweepPoint, rpm_override,
                        dev: SetpointDevice) -> None:
         """The OPERATOR brings the tunnel to the target; Freestream only
-        monitors. ``mach_check_enabled`` is the sub-toggle: True = wait
-        (operator dialog) until the measured value holds in tolerance, then
-        auto-proceed; False = record immediately. Air-off (target 0)
-        records immediately either way — there is nothing to wait for."""
+        monitors. ``mach_check_enabled`` is the sub-toggle:
+
+        True
+            Prompt and wait until the measured value holds inside the
+            tolerance band, then auto-proceed.
+        False
+            Prompt once per SPEED STEP and wait for the operator to say
+            the tunnel is up. Nothing verifies the measurement, and the
+            dialog cannot auto-proceed. (Before 2026-08-21 this
+            recorded immediately, which meant a speed step could be
+            captured before the fan had reached it.)
+
+        Air-off (target 0) records immediately either way — there is
+        nothing to wait for, and it resets the confirmed step because
+        the fan has stopped."""
         if self._is_air_off(point, rpm_override):
+            # the fan is off, so any speed the operator confirmed
+            # earlier is stale: coming back up to it has to prompt again
+            self._speed_confirmed = None
             self._record_requested(point, rpm_override)
             self._event("tunnel: air-off (target 0) — recording "
                         "immediately (manual, no verify wait)")
             return
         if not self.config.mach_check_enabled:
-            # per-point speed gate DISABLED: no dialog, no settle wait —
-            # record immediately with the requested condition in /Tunnel.
-            self._record_requested(point, rpm_override)
-            self._event(
-                "tunnel: Mach verification disabled — recording "
-                "immediately without waiting for tunnel conditions")
+            # Verification DISABLED: nothing checks the measured speed,
+            # but the operator still has to bring the tunnel up before
+            # the point is recorded. Prompt once per SPEED STEP (the
+            # target only changes between steps, and prompting on every
+            # alpha of an inner loop would be unusable), then record
+            # the requested condition without a settle wait.
+            key = self._speed_key(point, rpm_override)
+            if key == self._speed_confirmed:
+                self._record_requested(point, rpm_override)
+                self._event(
+                    "tunnel: speed step already confirmed by the "
+                    "operator — recording without re-prompting")
+                return
+            self._operator_wait(point, rpm_override, dev, verify=False)
+            self._speed_confirmed = key
             return
         # verify-and-wait: the OPERATOR sets the console; we wait/prompt.
         self._operator_wait(point, rpm_override, dev)
@@ -745,8 +793,17 @@ class SweepEngine:
                     f"recording with the best command ({value:g} {kwarg}) "
                     f"— regulation is advisory (tunnel_regulate_fault off)")
 
+    @staticmethod
+    def _speed_key(point: SweepPoint, rpm_override) -> tuple:
+        """Identity of a speed STEP: two points share it when they ask
+        the tunnel for the same thing."""
+        if rpm_override is not None:
+            return ("rpm", round(float(rpm_override), 6))
+        return ("mach", round(float(point.mach), 6))
+
     def _operator_wait(self, point: SweepPoint, rpm_override,
-                       dev: SetpointDevice) -> None:
+                       dev: SetpointDevice,
+                       verify: bool = True) -> None:
         """Monitor-only tunnel stage: prompt the operator (or, headless,
         log + proceed) instead of commanding the fan. NO writes here —
         only DAQ/readback reads via the request's measure()/
@@ -773,12 +830,13 @@ class SweepEngine:
             req = OperatorWaitRequest(
                 target_mach=None, tolerance=tol, measure=measure,
                 target_rpm=target_rpm, unit="rpm",
-                target_value=target_rpm)
+                target_value=target_rpm, verify=verify)
         elif unit == "mach":
             # byte-for-byte the historical mach-point behavior
             req = OperatorWaitRequest(
                 target_mach=float(point.mach),
-                tolerance=float(cfg.mach_tolerance), measure=measure)
+                tolerance=float(cfg.mach_tolerance), measure=measure,
+                verify=verify)
         else:
             # velocity (or rpm-display) entry unit: entered value when
             # the planner stamped one, else the canonical Mach through
@@ -795,7 +853,8 @@ class SweepEngine:
                 tolerance=float(cfg.speed_tolerance), measure=measure,
                 unit=unit, target_value=target_value,
                 measure_value=lambda: speed.measured_value(manager, dev,
-                                                           unit))
+                                                           unit),
+                verify=verify)
         target_mach = req.target_mach
         target_rpm = req.target_rpm
         if self._abort.is_set():
@@ -832,43 +891,77 @@ class SweepEngine:
         self.abort()
         raise SweepAborted()
 
-    def _move(self, point: SweepPoint) -> None:
-        axes = {k: v for k, v in (("alpha", point.alpha),
+    @staticmethod
+    def _motion_axes(point: SweepPoint) -> Dict[str, float]:
+        """The axis targets this point carries (unfiltered)."""
+        return {k: v for k, v in (("alpha", point.alpha),
                                   ("beta", point.beta),
                                   ("x", point.x),
                                   ("y", point.y),
                                   ("z", point.z)) if v is not None}
+
+    def _filter_axes(self, pos, axes: Dict[str, float],
+                     warn: bool = True) -> Dict[str, float]:
+        """Only command axes the positioner actually exposes: alpha/beta
+        drive the sting rigs (crescent/ate), x/y/z drive the traverse
+        (Mode 3 matrix sweeps). A point carrying axes the active
+        positioner doesn't have simply doesn't command them (harmless —
+        e.g. an alpha/beta run sheet loaded while the traverse is the
+        positioner moves nothing). EXCEPTION: a dropped beta on an
+        attitude rig is called out VISIBLY — a ½-span ATE
+        (span_config="half") has no beta axis, and the operator must
+        see that the run sheet's beta column is not being flown."""
+        valid = {a.name for a in pos.axes()}
+        dropped = {k: v for k, v in axes.items() if k not in valid}
+        axes = {k: v for k, v in axes.items() if k in valid}
+        if warn and "beta" in dropped and "alpha" in valid:
+            span = getattr(pos, "span_config", "")
+            self._event(
+                f"WARNING: beta={dropped['beta']:g} dropped — positioner "
+                f"'{getattr(pos, 'id', '?')}' has no beta axis"
+                + (" (½-span configuration)" if span == "half" else ""))
+        return axes
+
+    def _start_overlap_move(self, point: SweepPoint) -> bool:
+        """Command an opted-in positioner (CrescentAdapter's
+        ``overlap_tunnel_ramp``) toward the point BEFORE the tunnel
+        stage's settle wait, so the crescent ramps to attitude WHILE the
+        fan ramps to speed. Sampling never starts early — _set_tunnel
+        still waits speed settle and _move still waits position settle.
+        Positioners without the opt-in (sting, traverse, ate) keep the
+        historical conservative order: tunnel first, then move."""
+        pos = self.manager.positioner
+        if pos is None or not getattr(pos, "overlap_tunnel_ramp", False):
+            return False
+        axes = self._filter_axes(pos, self._motion_axes(point))
+        if not axes:
+            return False
+        self._set_point_state(point, MOVING)
+        self._event("move → " + ", ".join(f"{k}={v:g}"
+                                          for k, v in axes.items())
+                    + " (overlapped with tunnel ramp)")
+        pos.move_to(**axes)
+        time.sleep(self.config.settle_poll_s)       # let motion begin
+        return True
+
+    def _move(self, point: SweepPoint, pre_commanded: bool = False) -> None:
+        axes = self._motion_axes(point)
         if not axes:
             return
         pos = self.manager.positioner
         if pos is None:
             raise RuntimeError("point requests motion but no Positioner "
                                "is registered")
-        # Only command axes the positioner actually exposes: alpha/beta
-        # drive the sting rigs (crescent/ate), x/y/z drive the traverse
-        # (Mode 3 matrix sweeps). A point carrying axes the active
-        # positioner doesn't have simply doesn't command them (harmless —
-        # e.g. an alpha/beta run sheet loaded while the traverse is the
-        # positioner moves nothing). EXCEPTION: a dropped beta on an
-        # attitude rig is called out VISIBLY — a ½-span ATE
-        # (span_config="half") has no beta axis, and the operator must
-        # see that the run sheet's beta column is not being flown.
-        valid = {a.name for a in pos.axes()}
-        dropped = {k: v for k, v in axes.items() if k not in valid}
-        axes = {k: v for k, v in axes.items() if k in valid}
-        if "beta" in dropped and "alpha" in valid:
-            span = getattr(pos, "span_config", "")
-            self._event(
-                f"WARNING: beta={dropped['beta']:g} dropped — positioner "
-                f"'{getattr(pos, 'id', '?')}' has no beta axis"
-                + (" (½-span configuration)" if span == "half" else ""))
+        # dropped-axis warning already emitted by the overlap command
+        axes = self._filter_axes(pos, axes, warn=not pre_commanded)
         if not axes:
             return
-        self._set_point_state(point, MOVING)
-        self._event("move → " + ", ".join(f"{k}={v:g}"
-                                          for k, v in axes.items()))
-        pos.move_to(**axes)
-        time.sleep(self.config.settle_poll_s)       # let motion begin
+        if not pre_commanded:
+            self._set_point_state(point, MOVING)
+            self._event("move → " + ", ".join(f"{k}={v:g}"
+                                              for k, v in axes.items()))
+            pos.move_to(**axes)
+            time.sleep(self.config.settle_poll_s)   # let motion begin
         self._wait(pos.settled, self.config.move_timeout_s,
                    "positioner never settled")
 
@@ -959,6 +1052,15 @@ class SweepEngine:
                 blocks.setdefault(ch.group, {})[ch.name] = arr
                 units.setdefault(ch.group, {})[ch.name] = ch.unit
         for group, got in short.items():
+            # a slower group (e.g. the ~1 Hz Heise indicator) can never
+            # deliver the primary-rate sample count within the acquire
+            # window — expected shortfall, not a fault: debug log only,
+            # never an operator-facing WARNING per point
+            if rates.get(group, primary_rate) * acquire_s < want:
+                log.debug("%s captured %d samples < requested %d "
+                          "(rate-limited device — writing all available)",
+                          group, got, want)
+                continue
             self._event(f"WARNING: {group} captured {got} samples < "
                         f"requested {want} — writing all {got} available "
                         f"(no trim)")
@@ -1032,7 +1134,15 @@ class SweepEngine:
         # into the file's ROOT attrs so post-processing (Streamlined) can
         # interpret the Positioner channels (½-span: Alpha is yaw-derived
         # and Beta is a recorded constant zero)
+        # ...and the BALANCE adapter is asked too, because the ½-span
+        # mount is a property of how the model sits on the balance, not
+        # of which device happens to be driving alpha. Streamlined
+        # cannot pick the right resolution without this marker, and a
+        # missing one silently means "full".
         span = getattr(pos, "span_config", None)
+        if not (isinstance(span, str) and span):
+            span = getattr(self.manager.by_role("balance"),
+                           "span_config", None)
         if isinstance(span, str) and span:
             extra_attrs["span_config"] = span
         # run-level speed-sweep marker (Feature 2): the FULL set of speed
@@ -1122,6 +1232,41 @@ class SweepEngine:
         if btype:
             markers["balance_type"] = str(btype)
         return markers
+
+    def _stage_balance_cal(self) -> None:
+        """Run-start calibration hand-off: copy the active balance ``.vol``
+        into the run folder and record its filename + balance identity in
+        ``manifest.json`` (see :meth:`Hdf5Recorder.stage_balance_cal`), so
+        Streamlined's reduction finds the exact cal in effect at capture
+        without a manual CalFiles lookup. The .vol path/type come from the
+        balance-role adapter (device-owned), falling back to the config;
+        no .vol configured → no-op."""
+        bal = self.manager.by_role("balance")
+        vol = str(getattr(bal, "vol_path", "") or "") if bal is not None \
+            else ""
+        if not vol:
+            vol = str(getattr(self.config, "vol_path", "") or "")
+        if not vol:
+            return
+        emeta = {}
+        extra = getattr(bal, "extra_meta", None)
+        if callable(extra):
+            try:
+                emeta = extra() or {}
+            except Exception:                      # noqa: BLE001
+                emeta = {}
+        meta = {
+            "cal_type": str(getattr(bal, "cal_type", "")
+                            or self.config.cal_type or ""),
+            "balance_config": str(getattr(bal, "balance_config", "")
+                                  or self.config.balance_config or ""),
+            "balance_type": str(emeta.get("balance_type")
+                                or getattr(bal, "balance_type", "") or ""),
+            "balance_serial": str(emeta.get("balance_serial") or ""),
+        }
+        dest = self.recorder.stage_balance_cal(vol, meta)
+        if dest is not None:
+            self._event(f"balance cal staged beside run files: {dest.name}")
 
     def _device_meta(self, d_id: str, dev) -> Dict:
         """One /meta/devices entry: the fixed keys plus whatever extra

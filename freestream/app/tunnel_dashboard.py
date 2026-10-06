@@ -122,6 +122,11 @@ class StatTile(QFrame):
     def set_unit(self, unit: str) -> None:
         self.unit.setText(unit)
 
+    def set_caption(self, label: str) -> None:
+        """Re-label the tile (per-configuration units, e.g. Fan Hz)."""
+        self._cap_text = label.upper()
+        self.cap.setText(self._cap_text)
+
 
 class StatusLamp(QWidget):
     """One tunnel-status indicator chip: a glowing LED dot + label.
@@ -339,6 +344,9 @@ class TunnelDashboard(QWidget):
         self.active = False
         self._t0 = time.monotonic()
         self._hist: Dict[str, deque] = {}
+        # clear-plot watermark: only history newer than this is drawn
+        # (the deques are untouched; the x-linked strips clear together)
+        self._clear_mark = float("-inf")
         self._tunnel: Optional[SetpointDevice] = None
         self._positioner = None
         self._targets: Dict[str, Optional[float]] = {"alpha": None,
@@ -524,7 +532,17 @@ class TunnelDashboard(QWidget):
             pen=pg.mkPen(theme.series_color(1), width=1), antialias=False)
         self._c_rpm = self._p_rpm.plot(
             pen=pg.mkPen(theme.series_color(2), width=1), antialias=False)
+        # "Clear plot" context-menu entry on each strip (one shared
+        # watermark — the strips are x-linked)
+        for p in (self._p_mach, self._p_q, self._p_rpm):
+            vb = p.getViewBox()
+            vb.menu.addSeparator()
+            vb.menu.addAction("Clear plot").triggered.connect(
+                self._clear_plot)
         root.addWidget(self._glw, 1)
+
+    def _clear_plot(self) -> None:
+        self._clear_mark = time.monotonic() - self._t0
 
     def resizeEvent(self, event) -> None:              # noqa: N802
         """Adaptive top band: the stat-tile NUMBERS always win. When the
@@ -552,6 +570,8 @@ class TunnelDashboard(QWidget):
         self.manager = manager
         self._hist.clear()
         self._t0 = time.monotonic()
+        # t restarts at 0 — a stale mark would blank the new history
+        self._clear_mark = float("-inf")
         self._discover()
 
     def set_targets(self, alpha: Optional[float],
@@ -563,6 +583,21 @@ class TunnelDashboard(QWidget):
     def _discover(self) -> None:
         dev = self.manager.by_role("tunnel")
         self._tunnel = dev if hasattr(dev, "snapshot") else None
+        # per-configuration speed display: the tunnel adapter declares its
+        # NATIVE unit + ceiling (LSWT ACS530 → Hz, max 60; SWT PLC → RPM,
+        # rpm_max) — the fan tile, strip chart and gauge all follow it.
+        unit = str(getattr(dev, "speed_display_unit", "") or "RPM")
+        try:
+            self._speed_max = float(
+                getattr(dev, "speed_display_max", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            self._speed_max = 0.0
+        self.tiles["rpm"].set_caption(f"Fan {unit} / set")
+        self.tiles["rpm"].setToolTip(
+            f"Fan {unit} readback / commanded setpoint")
+        self._p_rpm.setLabel("left", f"Fan {unit}")
+        if self.gauge is not None:
+            self.gauge.unit = unit         # hub unit label under the needle
         # positioner (crescent, ate, lswt_sting…) feeds the α/β pad;
         # positions() reports alpha/beta in deg for all attitude rigs
         self._positioner = getattr(self.manager, "positioner", None)
@@ -642,8 +677,11 @@ class TunnelDashboard(QWidget):
                 snap = None
             if snap is not None:
                 if self.gauge is not None:
-                    rpm_max = float(getattr(self._tunnel.config, "rpm_max",
-                                            0.0) or 1000.0)
+                    # adapter-declared ceiling first (LSWT: 60 Hz), else
+                    # the SWT rpm_max, else the historical 1000 default
+                    rpm_max = self._speed_max or float(
+                        getattr(self._tunnel.config, "rpm_max", 0.0)
+                        or 1000.0)
                     self.gauge.set_state(snap.actual_rpm, snap.rpm_set,
                                          rpm_max)
                     self.rotor.set_state(snap.actual_rpm,
@@ -666,11 +704,16 @@ class TunnelDashboard(QWidget):
         self._redraw()
 
     def _redraw(self) -> None:
+        mark = self._clear_mark
+
         def data(key):
             h = self._hist.get(key)
             if not h:
                 return [], []
-            ts, vs = zip(*h)
+            pts = [(t, v) for t, v in h if t > mark]
+            if not pts:
+                return [], []
+            ts, vs = zip(*pts)
             return list(ts), list(vs)
 
         self._c_mach.setData(*data("mach"))

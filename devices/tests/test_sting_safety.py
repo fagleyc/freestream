@@ -15,6 +15,7 @@ from lswt_sting.device import StingDrive
 
 def _cfg(tmp_path, **kw):
     kw.setdefault("state_path", str(tmp_path / "state.json"))
+    kw.setdefault("energize_settle_s", 0.0)      # no sleeps in sim tests
     return StingConfig(force_sim=True, poll_ms=50, init_reset=False, **kw)
 
 
@@ -92,7 +93,10 @@ class _WireRecorder:
 def test_brake_output_configured_at_connect(tmp_path, monkeypatch):
     """Alpha brake on O3: connect must send OUT3B (Moving/Not-Moving
     output — SX manual ch.4) so the DRIVE releases/engages the brake
-    with motion. Beta has no brake → no OUT command for unit 2."""
+    with motion. Beta has no brake → no OUT command for unit 2.
+    OUT3B is the LAST init command (rig-found 2026-08-06: sent
+    mid-burst with the Z reset live, it was lost and the brake never
+    released — nothing may follow it)."""
     created = _WireRecorder.install(monkeypatch)
     dev = StingDrive(_cfg(tmp_path, park_on_disconnect=False,
                           restore_position=False))
@@ -101,9 +105,9 @@ def test_brake_output_configured_at_connect(tmp_path, monkeypatch):
         sent = created[0].sent
         assert "1OUT3B" in sent, sent
         assert not any(s.startswith("2OUT") for s in sent), sent
-        # configured with the motion parameters, before the final FSD1
-        assert sent.index("1V.108") < sent.index("1OUT3B") \
-            < sent.index("FSD1")
+        # after the motion parameters AND after the blind FSD broadcast
+        assert sent.index("1V.108") < sent.index("FSD1") \
+            < sent.index("1OUT3B")
     finally:
         dev.disconnect()
 
@@ -121,20 +125,175 @@ def test_brake_output_disabled_sends_nothing(tmp_path, monkeypatch):
         dev.disconnect()
 
 
-def test_init_reset_off_by_default(tmp_path, monkeypatch):
-    """Z (drive reset) at connect is opt-in now: it wipes the step
-    counter (fighting position restore) and the legacy manual warns it
-    can cause uncontrolled movement."""
-    assert StingConfig().init_reset is False
+def test_idle_shutdown_lifecycle(tmp_path, monkeypatch):
+    """Idle shutdown (opt-in since 2026-08-05 — the A/B test cleared
+    the steppers as the balance-noise source): when enabled, the drive
+    is de-energized (ST1) whenever idle and re-energized (ST0) before
+    motion. Beta has no brake → never shut down."""
     created = _WireRecorder.install(monkeypatch)
-    cfg = StingConfig(force_sim=True, poll_ms=50,
-                      park_on_disconnect=False, restore_position=False,
-                      state_path=str(tmp_path / "state.json"))
+    cfg = _cfg(tmp_path, park_on_disconnect=False,
+               restore_position=False)
+    cfg.alpha.idle_shutdown = True
     dev = StingDrive(cfg)
     try:
         dev.connect()
-        assert not any(s in ("1Z", "2Z") for s in created[0].sent), \
-            created[0].sent
+        sent = created[0].sent
+        assert "1ST1" in sent, sent            # idle at connect → off
+        assert not any(s.startswith("2ST") for s in sent)
+        assert sent.index("FSD1") < sent.index("1ST1")
+
+        dev.set_current_angle("alpha", 0.0)
+        n0 = len(sent)
+        dev.move_to(alpha=0.5)
+        tail = sent[n0:]
+        assert "1ST0" in tail, tail            # energize before the move
+        assert tail.index("1ST0") < tail.index("1G")
+        # after the move settles the drive goes quiet again
+        assert _wait(lambda: not dev.moving)
+        assert _wait(lambda: "1ST1" in created[0].sent[n0:], 5.0)
+    finally:
+        dev.disconnect()
+
+
+def test_idle_shutdown_after_stop_all(tmp_path, monkeypatch):
+    created = _WireRecorder.install(monkeypatch)
+    cfg = _cfg(tmp_path, park_on_disconnect=False,
+               restore_position=False)
+    cfg.alpha.idle_shutdown = True
+    dev = StingDrive(cfg)
+    try:
+        dev.connect()
+        dev.set_current_angle("alpha", 0.0)
+        dev.move_to(alpha=5.0)                 # long move
+        n0 = len(created[0].sent)
+        dev.stop_all()
+        tail = created[0].sent[n0:]
+        assert "1ST1" in tail, tail            # stopped → de-energized
+    finally:
+        dev.disconnect()
+
+
+def test_idle_shutdown_disabled_sends_no_st(tmp_path, monkeypatch):
+    """Default behavior (legacy-style): motors stay energized — no ST
+    traffic at all through connect/move/settle."""
+    created = _WireRecorder.install(monkeypatch)
+    cfg = _cfg(tmp_path, park_on_disconnect=False,
+               restore_position=False)
+    dev = StingDrive(cfg)
+    try:
+        dev.connect()
+        dev.set_current_angle("alpha", 0.0)
+        dev.move_to(alpha=0.5)
+        assert _wait(lambda: not dev.moving)
+        assert not any("ST" in s and s.startswith(("1ST", "2ST"))
+                       for s in created[0].sent)
+    finally:
+        dev.disconnect()
+
+
+def test_idle_shutdown_config_round_trip(tmp_path):
+    cfg = _cfg(tmp_path)
+    # OFF by default (2026-08-05): the drives-off A/B test showed the
+    # steppers are not the balance-noise source — stay engaged
+    assert cfg.alpha.idle_shutdown is False
+    assert cfg.beta.idle_shutdown is False
+    p = tmp_path / "cfg.json"
+    cfg.beta.idle_shutdown = True
+    cfg.save(p)
+    back = StingConfig.load(p)
+    assert back.beta.idle_shutdown is True
+    assert back.energize_settle_s == 0.0
+
+
+def test_init_reset_on_by_default(tmp_path, monkeypatch):
+    """Z (drive reset) at connect is back ON by default (2026-07-24):
+    the drives need it after a power cycle — the normal daily sequence
+    — and position restore re-derives the zero after the counter
+    wipe. (Sim test helpers pass init_reset=False explicitly.)"""
+    assert StingConfig().init_reset is True
+    # stale persisted False (defaults.json / Freestream bundles from
+    # the opt-in era) must NOT resurrect — embedded connects after a
+    # power cycle depend on the Z (rig-found 2026-08-05)
+    assert StingConfig.from_dict({"init_reset": False}).init_reset is True
+    cfg_off = StingConfig(init_reset=False,
+                          state_path=str(tmp_path / "s.json"))
+    p = tmp_path / "cfg.json"
+    cfg_off.save(p)
+    assert StingConfig.load(p).init_reset is True
+    created = _WireRecorder.install(monkeypatch)
+    cfg = StingConfig(force_sim=True, poll_ms=50,
+                      park_on_disconnect=False, restore_position=False,
+                      state_path=str(tmp_path / "state.json"),
+                      energize_settle_s=0.0)
+    dev = StingDrive(cfg)
+    try:
+        dev.connect()
+        sent = created[0].sent
+        assert "1Z" in sent and "2Z" in sent, sent
+    finally:
+        dev.disconnect()
+
+
+def test_manual_energize_toggle(tmp_path, monkeypatch):
+    """Noise A/B switch (2026-07-24): the operator can kill/restore an
+    axis's holding current directly to watch the balance floor."""
+    created = _WireRecorder.install(monkeypatch)
+    dev = StingDrive(_cfg(tmp_path, park_on_disconnect=False,
+                          restore_position=False))
+    try:
+        dev.connect()
+        sent = created[0].sent
+        # beta (no idle_shutdown, so energized after init)
+        assert dev.state()["Beta"]["energized"] is True
+        n0 = len(sent)
+        dev.set_energized("beta", False)
+        assert "2ST1" in sent[n0:], sent[n0:]
+        assert dev.state()["Beta"]["energized"] is False
+        n1 = len(sent)
+        dev.set_energized("beta", True)
+        assert "2ST0" in sent[n1:], sent[n1:]
+        assert dev.state()["Beta"]["energized"] is True
+        # no-op when already in the requested state
+        n2 = len(sent)
+        dev.set_energized("beta", True)
+        assert not any("ST" in s for s in sent[n2:])
+    finally:
+        dev.disconnect()
+
+
+def test_manual_off_axis_reenergized_by_move(tmp_path, monkeypatch):
+    """A move on a manually de-energized axis must send ST0 first —
+    even when idle_shutdown is off for that axis — or the motor would
+    be commanded with no current (stall)."""
+    created = _WireRecorder.install(monkeypatch)
+    dev = StingDrive(_cfg(tmp_path, park_on_disconnect=False,
+                          restore_position=False))
+    try:
+        dev.connect()
+        dev.set_current_angle("beta", 0.0)
+        dev.set_energized("beta", False)
+        n0 = len(created[0].sent)
+        dev.move_to(beta=0.5)
+        tail = created[0].sent[n0:]
+        assert "2ST0" in tail, tail
+        assert tail.index("2ST0") < tail.index("2G")
+        assert _wait(lambda: not dev.moving)
+        # beta has no idle_shutdown → stays energized after the move
+        assert dev.state()["Beta"]["energized"] is True
+    finally:
+        dev.disconnect()
+
+
+def test_manual_toggle_refused_while_moving(tmp_path):
+    dev = StingDrive(_cfg(tmp_path, park_on_disconnect=False,
+                          restore_position=False))
+    try:
+        dev.connect()
+        dev.set_current_angle("alpha", 0.0)
+        dev.move_to(alpha=5.0)                 # long move
+        with pytest.raises(RuntimeError, match="moving"):
+            dev.set_energized("alpha", False)
+        dev.stop_all()
     finally:
         dev.disconnect()
 

@@ -48,6 +48,19 @@ AO_CHANNELS = (0, 1)
 #: AO waveform shapes (``none`` = static DC level)
 AO_WAVEFORMS = ("none", "sine", "square", "triangle")
 
+# ── counters ─────────────────────────────────────────────────────────────
+#: the USB-6351 has four 32-bit counters
+COUNTERS = (0, 1, 2, 3)
+#: counter-INPUT measurement modes
+CI_MODES = ("frequency", "edge_count")
+#: pulse-train idle states
+CO_IDLE_STATES = ("low", "high")
+#: X-series DEFAULT terminal routing per counter (device pinout):
+#: where each counter LISTENS (SRC) and where its pulse train COMES OUT.
+#: A blank ``terminal`` in the channel configs means these defaults.
+CTR_DEFAULT_SRC = {0: "PFI8", 1: "PFI3", 2: "PFI0", 3: "PFI5"}
+CTR_DEFAULT_OUT = {0: "PFI12", 1: "PFI13", 2: "PFI14", 3: "PFI15"}
+
 
 # ── balance layout → bridge channel NAMES ────────────────────────────────
 # Same rename machinery as strainbook_616: the four bridge channels are
@@ -125,6 +138,77 @@ class AOChannelConfig:
 
 
 @dataclass
+class CounterInConfig:
+    """One counter INPUT channel (frequency or edge counting).
+
+    The measured value streams into the SAME ring/blocks as the AI
+    channels — one column, constant within each block at the latest
+    reading — so the recorder, the freestream adapter and Streamlined
+    see it as an ordinary channel. ``scale``/``offset`` convert the raw
+    measurement to engineering units (an RPM pickup with 1 pulse/rev:
+    mode "frequency", scale 60, unit "RPM"); unlike the bridge volts,
+    the ENGINEERING value is the data of record — pulses/rev is a fixed
+    sensor property, not a calibration to re-derive later.
+    """
+    ctr: int = 0                # ctr0..ctr3
+    name: str = ""
+    enabled: bool = False
+    mode: str = "frequency"     # frequency | edge_count
+    #: input terminal; "" = the counter's X-series default SRC pin
+    terminal: str = ""
+    edge: str = "rising"        # rising | falling
+    # frequency mode: the expected band steers DAQmx's measurement range
+    min_hz: float = 2.0
+    max_hz: float = 10_000.0
+    scale: float = 1.0          # eng = raw * scale + offset
+    offset: float = 0.0
+    unit: str = "Hz"            # edge_count: typically "counts"
+
+    @property
+    def physical(self) -> str:
+        return f"ctr{self.ctr}"
+
+    @property
+    def source_terminal(self) -> str:
+        return self.terminal or CTR_DEFAULT_SRC.get(self.ctr, "PFI8")
+
+    def to_eng(self, raw: float) -> float:
+        return raw * self.scale + self.offset
+
+
+@dataclass
+class PulseTrainConfig:
+    """One counter OUTPUT: a pulse train (continuous or N pulses).
+
+    ``enabled`` makes the train AVAILABLE (configured, buttons live);
+    nothing pulses until :meth:`~ni_usb_6351.device.NiUsb6351.start_pulse`
+    — outputs must never start as a side effect of Connect.
+    ``sync_to_ai_start`` start-triggers the train off the AI task's own
+    start trigger (``/Dev/ai/StartTrigger``), so the first pulse and
+    sample 0 share t0 — phase-locked external gear (PIV, cameras,
+    strobes) for free.
+    """
+    ctr: int = 1                # ctr0..ctr3
+    name: str = ""
+    enabled: bool = False
+    freq_hz: float = 100.0
+    duty: float = 0.5           # 0 < duty < 1
+    idle_state: str = "low"     # low | high
+    n_pulses: int = 0           # 0 = continuous
+    #: output terminal; "" = the counter's X-series default OUT pin
+    terminal: str = ""
+    sync_to_ai_start: bool = False
+
+    @property
+    def physical(self) -> str:
+        return f"ctr{self.ctr}"
+
+    @property
+    def out_terminal(self) -> str:
+        return self.terminal or CTR_DEFAULT_OUT.get(self.ctr, "PFI12")
+
+
+@dataclass
 class TriggerConfig:
     """AI start-trigger setup, applied to the task at connect.
 
@@ -142,12 +226,17 @@ class TriggerConfig:
 def default_channels(balance_config: str = "Force") -> List[ChannelConfig]:
     bridge = BRIDGE_NAMES.get(balance_config, BRIDGE_NAMES["Force"])
     chans = []
+    # All balance bridges on the TIGHTEST range (±0.1 V — the 6351 has
+    # no instrument amp): the LSWT 50lb balance signals are only
+    # 2.4-5.8 mV full-scale (33-233 uV per unit load at 5 V
+    # excitation), so every factor of range is a factor of resolution.
+    # The old ±0.5 V default on Axial/Roll threw away 5x.
     for ai, name in zip((0, 1, 2, 3), bridge):
         chans.append(ChannelConfig(channel=ai, name=name, balance=True,
-                                   v_min=-0.2, v_max=0.2))
+                                   v_min=-0.1, v_max=0.1))
     for ai, name in ((4, "Axial"), (5, "Roll")):
         chans.append(ChannelConfig(channel=ai, name=name, balance=True,
-                                   v_min=-0.5, v_max=0.5))
+                                   v_min=-0.1, v_max=0.1))
     chans.append(ChannelConfig(channel=6, name="Excitation",
                                v_min=-10.0, v_max=10.0))
     chans.append(ChannelConfig(channel=7, name="Spare", enabled=False,
@@ -160,6 +249,18 @@ def default_ao_channels() -> List[AOChannelConfig]:
             AOChannelConfig(channel=1, name="AO1")]
 
 
+def default_ci_channels() -> List[CounterInConfig]:
+    # shipped DISABLED, named to show the intent: an RPM pickup with
+    # 1 pulse/rev on ctr0's default SRC pin (PFI8)
+    return [CounterInConfig(ctr=0, name="RPM", mode="frequency",
+                            scale=60.0, unit="RPM")]
+
+
+def default_co_channels() -> List[PulseTrainConfig]:
+    # shipped DISABLED: a 100 Hz sync train on ctr1's OUT pin (PFI13)
+    return [PulseTrainConfig(ctr=1, name="Sync")]
+
+
 @dataclass
 class NiDaqConfig:
     """All user-tunable settings for one NI USB-6351 session."""
@@ -168,7 +269,28 @@ class NiDaqConfig:
     device_name: str = "Dev2"          # NI-MAX device alias
 
     # ── Acquisition ──────────────────────────────────────────────────────
-    scan_hz: float = 1000.0            # per-channel sample rate
+    scan_hz: float = 1000.0            # per-channel DELIVERED rate
+    #: hardware oversampling: the ADC runs at ``scan_hz * oversample``
+    #: and the driver averages every ``oversample`` samples down to
+    #: ``scan_hz`` before publishing — the delivered stream IS the data
+    #: of record. Gains sqrt(N) on uncorrelated noise and acts as an
+    #: anti-alias filter — the 6351 has neither an instrument amp nor
+    #: an analog AA filter, and mV bridge signals need every bit of it.
+    #: 0 = AUTO (default): use the device's full aggregate budget —
+    #: e.g. 7 channels @ 1 kHz → 142x (994 kS/s), ~12x noise
+    #: reduction. An explicit value is clamped to the budget at
+    #: connect. The balance noise floor was measured highly
+    #: uncorrelated (2026-08-05), which is exactly what averaging
+    #: rejects.
+    oversample: int = 0
+    #: mux settling guard (F16_Val find, 2026-08-05): when a big-range
+    #: channel is followed in the WRAPPED scan order by a ±0.1/0.2 V
+    #: bridge, the multiplexer leaves a settling ghost on the bridge
+    #: (measured: Pdiff 0.84 V on AI7 → +0.45 mV DC on Aft_Pitch AI0 =
+    #: phantom 5 lb Fz, only when air is on). ON: insert a sacrificial
+    #: duplicate read of the victim channel and discard it — the kept
+    #: read is clean. Costs one scan slot per boundary.
+    mux_settle_reread: bool = True
     buffer_seconds: float = 5.0        # DAQmx input buffer length
     poll_ms: int = 25                  # poll-thread read period
 
@@ -180,11 +302,30 @@ class NiDaqConfig:
         default_factory=default_ao_channels)
     ao_update_hz: float = 10_000.0     # waveform sample clock
 
+    # ── Counters ─────────────────────────────────────────────────────────
+    ci_channels: List[CounterInConfig] = field(
+        default_factory=default_ci_channels)
+    co_channels: List[PulseTrainConfig] = field(
+        default_factory=default_co_channels)
+    #: a frequency channel with no new edges for this long reads 0.0
+    #: (the shaft stopped — the counter would otherwise just go silent
+    #: and the display would hold the last speed forever)
+    ci_stale_s: float = 2.0
+
     # ── Balance calibration (.vol) ───────────────────────────────────────
     vol_path: str = ""                 # auto-loaded at startup when set
     cal_type: str = "Linear"           # Linear | Quadratic | Cubic
     balance_config: str = "Force"      # Force | Moment (balance layout)
-    warn_utilization: float = 0.8      # amber above this fraction of max
+    warn_utilization: float = 0.8
+    #: display/monitoring low-pass [Hz] for the history plots, force
+    #: tiles and the utilization/overstress slice (0 = off). Raw 1 kHz
+    #: electrical noise peaks otherwise inflate the peak-based
+    #: utilization bars far above the (mean-based) displayed loads.
+    display_lpf_hz: float = 10.0
+    #: excitation warn floor [V]. The LSWT moment balances run a 5 V
+    #: supply — the old hardcoded 7 V floor false-alarmed on them;
+    #: 10 V force-balance supplies sagging below ~4 V still warn.
+    min_excitation_v: float = 4.0      # amber above this fraction of max
     balance_type: str = ""
     balance_serial: str = ""
 
@@ -200,6 +341,12 @@ class NiDaqConfig:
 
     def enabled_ao_channels(self) -> List[AOChannelConfig]:
         return [c for c in self.ao_channels if c.enabled and c.name.strip()]
+
+    def enabled_ci_channels(self) -> List[CounterInConfig]:
+        return [c for c in self.ci_channels if c.enabled and c.name.strip()]
+
+    def enabled_co_channels(self) -> List[PulseTrainConfig]:
+        return [c for c in self.co_channels if c.enabled and c.name.strip()]
 
     # ── balance layout ───────────────────────────────────────────────────
     def set_balance_config(self, balance_config: str) -> Dict[str, str]:
@@ -237,6 +384,8 @@ class NiDaqConfig:
         d = dict(d)
         chans = d.pop("channels", None)
         ao = d.pop("ao_channels", None)
+        ci = d.pop("ci_channels", None)
+        co = d.pop("co_channels", None)
         trig = d.pop("trigger", None)
         known = {f for f in cls.__dataclass_fields__}      # noqa: E1101
         cfg = cls(**{k: v for k, v in d.items() if k in known})
@@ -251,6 +400,18 @@ class NiDaqConfig:
             cfg.ao_channels = [
                 AOChannelConfig(**{k: v for k, v in c.items() if k in ak})
                 for c in ao
+            ]
+        if ci is not None:
+            ik = {f for f in CounterInConfig.__dataclass_fields__}  # noqa
+            cfg.ci_channels = [
+                CounterInConfig(**{k: v for k, v in c.items() if k in ik})
+                for c in ci
+            ]
+        if co is not None:
+            pk = {f for f in PulseTrainConfig.__dataclass_fields__}  # noqa
+            cfg.co_channels = [
+                PulseTrainConfig(**{k: v for k, v in c.items() if k in pk})
+                for c in co
             ]
         if trig is not None:
             tk = {f for f in TriggerConfig.__dataclass_fields__}  # noqa

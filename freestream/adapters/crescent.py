@@ -40,6 +40,11 @@ class CrescentAdapter(ConfigurableAdapter):
     label = "ARC Crescent (alpha/beta)"
     settings_dialog_path = "ac_delta.app.settings_dialog:SettingsDialog"
 
+    #: run-engine hint: the crescent may be commanded toward the next
+    #: point WHILE the tunnel ramps to speed (sampling still waits for
+    #: both position tolerance AND speed settle) — see SweepEngine.
+    overlap_tunnel_ramp = True
+
     def __init__(self, sim: bool = False,
                  config_path: Optional[str] = None):
         cfg = (CrescentConfig.load(config_path) if config_path

@@ -19,8 +19,9 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QBoxLayout, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
-    QLabel, QMainWindow, QMessageBox, QPushButton, QSpinBox, QStatusBar,
-    QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QLabel, QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox,
+    QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
 from lswt_sting import about, theme
@@ -118,9 +119,41 @@ class _AxisBox(QGroupBox):
             "counter (PZ) — required before absolute moves")
         g.addWidget(self.zero_btn, 4, 0, 1, 4)
 
+        # manual drive-current toggle (ST0/ST1) — the balance-noise
+        # A/B switch. checked = energized.
+        self.motor_btn = QPushButton()
+        self.motor_btn.setCheckable(True)
+        self.motor_btn.setToolTip(
+            "Toggle the drive holding current (SX ST0/ST1) to A/B-test "
+            "stepper EMI on the balance. De-energized = ZERO holding "
+            "torque (Alpha's brake holds; Beta may drift — jog back). "
+            "Any move re-energizes automatically.")
+        g.addWidget(self.motor_btn, 5, 0, 1, 4)
+        self._energized = True
+        self._moving = False
+        self._sync_motor_btn()
+
+    def _sync_motor_btn(self):
+        self.motor_btn.blockSignals(True)
+        self.motor_btn.setChecked(self._energized)
+        self.motor_btn.blockSignals(False)
+        if self._energized:
+            self.motor_btn.setText("Drive Current: ON")
+            self.motor_btn.setStyleSheet("")
+        else:
+            self.motor_btn.setText("Drive Current: OFF (noise test)")
+            self.motor_btn.setStyleSheet(
+                f"color: {theme.WARNING}; font-weight: bold;")
+
+    def set_energized(self, on: bool):
+        if on != self._energized:
+            self._energized = on
+            self._sync_motor_btn()
+
     def set_state(self, angle: float, counts: int, moving: bool,
                   target, zeroed: bool):
         self._zeroed = zeroed
+        self._moving = moving
         if zeroed:
             self.big_lbl.setText(f"{angle:+8.3f}")
             self.sub_lbl.setText(f"{counts:+d} steps")
@@ -150,6 +183,7 @@ class _AxisBox(QGroupBox):
         for w in (self.step_minus, self.step_plus, self.step_size,
                   self.stop_btn, self.zero_btn):
             w.setEnabled(motion)
+        self.motor_btn.setEnabled(motion and not self._moving)
 
     def set_limits(self, lo: float, hi: float):
         self.target.setRange(lo, hi)
@@ -327,6 +361,9 @@ class StingPanel(QWidget):
         self.tabs.addTab(self._build_limits_tab(), "Limits")
         root.addWidget(self.tabs, 1)
 
+        # wheel over a spin/combo box must not edit it unless focused
+        theme.install_wheel_guard(self)
+
     def _com_ports(self) -> list:
         try:
             from serial.tools import list_ports
@@ -359,6 +396,10 @@ class StingPanel(QWidget):
                 lambda _=False, b=box: self._step(b, -1))
             box.zero_btn.clicked.connect(
                 lambda _=False, n=name: self._ask_zero(n))
+            # clicked (not toggled) — fires only on user interaction,
+            # so programmatic state sync can't loop back into the device
+            box.motor_btn.clicked.connect(
+                lambda checked, n=name: self._set_motor(n, checked))
         # the two axis boxes reflow (side-by-side ↔ stacked) with width
         self.axes_container = _ReflowAxes(self.alpha_box, self.beta_box)
         boxes.addWidget(self.axes_container, 2)
@@ -439,8 +480,25 @@ class StingPanel(QWidget):
             "Beta": pi.plot([], [], name="Beta",
                             pen=pg.mkPen(theme.series_color(1), width=1)),
         }
+        # clear watermark: only ring samples newer than this are drawn.
+        # The pg menu is disabled on this plot, so "Clear plot" rides a
+        # plain Qt context menu (ring/recorded data untouched).
+        self._plot_clear_t = float("-inf")
+        self._plot_last_t = None
+        self.plot.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.plot.customContextMenuRequested.connect(self._plot_menu)
         hl.addWidget(self.plot, 1)
         return hist
+
+    def _plot_menu(self, pos):
+        menu = QMenu(self.plot)
+        menu.addAction("Clear plot").triggered.connect(self._clear_plot)
+        menu.exec(self.plot.mapToGlobal(pos))
+
+    def _clear_plot(self):
+        if self._plot_last_t is not None:
+            self._plot_clear_t = self._plot_last_t
 
     def _build_limits_tab(self) -> QWidget:
         lim = QWidget()
@@ -472,11 +530,28 @@ class StingPanel(QWidget):
         self.park_deg.setSuffix("°")
         self.park_deg.valueChanged.connect(self._limits_changed)
         bf.addRow("Park Alpha at", self.park_deg)
+        self.a_shutdown_chk = QCheckBox(
+            "De-energize Alpha when idle (ST shutdown — REQUIRES the "
+            "brake; kills stepper EMI in the balance wiring)")
+        self.a_shutdown_chk.setChecked(self.config.alpha.idle_shutdown)
+        self.a_shutdown_chk.toggled.connect(self._limits_changed)
+        bf.addRow(self.a_shutdown_chk)
+        self.b_shutdown_chk = QCheckBox(
+            "De-energize Beta when idle (NO brake fitted — leave off "
+            "unless the mechanism is self-locking)")
+        self.b_shutdown_chk.setChecked(self.config.beta.idle_shutdown)
+        self.b_shutdown_chk.toggled.connect(self._limits_changed)
+        bf.addRow(self.b_shutdown_chk)
         ll.addWidget(beh)
 
         comms = QGroupBox("Comms (next connect)")
         cf = QFormLayout(comms)
         self.init_reset_chk = QCheckBox("Send Z (drive reset) at connect")
+        self.init_reset_chk.setToolTip(
+            "The drives need the Z after a power cycle, so this always "
+            "starts ON (position restore re-derives the zero after the "
+            "counter wipe). Unchecking applies to this session only — "
+            "it is deliberately not restored from saved defaults.")
         self.init_reset_chk.setChecked(self.config.init_reset)
         self.init_reset_chk.toggled.connect(self._limits_changed)
         cf.addRow(self.init_reset_chk)
@@ -631,6 +706,13 @@ class StingPanel(QWidget):
             return
         self._refresh_ui()
 
+    def _set_motor(self, name: str, on: bool):
+        try:
+            self.device.set_energized(name, on)
+        except (ValueError, RuntimeError, StingError) as exc:
+            self.statusSignal.emit(str(exc))
+        self._refresh_ui()
+
     def _handle_reset_fault(self):
         try:
             self.device.reset_fault()
@@ -657,6 +739,8 @@ class StingPanel(QWidget):
         cfg.beta.max_deg = max(self.b_min.value(), self.b_max.value())
         cfg.park_on_disconnect = self.park_chk.isChecked()
         cfg.park_alpha_deg = self.park_deg.value()
+        cfg.alpha.idle_shutdown = self.a_shutdown_chk.isChecked()
+        cfg.beta.idle_shutdown = self.b_shutdown_chk.isChecked()
         cfg.init_reset = self.init_reset_chk.isChecked()
         cfg.poll_ms = self.poll_ms.value()
         self.device.set_config(cfg)     # limits/zero take effect at once
@@ -676,6 +760,8 @@ class StingPanel(QWidget):
             w.setValue(value)
             w.blockSignals(False)
         for w, value in ((self.park_chk, cfg.park_on_disconnect),
+                         (self.a_shutdown_chk, cfg.alpha.idle_shutdown),
+                         (self.b_shutdown_chk, cfg.beta.idle_shutdown),
                          (self.init_reset_chk, cfg.init_reset)):
             w.blockSignals(True)
             w.setChecked(value)
@@ -763,6 +849,8 @@ class StingPanel(QWidget):
                                  a["target"], a["zeroed"])
         self.beta_box.set_state(b["angle"], b["counts"], b["moving"],
                                 b["target"], b["zeroed"])
+        self.alpha_box.set_energized(a.get("energized", True))
+        self.beta_box.set_energized(b.get("energized", True))
         self._update_motion_enables()
 
         moving = [n for n in ("Alpha", "Beta") if state[n]["moving"]]
@@ -780,8 +868,9 @@ class StingPanel(QWidget):
         data = self.device.ring.tail(n)
         t = data["t"]
         if t.size >= 2 and self.plot.isVisible():
+            self._plot_last_t = float(t[-1])
             x = t - t[-1]
-            keep = x >= -window
+            keep = (x >= -window) & (t > self._plot_clear_t)
             for name, curve in self._curves.items():
                 curve.setData(x[keep], data[name][keep])
             self.plot.getPlotItem().setXRange(-window, 0.0, padding=0)

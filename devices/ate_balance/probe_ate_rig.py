@@ -93,10 +93,12 @@ def main() -> int:
                        else "29-byte (no sync word — USAFA build)")
             print(f"Packet type  : {variant}")
             last = frames[-1].loads
-            print("Latest loads (N / N·m):")
-            for ax in P.WIRE_AXES:
+            print("Latest loads (streamed units; balance frame X back, "
+                  "Y right, Z up):")
+            for ax in P.BALANCE_AXES:
+                wire = P.BALANCE_TO_WIRE[ax]
                 vals = [f.loads[ax] for f in frames[-min(200, len(frames)):]]
-                print(f"  {ax:6s} {last[ax]:+10.3f}   "
+                print(f"  {ax:3s} (wire {wire:5s}) {last[ax]:+10.3f}   "
                       f"(mean {statistics.fmean(vals):+10.3f}, "
                       f"sd {statistics.pstdev(vals):.3f} "
                       f"over last {len(vals)})")
