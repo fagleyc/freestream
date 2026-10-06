@@ -60,8 +60,8 @@ import numpy as np
 
 from . import speed
 from .config import FreestreamConfig
-from .derived import (TUNNEL_CONDITION_CHANNELS, tunnel_condition_sources,
-                      tunnel_state)
+from .derived import (TUNNEL_CONDITION_CHANNELS, temp_to_celsius,
+                      tunnel_condition_sources, tunnel_state)
 from .hal import Positioner, SetpointDevice, Streaming, Zeroable
 from .machloop import (clamp_command, command_kwarg_for, make_tunnel_measure)
 from .manager import DeviceManager
@@ -1303,7 +1303,24 @@ class SweepEngine:
                     break
         if any(k not in means for k in TUNNEL_CONDITION_CHANNELS):
             return
-        st = tunnel_state(means["Pdiff"], means["Ptot"], means["Temp"])
+        # The drained blocks are RAW (DaqBook/NI volts); the live monitors
+        # read latest() in engineering units. Apply the same per-channel
+        # cal the recorder writes beside each channel before the
+        # isentropic chain — feeding raw volts in recorded Mach_meas 0.72 /
+        # q_meas 1.54 psi for a Mach 0.30 point (Oct 2026 F16 check).
+        # Identity (Heise) and uncalibrated channels pass through.
+        cal = self._tunnel_channel_cal()
+        eng: Dict[str, float] = {}
+        for name, raw in means.items():
+            entry = cal.get(name) or {}
+            if str(entry.get("type", "linear")).lower() == "identity":
+                eng[name] = raw
+            else:
+                eng[name] = (raw * float(entry.get("slope", 1.0))
+                             + float(entry.get("offset", 0.0)))
+        temp_c = temp_to_celsius(eng["Temp"],
+                                 (cal.get("Temp") or {}).get("unit"))
+        st = tunnel_state(eng["Pdiff"], eng["Ptot"], temp_c)
         if st.valid:
             n = len(next(iter(blocks["Tunnel"].values())))
             blocks["Tunnel"]["Mach_meas"] = np.full(n, st.mach)
