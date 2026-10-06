@@ -339,11 +339,42 @@ as you click. Cancel restores the previous look.</p>
       narrows.</li>
 </ul>
 
+<h3 id="gui-plots">Live plot controls</h3>
+<p>Every live plot (Tunnel strips, Balance, Position, Results) has the same control strip
+above it, and right-click offers <em>Auto-scale all axes</em>, <em>Auto-scale Y only</em>
+and <em>Clear plot</em>.</p>
+<table>
+  <tr><th>Control</th><th>Behavior</th></tr>
+  <tr><td>X / Y &nbsp;Auto | Manual</td><td><strong>Manual</strong>: the range typed in the
+      min / max fields. <strong>Auto</strong>: fit the visible data with a margin; a time
+      axis in Auto follows the newest sample over the chosen window (10 / 30 / 60 / 120 s
+      or all). Dragging or wheel-zooming a plot switches that axis to Manual at exactly
+      what you are looking at. With several stacked plots, the Y target picks one plot
+      or all of them.</td></tr>
+  <tr><td>Update</td><td><strong>smooth</strong> (default): the auto range glides toward the
+      data &mdash; quickly when the data leaves the view, slowly when it could shrink
+      &mdash; so the axis never jumps. <strong>every N s</strong>: each auto range is held
+      for N seconds, then glides to the next.</td></tr>
+  <tr><td>LPF</td><td>Display low-pass filter (moving average, off to 50 Hz), shared by
+      every live trace and the Forces readout and saved with the session configuration.
+      Recorded data is never filtered.</td></tr>
+  <tr><td>&#8634; Auto all</td><td>Every axis of that plot group back to Auto.</td></tr>
+</table>
+
 <h3 id="gui-forces">Forces page</h3>
 <ul>
-  <li>Six wind-axis tiles &mdash; Lift, Drag, Side [lb]; Roll, Pitch, Yaw [in&middot;lb]
-      &mdash; each with a <strong>peak-hold load bar</strong>: filled bar = live utilization
-      of rated load, bright marker = rolling 30 s peak (reset on tare), tick at 100%.</li>
+  <li>Six wind-axis tiles &mdash; Lift, Drag, Side [lb]; Roll, Pitch, Yaw [in&middot;lb].</li>
+  <li><strong>Element load bars</strong> &mdash; one vertical bar per calibrated element
+      (N1, N2, Y1, Y2, Ax, Mx &mdash; or the external balance's Fx&hellip;Mz) on a shared
+      &plusmn;120% scale of that element's <em>rated</em> load. The bar grows up from the
+      zero line for a positive load and down for a negative one, green / amber / red as it
+      nears the limit; the red dashed lines are &plusmn;100% of the rating and the amber
+      band starts at the warning threshold. Bright markers show the rolling
+      <strong>30 s maximum and minimum</strong> (reset on tare) with a faint envelope
+      between them. Above each bar: the signed % of rating and the value in its unit.
+      Rated loads are matched to the .vol's elements by name, synonym (Mx = Roll,
+      Ax = Axial) or position, so no element shows <em>n/a</em> just because the .vol
+      names it differently in its max-load table.</li>
   <li><strong>Device-owned .vol</strong>: the calibration file, fit type, and Force/Moment
       layout are owned by the balance device's configuration and re-read each tick &mdash;
       the "Balance device&hellip;" button jumps to that device dialog. There is no separate

@@ -62,6 +62,22 @@ def _extra_css(p, scale, density) -> str:
         color: {c['ON_ACCENT']}; border-radius: 9px; padding: 3px 12px;
         font-weight: bold; letter-spacing: 1px; }}
     QLabel#simBadge[live="true"] {{ background: {c['ERROR']}; }}
+    /* plot-axis control strip (plot_axes.PlotAxesBar) */
+    QWidget#plotAxesBar {{ background: {c['BG_LIGHT']};
+        border: 1px solid {c['BORDER']}; border-radius: 6px; }}
+    QWidget#plotAxesBar QLineEdit, QWidget#plotAxesBar QComboBox {{
+        padding: 2px 6px; min-height: 0; }}
+    QWidget#plotAxesBar QPushButton {{ padding: 2px 10px; min-height: 0; }}
+    QPushButton#segmentLeft, QPushButton#segmentRight {{
+        padding: 2px 10px; min-height: 0; border-radius: 0;
+        background: {c['SURFACE']}; color: {c['TEXT_DIM']}; font-weight: normal; }}
+    QPushButton#segmentLeft {{ border-top-left-radius: 5px;
+        border-bottom-left-radius: 5px; }}
+    QPushButton#segmentRight {{ border-top-right-radius: 5px;
+        border-bottom-right-radius: 5px; border-left: none; }}
+    QPushButton#segmentLeft:checked, QPushButton#segmentRight:checked {{
+        background: {c['ACCENT']}; border-color: {c['ACCENT']};
+        color: {c['ON_ACCENT']}; font-weight: bold; }}
     QPushButton#paneHandle {{ background: transparent; border: none;
         color: {c['TEXT_DIM']}; font-size: 8pt; padding: 0; min-height: 0; }}
     QPushButton#paneHandle:hover {{ background: {c['SURFACE']};

@@ -92,6 +92,12 @@ class ResultsPanel(QWidget):
         self._p_map.setLabel("bottom", "alpha [deg]")
         self._p_map.setLabel("left", "beta [deg]")
         self._p_map.setTitle("visited α–β matrix")
+        from .plot_axes import PlotAxesBar, PlotAxesEngine
+        self.metric_axes = PlotAxesEngine(
+            [self._p_metric], names=["polar"], time_x=False, parent=self)
+        root.addWidget(PlotAxesBar(self.metric_axes), 0)
+        self.map_axes = PlotAxesEngine(
+            [self._p_map], names=["matrix"], time_x=False, parent=self)
         root.addWidget(glw, 1)
 
         self._scatter_up = self._p_metric.plot(
@@ -268,7 +274,8 @@ class ResultsPanel(QWidget):
             self._map_scatter.setData([], [])
 
     def shutdown(self) -> None:
-        pass
+        self.metric_axes.stop()
+        self.map_axes.stop()
 
 
 def _as_float(v) -> Optional[float]:

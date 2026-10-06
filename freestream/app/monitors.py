@@ -74,6 +74,11 @@ class MonitorPanel(QTabWidget):
         self._targets = {"alpha": None, "beta": None}
         self._balance: Optional[Streaming] = None
         self._bal_curves: Dict[str, object] = {}
+        # the shared visualization settings (display LPF) live on the
+        # session config, so they persist with it
+        from .plot_axes import PlotAxesBar, PlotAxesEngine, display
+        if config is not None:
+            display().bind(config)
 
         # ── Balance tab: bridge channels on the main plot + a slim
         # excitation strip below (like the StrainBook app) — 10 V of
@@ -97,6 +102,13 @@ class MonitorPanel(QTabWidget):
         self._bal_exc_plot.setLabel("bottom", "t [s]")
         self._bal_exc_plot.setXLink(self._bal_plot)
         _bal_lay.addWidget(self._bal_exc_plot, 1)
+        # one axis engine for the bridge plot + its excitation strip
+        self.bal_axes = PlotAxesEngine(
+            [self._bal_plot.getPlotItem(),
+             self._bal_exc_plot.getPlotItem()],
+            names=["bridges", "excitation"], time_x=True, window_s=60.0,
+            on_clear=lambda: self._clear_plot("bal"), parent=self)
+        _bal_lay.insertWidget(0, PlotAxesBar(self.bal_axes))
         self.addTab(self._bal_container, "Balance")
 
         # ── Position tab: positioner axes actual vs target (curves are
@@ -110,13 +122,17 @@ class MonitorPanel(QTabWidget):
             offset=(10, 10), labelTextColor=theme.TEXT_DIM)
         self._pos_curves = {}
         self._pos_axes = []           # axis names of the active positioner
-        self.addTab(self._pos_plot, "Position")
-
-        # "Clear plot" context-menu entries (the x-linked Balance strip
-        # pair clears together)
-        for pw in (self._bal_plot, self._bal_exc_plot):
-            self._add_clear_action(pw, "bal")
-        self._add_clear_action(self._pos_plot, "pos")
+        self.pos_axes = PlotAxesEngine(
+            [self._pos_plot.getPlotItem()], names=["position"],
+            time_x=True, window_s=60.0,
+            on_clear=lambda: self._clear_plot("pos"), parent=self)
+        self._pos_container = QWidget()
+        _pos_lay = QVBoxLayout(self._pos_container)
+        _pos_lay.setContentsMargins(0, 0, 0, 0)
+        _pos_lay.setSpacing(2)
+        _pos_lay.addWidget(PlotAxesBar(self.pos_axes))
+        _pos_lay.addWidget(self._pos_plot, 1)
+        self.addTab(self._pos_container, "Position")
 
         self._build_subpanels()
         self._discover()
@@ -135,12 +151,7 @@ class MonitorPanel(QTabWidget):
         self._timer.start()
 
     # ── clear plot (display watermark on the deque history) ─────────────
-    def _add_clear_action(self, pw, key: str) -> None:
-        vb = pw.getPlotItem().getViewBox()
-        vb.menu.addSeparator()
-        vb.menu.addAction("Clear plot").triggered.connect(
-            lambda: self._clear_plot(key))
-
+    # (offered on each plot's right-click menu by its PlotAxesEngine)
     def _clear_plot(self, key: str) -> None:
         self._clear_marks[key] = time.monotonic() - self._t0
 
@@ -333,7 +344,9 @@ class MonitorPanel(QTabWidget):
         self._redraw()
 
     def _redraw(self) -> None:
-        def data(key, mark):
+        from .plot_axes import lowpass_trace
+
+        def data(key, mark, filtered=False):
             h = self._hist.get(key)
             if not h:
                 return [], []
@@ -341,12 +354,14 @@ class MonitorPanel(QTabWidget):
             if not pts:
                 return [], []
             ts, vs = zip(*pts)
+            if filtered:                 # shared display LPF (view only)
+                return list(ts), lowpass_trace(ts, vs)
             return list(ts), list(vs)
 
         bal_mark = self._clear_marks["bal"]
         pos_mark = self._clear_marks["pos"]
         for name, (curve, _plot) in self._bal_curves.items():
-            curve.setData(*data(f"bal:{name}", bal_mark))
+            curve.setData(*data(f"bal:{name}", bal_mark, filtered=True))
         for key, curve in self._pos_curves.items():
             curve.setData(*data(key, pos_mark), connect="finite")
 
@@ -356,6 +371,8 @@ class MonitorPanel(QTabWidget):
 
     def shutdown(self) -> None:
         self._timer.stop()
+        self.bal_axes.stop()
+        self.pos_axes.stop()
         self.redock_all()             # no floating windows may outlive us
         for panel in self._subpanels:
             panel.shutdown()

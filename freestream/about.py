@@ -12,13 +12,18 @@ sweep-grammar unification, run-book import, ATE truth-naming, ...)
 rather than from commit dates.
 """
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 APP_NAME = "Freestream"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
 
 # (version, iso_date, one_line) — newest first.
 VERSION_HISTORY = [
+    ("2.4.0", "2026-10-06",
+     "One plot-axis engine for every live plot: X/Y Auto or Manual with "
+     "min/max entry, smooth or interval auto-scaling, a shared display "
+     "LPF; vertical signed element-load bars with rated limits and 30 s "
+     "max/min markers; Mx (Roll) and tab-delimited .vol files fixed"),
     ("2.3.0", "2026-10-02",
      "Live themes (USAFA Night/Day in official Academy colors, Classic "
      "Dark/Light, High Contrast) from View ▸ Theme or the status-bar "

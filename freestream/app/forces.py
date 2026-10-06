@@ -41,84 +41,22 @@ from .. import theme
 from ..aero import Geometry, balance_summary, compute_aero, load_balance_cal
 from ..derived import live_tunnel_state
 from ..hal import Streaming
+from .plot_axes import lowpass as _shared_lowpass
+from .load_bars import LoadBar, LoadBarScale  # noqa: F401  (re-export)
 
 SAMPLE_MS = 200
 WINDOW_S = 1.0
 
 
-def _lowpass(x: np.ndarray, rate_hz: float, cutoff_hz: float
-             ) -> np.ndarray:
-    """Monitor-grade low-pass: moving-average FIR sized to
-    ``rate/cutoff`` (first null ~cutoff). Same filter as the NI device
-    app's display LPF; kept local so freestream does not import a
-    device app module. NOT applied to recorded data.
+#: monitor-grade display low-pass (moving average, edge-hold padded);
+#: ONE implementation shared with every live plot - see plot_axes
+_lowpass = _shared_lowpass
 
-    Edge-hold padded so the kernel never runs onto implicit zeros —
-    plain ``convolve(mode="same")`` rolls the trace off toward zero
-    over the kernel half-window at both ends of every window."""
-    if cutoff_hz <= 0 or rate_hz <= 0:
-        return x
-    n = int(round(rate_hz / cutoff_hz))
-    if n < 2 or x.size < n:
-        return x
-    xp = np.pad(x, (n // 2, n - 1 - n // 2), mode="edge")
-    return np.convolve(xp, np.full(n, 1.0 / n), mode="valid")
+
 #: rolling window for the peak-hold marker on the load bars
 PEAK_HOLD_S = 30.0
 
 
-class LoadBar(QWidget):
-    """Element-load bar (0–120 % of rated max): filled fraction = live
-    utilization, bright marker line = rolling peak over ``PEAK_HOLD_S``
-    (reset on tare), thin tick at the 100 % rated limit. Expands to fill
-    the panel's free vertical space."""
-
-    SPAN = 1.2                       # full bar width = 120 %
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(24)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                           QSizePolicy.Policy.Expanding)
-        self._u: Optional[float] = None
-        self._peak: Optional[float] = None
-        self._color = theme.SUCCESS
-
-    def set_load(self, u: Optional[float], peak: Optional[float],
-                 color: str) -> None:
-        if (u, peak, color) != (self._u, self._peak, self._color):
-            self._u, self._peak, self._color = u, peak, color
-            self.update()
-
-    def paintEvent(self, _ev) -> None:                 # noqa: N802
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = self.rect().adjusted(0, 0, -1, -1)
-        p.setPen(QPen(QColor(theme.BORDER)))
-        p.setBrush(QColor(theme.BG_LIGHTER))
-        p.drawRoundedRect(r, 5, 5)
-        w, h = r.width(), r.height()
-
-        def x_at(u: float) -> int:
-            return 1 + int((w - 2) * max(0.0, min(u, self.SPAN)) / self.SPAN)
-
-        if self._u is not None and self._u > 0:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(self._color))
-            p.drawRoundedRect(1, 1, x_at(self._u) - 1, h - 1, 4, 4)
-        # 100 % rated-limit tick
-        tick = QColor(theme.TEXT_DIM)
-        tick.setAlpha(140)
-        p.setPen(QPen(tick, 1))
-        x100 = x_at(1.0)
-        p.drawLine(x100, 1, x100, h)
-        # rolling-peak marker
-        if self._peak is not None and self._peak > 0:
-            xp = x_at(self._peak)
-            p.setPen(QPen(QColor(theme.ERROR if self._peak >= 1.0
-                                 else theme.TEXT), 2))
-            p.drawLine(xp, 1, xp, h)
-        p.end()
 #: wind-axis tiles (attr on AeroResult.means, label, unit). The units
 #: here are the INTERNAL-balance path's: aero.compute_aero works in
 #: lb / in·lb because that is what a .vol calibration produces. An
@@ -220,6 +158,8 @@ class ForcesPanel(QWidget):
         # rolling peak-hold per element (marker on the load bars);
         # cleared whenever the balance's zero_count (tare) changes
         self._peak_hist: Dict[str, Deque[Tuple[float, float]]] = {}
+        # signed rolling max/min per element (the bar's envelope markers)
+        self._range_hist: Dict[str, Deque[Tuple[float, float, float]]] = {}
         self._last_zero_count: Optional[int] = None
         self._build()
         self._discover()
@@ -285,30 +225,41 @@ class ForcesPanel(QWidget):
             tiles.addWidget(tile)
         root.addLayout(tiles)
 
-        limits = QGroupBox("Element loads vs balance maxima   "
-                           f"(peak marker: last {PEAK_HOLD_S:.0f} s, "
-                           "resets on tare)")
+        limits = QGroupBox(
+            "Element loads vs rated maxima   (±% of each element's "
+            f"rated load; markers = last {PEAK_HOLD_S:.0f} s max / min, "
+            "reset on tare)")
         lg = QGridLayout(limits)
-        lg.setVerticalSpacing(6)
+        lg.setHorizontalSpacing(10)
+        lg.setVerticalSpacing(2)
+        self.scale = LoadBarScale()
+        lg.addWidget(self.scale, 2, 0)
         self.util_bars: Dict[int, LoadBar] = {}
         self.util_labels: Dict[int, QLabel] = {}
         for i in range(6):
-            lbl = QLabel(f"ch{i}")
-            lbl.setFixedWidth(74)
-            lg.addWidget(lbl, i % 3, (i // 3) * 3)
-            bar = LoadBar()
-            lg.addWidget(bar, i % 3, (i // 3) * 3 + 1)
+            col = i + 1
             pct = QLabel("—")
-            pct.setFixedWidth(64)
-            pct.setStyleSheet("font-family: Consolas, monospace;")
-            lg.addWidget(pct, i % 3, (i // 3) * 3 + 2)
+            pct.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            pct.setStyleSheet("font-family: Consolas, monospace; "
+                              "font-size: 13pt; font-weight: bold;")
+            lg.addWidget(pct, 0, col)
+            val = QLabel("")
+            val.setObjectName("dim")
+            val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            val.setStyleSheet("font-family: Consolas, monospace;")
+            lg.addWidget(val, 1, col)
+            bar = LoadBar()
+            lg.addWidget(bar, 2, col)
+            lbl = QLabel(f"ch{i}")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("font-weight: bold;")
+            lg.addWidget(lbl, 3, col)
+            lg.setColumnStretch(col, 1)
             self.util_labels[i] = lbl
             self.util_bars[i] = bar
             bar._pct = pct
-        lg.setColumnStretch(1, 1)
-        lg.setColumnStretch(4, 1)
-        for row in range(3):
-            lg.setRowStretch(row, 1)
+            bar._val = val
+        lg.setRowStretch(2, 1)
         # the load-limit group takes the page's remaining vertical space
         # (the bars expand with it)
         root.addWidget(limits, 1)
@@ -338,11 +289,15 @@ class ForcesPanel(QWidget):
                 self.info.text() + f"   — reduced as a {declared} balance "
                 f"(the .vol declares it; the '{self._layout}' layout is "
                 f"overridden)")
+        from strainbook_616 import balcal
+        limits = balcal.element_limits(cal)
+        units = balcal.element_units(cal)
         for i, name in enumerate(cal.force_channels[:6]):
             self.util_labels[i].setText(name)
-            limit = cal.max_loads.values.get(name)
+            limit = limits[i] if i < len(limits) else None
             self.util_bars[i]._pct.setToolTip(
-                f"max {limit}" if limit else "no max-load entry")
+                f"max {limit:g} {units[i]}".rstrip() if limit
+                else "no max-load entry")
         return True
 
     def clear_vol(self) -> None:
@@ -370,6 +325,7 @@ class ForcesPanel(QWidget):
             bar.set_load(None, None, theme.SUCCESS)
             bar._pct.setText("—")
             bar._pct.setToolTip("")
+            bar._val.setText("")
 
     def _rolling_peak(self, name: str, u: float, now: float) -> float:
         h = self._peak_hist.setdefault(name, deque())
@@ -379,8 +335,65 @@ class ForcesPanel(QWidget):
             h.popleft()
         return max(v for _t, v in h)
 
+    def _rolling_range(self, name: str, hi: float, lo: float,
+                       now: float) -> Tuple[float, float]:
+        """Signed (max, min) of a load fraction over PEAK_HOLD_S."""
+        h = self._range_hist.setdefault(name, deque())
+        h.append((now, hi, lo))
+        cutoff = now - PEAK_HOLD_S
+        while h and h[0][0] < cutoff:
+            h.popleft()
+        return max(v for _t, v, _l in h), min(v for _t, _h, v in h)
+
     def _reset_peaks(self) -> None:
         self._peak_hist.clear()
+        self._range_hist.clear()
+
+    def _show_bar(self, i: int, name: str, frac: Optional[float],
+                  hi: Optional[float], lo: Optional[float],
+                  value: Optional[float], unit: str,
+                  limit: Optional[float], now: float) -> Optional[float]:
+        """Drive bar ``i``: signed fraction of the rated load (None = no
+        rated max), its window extremes, the value and its unit. Returns
+        |frac| (the utilization shown) or None."""
+        bar = self.util_bars[i]
+        if self.util_labels[i].text() != name:
+            self.util_labels[i].setText(name)
+        warn = self.config.warn_utilization
+        unit = _PRETTY_UNITS.get(unit, unit) if unit else ""
+        if value is None:
+            bar.set_load(None, None, theme.SUCCESS)
+            bar._pct.setText("—")
+            bar._val.setText("")
+            bar.setToolTip("")
+            return None
+        bar._val.setText(f"{value:+.3g} {unit}".rstrip())
+        if frac is None:
+            # no rated max known -> honest value, no fake fill
+            bar.set_load(None, None, theme.SUCCESS)
+            bar._pct.setText(f"{value:+.1f} {unit}".rstrip())
+            bar._pct.setToolTip("no rated max-load entry — live load "
+                                "value shown")
+            bar.setToolTip(f"{name}: no rated maximum in the calibration")
+            return None
+        u = abs(frac)
+        peak = self._rolling_peak(name, max(abs(hi), abs(lo)), now)
+        p_hi, p_lo = self._rolling_range(name, hi, lo, now)
+        color = (theme.SUCCESS if u < warn else
+                 (theme.WARNING if u < 1.0 else theme.ERROR))
+        bar.set_load(u, peak, color, frac=frac, peak_hi=p_hi, peak_lo=p_lo,
+                     warn=warn)
+        bar._pct.setText(f"{frac * 100:+5.1f}%")
+        bar._pct.setStyleSheet(
+            "font-family: Consolas, monospace; font-size: 13pt; "
+            f"font-weight: bold; color: {color};")
+        bar._pct.setToolTip(f"max {limit:g} {unit}".rstrip())
+        bar.setToolTip(
+            f"{name}: {value:+.4g} {unit}  ({frac * 100:+.1f}% of the "
+            f"{limit:g} {unit} rating)\n"
+            f"last {PEAK_HOLD_S:.0f} s: max {p_hi * 100:+.1f}%, "
+            f"min {p_lo * 100:+.1f}%")
+        return u
 
     def _reset_alarm(self) -> None:
         """Clear the overstress state + banner (no cal → no blocker)."""
@@ -620,37 +633,18 @@ class ForcesPanel(QWidget):
         now = time.monotonic()
         worst_name, worst_u = "", None
         for i, name in enumerate(_RESOLVED_ORDER):
-            bar = self.util_bars[i]
-            if self.util_labels[i].text() != name:
-                self.util_labels[i].setText(name)
             v = vals.get(name)
             try:
                 maxv = float(limits.get(name) or 0.0)
             except (TypeError, ValueError):
                 maxv = 0.0
-            if v is None:
-                bar.set_load(None, None, theme.SUCCESS)
-                bar._pct.setText("—")
-                bar._pct.setToolTip("")
-                continue
-            if maxv > 0:
-                u = abs(float(v)) / maxv
-                peak = self._rolling_peak(name, u, now)
-                color = (theme.SUCCESS if u < warn else
-                         (theme.WARNING if u < 1.0 else theme.ERROR))
-                bar.set_load(u, peak, color)
-                bar._pct.setText(f"{u * 100:5.1f}%")
-                bar._pct.setToolTip(
-                    f"max {maxv:g} {chan_units.get(name, '')}".rstrip())
-                if worst_u is None or u > worst_u:
-                    worst_name, worst_u = name, u
-            else:
-                # no rated max known → honest value, neutral/empty bar
-                bar.set_load(None, None, theme.SUCCESS)
-                unit = chan_units.get(name, "")
-                bar._pct.setText(f"{float(v):+.1f} {unit}".rstrip())
-                bar._pct.setToolTip("no rated max-load entry — live load "
-                                    "value shown")
+            value = None if v is None else float(v)
+            frac = value / maxv if value is not None and maxv > 0 else None
+            u = self._show_bar(i, name, frac, frac, frac, value,
+                               chan_units.get(name, ""),
+                               maxv if maxv > 0 else None, now)
+            if u is not None and (worst_u is None or u > worst_u):
+                worst_name, worst_u = name, u
         self.overstress = worst_u is not None and worst_u >= 1.0
         if self.overstress:
             self.alarm.setText(
@@ -673,20 +667,28 @@ class ForcesPanel(QWidget):
 
     def _update_util(self, res) -> None:
         self.overstress = res.overstress
-        warn = self.config.warn_utilization
         now = time.monotonic()
+        from strainbook_616 import balcal
+        limits = balcal.element_limits(self.cal)
+        units = balcal.element_units(self.cal)
+        elems = np.atleast_2d(np.asarray(res.elements, dtype=float))
         for i, name in enumerate(self.cal.force_channels[:6]):
-            u = res.utilization.get(name)
-            bar = self.util_bars[i]
-            if u is None:
-                bar.set_load(None, None, theme.SUCCESS)
-                bar._pct.setText("n/a")
+            if elems.ndim != 2 or i >= elems.shape[1] or not elems.size:
+                self._show_bar(i, name, None, None, None, None, "", None,
+                               now)
                 continue
-            peak = self._rolling_peak(name, u, now)
-            color = (theme.SUCCESS if u < warn else
-                     (theme.WARNING if u < 1.0 else theme.ERROR))
-            bar.set_load(u, peak, color)
-            bar._pct.setText(f"{u * 100:5.1f}%")
+            col = elems[:, i]
+            value = float(np.mean(col))
+            limit = limits[i] if i < len(limits) else None
+            if limit and limit > 0:
+                frac = value / limit
+                hi, lo = float(np.max(col)) / limit, \
+                    float(np.min(col)) / limit
+            else:
+                frac = hi = lo = None
+                limit = None
+            self._show_bar(i, name, frac, hi, lo, value,
+                           units[i] if i < len(units) else "", limit, now)
         if res.overstress:
             self.alarm.setText(
                 f"⚠ BALANCE OVERSTRESS: {res.worst_channel} at "

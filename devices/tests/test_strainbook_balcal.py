@@ -12,7 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from strainbook_616 import balcal
 
-CALDIR = Path(__file__).resolve().parents[2] / "Streamlined" / "CalFiles"
+# Streamlined is a sibling of the freestream repo (devices/ moved inside
+# freestream, so it is three levels up now; two in the old layout)
+CALDIR = next((Path(__file__).resolve().parents[n] / "Streamlined" /
+               "CalFiles" for n in (3, 2)
+               if (Path(__file__).resolve().parents[n] / "Streamlined" /
+                   "CalFiles").is_dir()),
+              Path(__file__).resolve().parents[3] / "Streamlined" /
+              "CalFiles")
 VOL = CALDIR / "2025_06_06_2 100 lb.vol"
 
 

@@ -532,13 +532,14 @@ class TunnelDashboard(QWidget):
             pen=pg.mkPen(theme.series_color(1), width=1), antialias=False)
         self._c_rpm = self._p_rpm.plot(
             pen=pg.mkPen(theme.series_color(2), width=1), antialias=False)
-        # "Clear plot" context-menu entry on each strip (one shared
-        # watermark — the strips are x-linked)
-        for p in (self._p_mach, self._p_q, self._p_rpm):
-            vb = p.getViewBox()
-            vb.menu.addSeparator()
-            vb.menu.addAction("Clear plot").triggered.connect(
-                self._clear_plot)
+        # one axis engine for the three x-linked strips (its right-click
+        # menu carries "Clear plot" - one shared watermark)
+        from .plot_axes import PlotAxesBar, PlotAxesEngine
+        self.axes = PlotAxesEngine(
+            [self._p_mach, self._p_q, self._p_rpm],
+            names=["Mach", "q", "fan RPM"], time_x=True, window_s=60.0,
+            on_clear=self._clear_plot, parent=self)
+        root.addWidget(PlotAxesBar(self.axes), 0)
         root.addWidget(self._glw, 1)
 
     def _clear_plot(self) -> None:
@@ -706,6 +707,8 @@ class TunnelDashboard(QWidget):
     def _redraw(self) -> None:
         mark = self._clear_mark
 
+        from .plot_axes import lowpass_trace
+
         def data(key):
             h = self._hist.get(key)
             if not h:
@@ -714,7 +717,8 @@ class TunnelDashboard(QWidget):
             if not pts:
                 return [], []
             ts, vs = zip(*pts)
-            return list(ts), list(vs)
+            # shared display LPF (view only; nothing recorded is filtered)
+            return list(ts), lowpass_trace(ts, vs)
 
         self._c_mach.setData(*data("mach"))
         self._c_q.setData(*data("q"))
@@ -722,3 +726,4 @@ class TunnelDashboard(QWidget):
 
     def shutdown(self) -> None:
         self._timer.stop()
+        self.axes.stop()

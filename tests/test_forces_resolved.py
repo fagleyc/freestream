@@ -109,10 +109,14 @@ def test_resolved_bars_show_utilization_against_load_limits(panel):
     # Fz: 50/100 → 50 %
     i_fz = labels.index("Fz")
     assert p.util_bars[i_fz]._u == pytest.approx(0.5)
-    assert p.util_bars[i_fz]._pct.text().strip() == "50.0%"
-    # Fx: |−10|/50 → 20 % (absolute value)
+    # signed readout: the vertical bars grow up for + and down for −
+    assert p.util_bars[i_fz]._pct.text().strip() == "+50.0%"
+    assert p.util_bars[i_fz]._frac == pytest.approx(0.5)
+    # Fx: |−10|/50 → 20 % utilization, drawn as −20 % (below zero)
     i_fx = labels.index("Fx")
     assert p.util_bars[i_fx]._u == pytest.approx(0.2)
+    assert p.util_bars[i_fx]._frac == pytest.approx(-0.2)
+    assert p.util_bars[i_fx]._pct.text().strip() == "-20.0%"
     # Fy: NO limit → honest value in the label, no bar fill
     i_fy = labels.index("Fy")
     assert p.util_bars[i_fy]._u is None

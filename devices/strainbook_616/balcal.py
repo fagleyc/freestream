@@ -130,7 +130,10 @@ def read_vol_file(filepath: str) -> BalanceCalibration:
                     data = []
                     for _ in range(nloads):
                         data_line = next(f).strip()
-                        values = [float(v) for v in data_line.split(',')]
+                        # comma- OR tab/space-separated rows (the 50 lb
+                        # moment balance's .vol is tab-delimited)
+                        values = [float(v) for v in
+                                  re.split(r'[,\s]+', data_line) if v]
                         data.append(values)
 
                     channel_data.append({
@@ -358,16 +361,68 @@ def element_utilization(cal: BalanceCalibration,
     if elements.size == 0:
         return out
     peaks = np.max(np.abs(np.atleast_2d(elements)), axis=0)
-    for i, name in enumerate(cal.force_channels[:6]):
-        limit = cal.max_loads.values.get(name)
-        if limit is None:       # tolerant match (e.g. 'Ax' vs 'Axial')
-            for k, v in cal.max_loads.values.items():
-                if k.lower().startswith(name[:2].lower()) or \
-                        name.lower().startswith(k[:2].lower()):
-                    limit = v
-                    break
+    for i, (name, limit) in enumerate(
+            zip(cal.force_channels[:6], element_limits(cal))):
         if limit and limit > 0 and i < peaks.size:
             out[name] = float(peaks[i] / limit)
+    return out
+
+
+def _norm(name: str) -> str:
+    return re.sub(r'[^a-z0-9]', '', str(name).lower())
+
+
+#: element-name families that mean the same gauge across .vol vintages
+_ELEMENT_SYNONYMS = (
+    {'mx', 'roll', 'rm', 'rx', 'rollmoment'},
+    {'ax', 'axial', 'af', 'axialforce'},
+)
+
+
+def element_limits(cal: BalanceCalibration) -> List[Optional[float]]:
+    """Rated max load for each of the first six calibrated elements, in
+    force_channels order (None where the .vol gives none).
+
+    Matching, in order: the exact name; the name without case/punctuation
+    ('Aft_Pitch' = 'AftPitch'); a synonym family ('Mx' = 'Roll',
+    'Ax' = 'Axial'); and finally POSITION, since every .vol lists its
+    maximal loads in the same element order as its channel sections.
+    Several force-balance files call the sixth element 'Mx' in the
+    channel sections but 'Roll' in [Maximal Balance Loads]; the old
+    two-letter prefix match missed that and the Forces page showed the
+    roll bar as n/a.
+    """
+    values = cal.max_loads.values
+    keys = list(values)
+    by_norm = {_norm(k): k for k in keys}
+    out: List[Optional[float]] = []
+    for i, name in enumerate(cal.force_channels[:6]):
+        key = name if name in values else by_norm.get(_norm(name))
+        if key is None:
+            fam = next((f for f in _ELEMENT_SYNONYMS if _norm(name) in f),
+                       None)
+            if fam is not None:
+                key = next((k for k in keys if _norm(k) in fam), None)
+        if key is None and len(keys) == len(cal.force_channels) \
+                and i < len(keys):
+            key = keys[i]
+        out.append(float(values[key]) if key is not None else None)
+    return out
+
+
+def element_units(cal: BalanceCalibration) -> List[str]:
+    """Unit of each element's rated max ('lb', 'in-lb', ...), aligned like
+    :func:`element_limits` ('' when the .vol gives none)."""
+    units = cal.max_loads.units
+    values = list(cal.max_loads.values)
+    out: List[str] = []
+    limits = element_limits(cal)
+    for i, name in enumerate(cal.force_channels[:6]):
+        unit = units.get(name)
+        if unit is None and len(values) == len(cal.force_channels) \
+                and i < len(values):
+            unit = units.get(values[i])
+        out.append(str(unit or '') if limits[i] is not None else '')
     return out
 
 
